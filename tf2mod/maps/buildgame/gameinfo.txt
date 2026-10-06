@@ -1,0 +1,16 @@
+// Only for compiling FortCraft's map with the SDK's map tools, which can't use the TF2 mod's
+// own gameinfo (it mounts content by Steam app id, which the tools don't support).
+"GameInfo"
+{
+	game	"FortCraft map build"
+	FileSystem
+	{
+		SteamAppId	243750
+		SearchPaths
+		{
+			game	"C:\Program Files (x86)\Steam\steamapps\common\Team Fortress 2\tf\tf2_misc.vpk"
+			game	"C:\Program Files (x86)\Steam\steamapps\common\Source SDK Base 2013 Multiplayer\hl2\hl2_misc.vpk"
+			game+mod	|gameinfo_path|.
+		}
+	}
+}

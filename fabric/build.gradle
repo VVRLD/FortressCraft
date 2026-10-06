@@ -1,0 +1,36 @@
+plugins {
+	id 'net.fabricmc.fabric-loom' version "${loom_version}"
+}
+
+loom {
+	runs {
+		client {
+			programArgs "--username", "FortCraftDev"
+			// Native access for the shared-memory calls; logs go to the project's logs/ folder.
+			vmArgs "--enable-native-access=ALL-UNNAMED", "-Dfortcraft.logDir=${rootProject.file('../logs').absolutePath}"
+		}
+	}
+}
+
+dependencies {
+	minecraft "com.mojang:minecraft:${project.minecraft_version}"
+	implementation "net.fabricmc:fabric-loader:${project.loader_version}"
+}
+
+processResources {
+	def version = project.version
+	inputs.property "version", version
+
+	filesMatching("fabric.mod.json") {
+		expand "version": version
+	}
+}
+
+tasks.withType(JavaCompile).configureEach {
+	it.options.release = 25
+}
+
+java {
+	sourceCompatibility = JavaVersion.VERSION_25
+	targetCompatibility = JavaVersion.VERSION_25
+}

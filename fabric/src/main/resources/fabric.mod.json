@@ -1,0 +1,19 @@
+{
+  "schemaVersion": 1,
+  "id": "fortcraft",
+  "version": "${version}",
+  "name": "FortCraft",
+  "description": "Play Minecraft as a TF2 player.",
+  "environment": "client",
+  "entrypoints": {
+    "main": ["dev.fortcraft.FortCraft"]
+  },
+  "mixins": [
+    "fortcraft.mixins.json"
+  ],
+  "depends": {
+    "fabricloader": ">=0.19.5",
+    "minecraft": "~26.3",
+    "java": ">=25"
+  }
+}

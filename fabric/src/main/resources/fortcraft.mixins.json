@@ -1,0 +1,16 @@
+{
+  "required": true,
+  "package": "dev.fortcraft.mixin",
+  "compatibilityLevel": "JAVA_25",
+  "client": [
+    "CameraMixin",
+    "HandsMixin",
+    "HudMixin",
+    "ItemStackMixin",
+    "MinecraftMixin",
+    "MouseHandlerMixin",
+    "ServerPlayerMixin",
+    "ServerMoveMixin"
+  ],
+  "injectors": { "defaultRequire": 1 }
+}

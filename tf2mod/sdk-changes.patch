@@ -1,0 +1,2362 @@
+diff --git a/game/mod_tf/resource/ui/CharInfoLoadoutSubPanel.res b/game/mod_tf/resource/ui/CharInfoLoadoutSubPanel.res
+index f1ee425..153aa65 100644
+--- a/game/mod_tf/resource/ui/CharInfoLoadoutSubPanel.res
++++ b/game/mod_tf/resource/ui/CharInfoLoadoutSubPanel.res
+@@ -267,7 +267,7 @@
+ 	{
+ 		"ControlName"		"ImageButton"
+ 		"fieldName"			"ShowBackpackButton"
+-		"xpos"				"c-90"
++		"xpos"				"c-150"
+ 		"ypos"				"235"
+ 		"zpos"				"6"
+ 		"wide"				"60"
+@@ -309,11 +309,58 @@
+ 		"pin_corner_to_sibling"        "4"          
+ 		"pin_to_sibling_corner"        "6"  
+ 	}
++	// FortCraft: crafting (Minecraft 2x2 recipes), between Backpack and the catalog.
++	"ShowCraftingButton"
++	{
++		"ControlName"		"ImageButton"
++		"fieldName"			"ShowCraftingButton"
++		"xpos"				"c-30"
++		"ypos"				"235"
++		"zpos"				"6"
++		"wide"				"60"
++		"tall"				"60"
++		"autoResize"		"0"
++		"pinCorner"			"0"
++		"visible"			"1"
++		"enabled"			"1"
++		"tabPosition"		"0"
++		"labelText"			""
++		"textAlignment"		"south-west"
++		"Command"			"crafting"
++		"Default"			"0"
++		"font"				"MenuKeys"
++		"scaleImage"		"1"
++		"activeimage"		"crafting_anvil"
++		"inactiveimage"		"crafting_anvil_gray"
++		"sound_depressed"	"UI/buttonclick.wav"
++		"sound_released"	"UI/buttonclickrelease.wav"
++	}	
++	"ShowCraftingLabel"
++	{
++		"ControlName"	"CExLabel"
++		"fieldName"		"ShowCraftingLabel"
++		"font"			"HudFontSmallestBold"
++		"labelText"		"CRAFTING"
++		"textAlignment"	"north"
++		"xpos"			"0"
++		"ypos"			"5"
++		"zpos"			"7"
++		"wide"			"120"
++		"tall"			"20"
++		"autoResize"	"0"
++		"pinCorner"		"0"
++		"visible"		"1"
++		"enabled"		"1"
++
++		"pin_to_sibling"               "ShowCraftingButton"
++		"pin_corner_to_sibling"        "4"          
++		"pin_to_sibling_corner"        "6" 
++	}
+ 	"ShowArmoryButton"
+ 	{
+ 		"ControlName"		"ImageButton"
+ 		"fieldName"			"ShowArmoryButton"
+-		"xpos"				"c30"
++		"xpos"				"c90"
+ 		"ypos"				"235"
+ 		"zpos"				"6"
+ 		"wide"				"60"
+diff --git a/src/game/client/c_baseanimating.cpp b/src/game/client/c_baseanimating.cpp
+index d365dc1..c5b2bf7 100644
+--- a/src/game/client/c_baseanimating.cpp
++++ b/src/game/client/c_baseanimating.cpp
+@@ -3385,9 +3385,47 @@ private:
+ // Purpose: Draws the object
+ // Input  : flags - 
+ //-----------------------------------------------------------------------------
++#ifdef TF_CLIENT_DLL
++bool FortCraft_IsLinked();     // fortcraft_link.cpp
++float FortCraft_WorldLight();
++
++// FortCraft: TF2's map light doesn't reach Minecraft's world, so while linked every model is lit
++// by an even ambient light as bright as Minecraft's world at the player (bright by day, dark at
++// night), with no local lights: the whole model dims evenly, including its shine.
++class CFortCraftModelLighting
++{
++public:
++	CFortCraftModelLighting()
++	{
++		m_bActive = FortCraft_IsLinked() && g_pStudioRender && modelrender;
++		if ( !m_bActive )
++			return;
++		const float l = FortCraft_WorldLight();
++		Vector cube[ 6 ];  // +x -x +y -y +z(top) -z(bottom)
++		for ( int i = 0; i < 4; ++i )
++			cube[ i ].Init( 0.85f * l, 0.85f * l, 0.85f * l );
++		cube[ 4 ].Init( l, l, l );
++		cube[ 5 ].Init( 0.6f * l, 0.6f * l, 0.6f * l );
++		modelrender->SuppressEngineLighting( true );
++		g_pStudioRender->SetAmbientLightColors( cube );
++		g_pStudioRender->SetLocalLights( 0, NULL );
++	}
++	~CFortCraftModelLighting()
++	{
++		if ( m_bActive )
++			modelrender->SuppressEngineLighting( false );
++	}
++private:
++	bool m_bActive;
++};
++#endif
++
+ int C_BaseAnimating::InternalDrawModel( int flags )
+ {
+ 	VPROF( "C_BaseAnimating::InternalDrawModel" );
++#ifdef TF_CLIENT_DLL
++	CFortCraftModelLighting fortcraftLighting;
++#endif
+ 
+ #ifdef TF_CLIENT_DLL
+ 	MaterialOverrideRestore overrideRestore;
+diff --git a/src/game/client/c_baseentity.cpp b/src/game/client/c_baseentity.cpp
+index adbd391..8e86c5c 100644
+--- a/src/game/client/c_baseentity.cpp
++++ b/src/game/client/c_baseentity.cpp
+@@ -43,6 +43,7 @@
+ 
+ #ifdef TF_CLIENT_DLL
+ #include "c_tf_player.h"
++#include "../../../../my-passthrough/tf2mod/fortcraft_link.h"
+ #endif
+ 
+ // memdbgon must be the last include file in a .cpp file!!!
+@@ -2837,6 +2838,23 @@ void C_BaseEntity::OnLatchInterpolatedVariables( int flags )
+ 
+ int CBaseEntity::BaseInterpolatePart1( float &currentTime, Vector &oldOrigin, QAngle &oldAngles, Vector &oldVel, int &bNoMoreChanges )
+ {
++#ifdef TF_CLIENT_DLL
++	// Hermite smoothing can overshoot a stopped hull into Minecraft walls, then
++	// spring back (observed in tf2_sent.log). Linear interpolation stays between
++	// the actual movement samples while retaining between-tick smoothness.
++	if ( this == C_BasePlayer::GetLocalPlayer() )
++	{
++		const int oldType = m_iv_vecOrigin.GetType();
++		const int newType = FortCraft_IsLinked() ? oldType | INTERPOLATE_LINEAR_ONLY
++			: oldType & ~INTERPOLATE_LINEAR_ONLY;
++		if ( oldType != newType )
++		{
++			m_iv_vecOrigin.Setup( &m_vecOrigin, newType );
++			Msg( "FortCraft movement: local origin interpolation %s (wall overshoot guard)\n",
++				( newType & INTERPOLATE_LINEAR_ONLY ) ? "linear" : "default" );
++		}
++	}
++#endif
+ 	// Don't mess with the world!!!
+ 	bNoMoreChanges = 1;
+ 	
+diff --git a/src/game/client/c_baseplayer.cpp b/src/game/client/c_baseplayer.cpp
+index 76d6693..782515f 100644
+--- a/src/game/client/c_baseplayer.cpp
++++ b/src/game/client/c_baseplayer.cpp
+@@ -2394,6 +2394,10 @@ const QAngle& C_BasePlayer::GetPunchAngle()
+ 
+ void C_BasePlayer::SetPunchAngle( const QAngle &angle )
+ {
++	// FortCraft: no recoil (see sv_suppress_viewpunch in baseplayer_shared.cpp).
++	extern ConVar sv_suppress_viewpunch;
++	if ( sv_suppress_viewpunch.GetBool() && angle != vec3_angle )
++		return;
+ 	m_Local.m_vecPunchAngle = angle;
+ }
+ 
+diff --git a/src/game/client/cdll_client_int.cpp b/src/game/client/cdll_client_int.cpp
+index 7b47d82..6651be6 100644
+--- a/src/game/client/cdll_client_int.cpp
++++ b/src/game/client/cdll_client_int.cpp
+@@ -173,6 +173,10 @@ extern vgui::IInputInternal *g_InputInternal;
+ #include "sixense/in_sixense.h"
+ #endif
+ 
++#ifdef TF_CLIENT_DLL
++#include "../../../../my-passthrough/tf2mod/fortcraft_link.h"
++#endif
++
+ // memdbgon must be the last include file in a .cpp file!!!
+ #include "tier0/memdbgon.h"
+ 
+@@ -1531,7 +1535,29 @@ void CHLClient::View_Render( vrect_t *rect )
+ 	if ( rect->width == 0 || rect->height == 0 )
+ 		return;
+ 
++#ifdef TF_CLIENT_DLL
++	// FortCraft: a frame that captures the overlay is drawn twice, over black then over white,
++	// from the same game state and look, so the overlay's transparency has no ghosts.
++	if ( FortCraft_OverlayDraws() == 2 )
++	{
++		// Render() scales the view's field of view in place; start the second draw from the
++		// same view setup as the first.
++		CViewSetup *pView = const_cast< CViewSetup * >( view->GetPlayerViewSetup() );
++		const CViewSetup savedView = *pView;
++		FortCraft_SetOverlayPass( 0 );
++		view->Render( rect );
++		*pView = savedView;
++		FortCraft_SetOverlayPass( 1 );
++		view->Render( rect );
++	}
++	else
++	{
++		FortCraft_SetOverlayPass( -1 );
++		view->Render( rect );
++	}
++#else
+ 	view->Render( rect );
++#endif
+ 	UpdatePerfStats();
+ }
+ 
+@@ -2252,6 +2278,11 @@ void OnRenderStart()
+ 
+ 	// Finally, link all the entities into the leaf system right before rendering.
+ 	C_BaseEntity::AddVisibleEntities();
++
++#ifdef TF_CLIENT_DLL
++	// FortCraft: send this frame's interpolated player position to Minecraft.
++	FortCraft_OnRenderStart();
++#endif
+ }
+ 
+ 
+diff --git a/src/game/client/client_tf.vpc b/src/game/client/client_tf.vpc
+index 1143ff2..40901f1 100644
+--- a/src/game/client/client_tf.vpc
++++ b/src/game/client/client_tf.vpc
+@@ -45,6 +45,22 @@ $Project "Client (TF)"
+ 		$File	"$SRCDIR\game\client\abuse_report.h"
+ 		$File	"$SRCDIR\game\client\abuse_report_ui.cpp"
+ 		$File	"$SRCDIR\game\client\abuse_report_ui.h"
++		$File	"..\..\..\..\my-passthrough\tf2mod\fortcraft_link.cpp"
++		$File	"..\..\..\..\my-passthrough\tf2mod\fortcraft_link.h"
++		$File	"..\..\..\..\my-passthrough\tf2mod\fortcraft_collision.cpp"
++		$File	"..\..\..\..\my-passthrough\tf2mod\fortcraft_collision.h"
++		$File	"..\..\..\..\my-passthrough\tf2mod\fortcraft_trace.cpp"
++		$File	"..\..\..\..\my-passthrough\tf2mod\fortcraft_gpu.h"
++		$File	"..\..\..\..\my-passthrough\tf2mod\fortcraft_gpu.cpp"
++		{
++			$Configuration
++			{
++				$Compiler
++				{
++					$Create/UsePrecompiledHeader	"Not Using Precompiled Headers"
++				}
++			}
++		}
+ 		$File	"tf\tf_abuse_report.cpp"
+ 		$File	"tf\tf_abuse_report.h"
+ 		$File	"c_team_objectiveresource.cpp"
+diff --git a/src/game/client/econ/backpack_panel.cpp b/src/game/client/econ/backpack_panel.cpp
+index ae12623..002a80e 100644
+--- a/src/game/client/econ/backpack_panel.cpp
++++ b/src/game/client/econ/backpack_panel.cpp
+@@ -46,6 +46,7 @@
+ #include "item_ad_panel.h"
+ #include "client_community_market.h"
+ #include "tf_quest_map_panel.h"
++#include "../../../../../my-passthrough/tf2mod/fortcraft_link.h"
+ // memdbgon must be the last include file in a .cpp file!!!
+ #include <tier0/memdbgon.h>
+ 
+@@ -1579,6 +1580,32 @@ void CBackpackPanel::OnConfirmDelete( KeyValues *data )
+ //-----------------------------------------------------------------------------
+ // Purpose: 
+ //-----------------------------------------------------------------------------
++// FortCraft: hold the selected Minecraft item ("Equip to hand").
++void CBackpackPanel::DoFortCraftEquip()
++{
++	for ( int i = 0; i < m_pItemModelPanels.Count(); i++ )
++	{
++		if ( m_pItemModelPanels[i]->IsSelected() && m_pItemModelPanels[i]->GetItem() &&
++			FortCraft_IsLocalItem( m_pItemModelPanels[i]->GetItem()->GetItemID() ) )
++		{
++			FortCraft_EquipLocalItem( m_pItemModelPanels[i]->GetItem()->GetItemID() );
++			return;
++		}
++	}
++}
++
++// FortCraft: double-clicking a Minecraft item holds it, like "Equip to hand".
++void CBackpackPanel::OnItemPanelMouseDoublePressed( vgui::Panel *panel )
++{
++	CItemModelPanel *pItemPanel = dynamic_cast < CItemModelPanel * > ( panel );
++	if ( pItemPanel && pItemPanel->GetItem() && FortCraft_IsLocalItem( pItemPanel->GetItem()->GetItemID() ) )
++	{
++		if ( m_pContextMenu )
++			m_pContextMenu->SetVisible( false );  // the first click of the double-click opened it
++		FortCraft_EquipLocalItem( pItemPanel->GetItem()->GetItemID() );
++	}
++}
++
+ void CBackpackPanel::OnItemPanelMouseReleased( vgui::Panel *panel )
+ {
+ 	CItemModelPanel *pItemPanel = dynamic_cast < CItemModelPanel * > ( panel );
+@@ -1882,6 +1909,35 @@ void CBackpackPanel::AddCommerceToContextMenu( Menu *pMenu, const char* pszActio
+ //-----------------------------------------------------------------------------
+ void CBackpackPanel::OpenContextMenu()
+ {
++	// FortCraft: a Minecraft item gets a one-entry menu, "Equip to hand" (TF2's own item menu is
++	// switched off in this SDK build: the return below).
++	{
++		int nSelected = 0;
++		CEconItemView *pSelected = NULL;
++		for ( int i = 0; i < m_pItemModelPanels.Count(); i++ )
++		{
++			if ( m_pItemModelPanels[i]->IsSelected() && m_pItemModelPanels[i]->GetItem() )
++			{
++				++nSelected;
++				pSelected = m_pItemModelPanels[i]->GetItem();
++			}
++		}
++		if ( nSelected == 1 && FortCraft_IsLocalItem( pSelected->GetItemID() ) )
++		{
++			if ( m_pContextMenu )
++				delete m_pContextMenu;
++			m_pContextMenu = new Menu( this, "ContextMenu" );
++			m_pContextMenu->SetBorder( scheme()->GetIScheme( GetScheme() )->GetBorder( "NotificationDefault" ) );
++			m_pContextMenu->SetFont( scheme()->GetIScheme( GetScheme() )->GetFont( "HudFontMediumSecondary", IsProportional() ) );
++			m_pContextMenu->AddMenuItem( "Equip to hand", new KeyValues( "Context_FortCraftEquip" ), this );
++			int nX, nY;
++			g_pVGuiInput->GetCursorPosition( nX, nY );
++			m_pContextMenu->SetPos( nX - 1, nY - 1 );
++			m_pContextMenu->SetVisible( true );
++			m_pContextMenu->AddActionSignalTarget( this );
++			return;
++		}
++	}
+ 	return;
+ 
+ 	CUtlVector<CEconItemView*> vecSelectedItems; 
+diff --git a/src/game/client/econ/backpack_panel.h b/src/game/client/econ/backpack_panel.h
+index 82485c4..309c89d 100644
+--- a/src/game/client/econ/backpack_panel.h
++++ b/src/game/client/econ/backpack_panel.h
+@@ -63,6 +63,8 @@ public:
+ 	virtual void OpenContextMenu();
+ 	MESSAGE_FUNC_PTR( OnItemPanelMousePressed, "ItemPanelMousePressed", panel );
+ 	MESSAGE_FUNC_PTR( OnItemPanelMouseReleased, "ItemPanelMouseReleased", panel );
++	MESSAGE_FUNC_PTR( OnItemPanelMouseDoublePressed, "ItemPanelMouseDoublePressed", panel );	// FortCraft
++	MESSAGE_FUNC( DoFortCraftEquip, "Context_FortCraftEquip" );	// FortCraft
+ 	MESSAGE_FUNC_PTR( OnItemPanelMouseRightRelease, "ItemPanelMouseRightRelease", panel );
+ 	MESSAGE_FUNC_INT_INT( OnCursorMoved, "OnCursorMoved", x, y );
+ 	MESSAGE_FUNC_INT_INT( OnItemPanelCursorMoved, "ItemPanelCursorMoved", x, y );
+diff --git a/src/game/client/in_mouse.cpp b/src/game/client/in_mouse.cpp
+index 8d503c2..b2e098e 100644
+--- a/src/game/client/in_mouse.cpp
++++ b/src/game/client/in_mouse.cpp
+@@ -33,6 +33,10 @@
+ #include "xbox/xbox_win32stubs.h"
+ #endif
+ 
++#ifdef TF_CLIENT_DLL
++#include "../../../../my-passthrough/tf2mod/fortcraft_link.h"
++#endif
++
+ // memdbgon must be the last include file in a .cpp file!!!
+ #include "tier0/memdbgon.h"
+ 
+@@ -144,6 +148,13 @@ void SetVGUICursorPos( int x, int y );
+ //-----------------------------------------------------------------------------
+ void CInput::ActivateMouse (void)
+ {
++#ifdef TF_CLIENT_DLL
++	// FortCraft: while linked, Minecraft owns the mouse. Activating TF2's mouse re-centres the
++	// cursor (ResetMouse); done every frame it pinned Alex's cursor in the middle of the screen
++	// whenever Minecraft had let go of it (pause menu).
++	if ( FortCraft_IsLinked() )
++		return;
++#endif
+ 	if ( m_fMouseActive )
+ 		return;
+ 
+@@ -349,6 +360,10 @@ void CInput::GetWindowCenter( int&x, int& y )
+ //-----------------------------------------------------------------------------
+ void CInput::ResetMouse( void )
+ {
++#ifdef TF_CLIENT_DLL
++	if ( FortCraft_IsLinked() )
++		return;  // FortCraft: never move the cursor; Minecraft owns it
++#endif
+ 	int x, y;
+ 	GetWindowCenter( x,  y );
+ 
+diff --git a/src/game/client/tf/c_tf_player.cpp b/src/game/client/tf/c_tf_player.cpp
+index 941823f..06af0c1 100644
+--- a/src/game/client/tf/c_tf_player.cpp
++++ b/src/game/client/tf/c_tf_player.cpp
+@@ -133,6 +133,8 @@
+ // NVNT haptics system interface
+ #include "c_tf_haptics.h"
+ 
++#include "../../../../../my-passthrough/tf2mod/fortcraft_link.h"
++
+ // memdbgon must be the last include file in a .cpp file!!!
+ #include "tier0/memdbgon.h"
+ 
+@@ -1376,6 +1378,16 @@ void C_TFRagdoll::ClientThink( void )
+ {
+ 	SetNextClientThink( CLIENT_THINK_ALWAYS );
+ 
++	// FortCraft: TF2's ragdoll physics doesn't collide with Minecraft's blocks, so a corpse
++	// lingers where it fell. Remove it as soon as its player is alive again (this also hides a
++	// Dead Ringer fake corpse at once; single-player, so nobody else needs to see it).
++	if ( FortCraft_IsLinked() && GetPlayer() && GetPlayer()->IsAlive() )
++	{
++		Msg( "FortCraft: removed corpse after respawn\n" );
++		EndFadeOut();
++		return;
++	}
++
+ 	// Store off the un-shrunken head location for blood spurts.
+ 	if ( IsDecapitation() ) 
+ 	{
+@@ -6589,6 +6601,9 @@ bool C_TFPlayer::CreateMove( float flInputSampleTime, CUserCmd *pCmd )
+ 	static QAngle angMoveAngle( 0.0f, 0.0f, 0.0f );
+ 	static float flTauntTurnSpeed = 0.f;
+ 	
++	// FortCraft: while linked, movement keys and look come from Minecraft.
++	FortCraft_ApplyInput( pCmd );
++
+ 	bool bNoTaunt = true;
+ 	bool bInTaunt = m_Shared.InCond( TF_COND_TAUNTING ) || m_Shared.InCond( TF_COND_HALLOWEEN_THRILLER );
+ 
+@@ -8818,6 +8833,29 @@ void C_TFPlayer::BuildTransformations( CStudioHdr *hdr, Vector *pos, Quaternion
+ 	BuildHandScaleTransformations( this, hdr, pos, q, cameraTransform, boneMask, boneComputed, m_flHandScale );
+ 
+ 	BuildFirstPersonMeathookTransformations( hdr, pos, q, cameraTransform, boneMask, boneComputed, "bip_head" );
++
++	// FortCraft: make mercs a little taller against Minecraft blocks without
++	// changing TF2's collision hull, weapon positions, or world-unit conversion.
++	if ( FortCraft_IsLinked() && GetModelScale() == 1.0f )
++	{
++		const float flVisualHeight = 1.08f;
++		const float flFeetZ = GetAbsOrigin().z;
++		for ( int i = 0; i < hdr->numbones(); ++i )
++		{
++			if ( !( hdr->boneFlags( i ) & boneMask ) )
++				continue;
++			matrix3x4_t &bone = GetBoneForWrite( i );
++			for ( int column = 0; column < 3; ++column )
++				bone[2][column] *= flVisualHeight;
++			bone[2][3] = flFeetZ + ( bone[2][3] - flFeetZ ) * flVisualHeight;
++		}
++		static bool s_bLoggedVisualHeight = false;
++		if ( !s_bLoggedVisualHeight )
++		{
++			s_bLoggedVisualHeight = true;
++			Msg( "FortCraft: merc visual height 1.08; collision unchanged\n" );
++		}
++	}
+ }
+ 
+ 
+diff --git a/src/game/client/tf/tf_fx_explosions.cpp b/src/game/client/tf/tf_fx_explosions.cpp
+index 70e555c..360b719 100644
+--- a/src/game/client/tf/tf_fx_explosions.cpp
++++ b/src/game/client/tf/tf_fx_explosions.cpp
+@@ -16,6 +16,7 @@
+ #include "econ_item_system.h"
+ #include "c_tf_fx.h"
+ #include "networkstringtabledefs.h"
++#include "../../../../../my-passthrough/tf2mod/fortcraft_link.h"
+ 
+ //--------------------------------------------------------------------------------------------------------------
+ CTFWeaponInfo *GetTFWeaponInfo( int iWeapon )
+@@ -216,6 +217,9 @@ void C_TETFExplosion::PostDataUpdate( DataUpdateType_t updateType )
+ {
+ 	VPROF( "C_TETFExplosion::PostDataUpdate" );
+ 
++	// FortCraft damage now comes from the server's RadiusDamage event; this
++	// client effect must not apply the same explosion a second time.
++
+ 	TFExplosionCallback( m_vecOrigin, m_vecNormal, m_iWeaponID, m_hEntity, m_nDefID, m_nSound, m_iCustomParticleIndex );
+ }
+ 
+diff --git a/src/game/client/tf/tf_hud_account.cpp b/src/game/client/tf/tf_hud_account.cpp
+index 20070cf..e97cd3d 100644
+--- a/src/game/client/tf/tf_hud_account.cpp
++++ b/src/game/client/tf/tf_hud_account.cpp
+@@ -519,6 +519,56 @@ public:
+ 		return hud_damagemeter.GetBool();
+ 	}
+ 
++	//-----------------------------------------------------------------------------
++	// FortCraft: a TF2 attack hurt a Minecraft mob at pos (TF2 coordinates, top of the mob): the
++	// same hit sound and floating number as for hitting a TF2 player.
++	//-----------------------------------------------------------------------------
++	void FortCraft_ShowMobHit( const Vector &pos, int iDamage, bool bKilled )
++	{
++		CTFPlayer *pLocalPlayer = C_TFPlayer::GetLocalTFPlayer();
++		if ( iDamage <= 0 || !pLocalPlayer || !pLocalPlayer->IsAlive() )
++			return;
++
++		const bool bLastHit = bKilled && tf_dingalingaling_lasthit.GetBool();
++		if ( bLastHit )
++			m_flLastDingTime = 0.f;
++		if ( ( tf_dingalingaling.GetBool() || bLastHit ) &&
++			 ( gpGlobals->curtime > ( m_flLastDingTime + tf_dingalingaling_repeat_delay.GetFloat() ) || tf_dingalingaling_repeat_delay.GetFloat() == 0.f ) )
++		{
++			m_flLastDingTime = gpGlobals->curtime;
++			const hitsound_params_t &hitSound = bLastHit ? g_LastHitSounds[ tf_dingalingaling_last_effect.GetInt() ] : g_HitSounds[ tf_dingalingaling_effect.GetInt() ];
++			CSoundParameters params;
++			if ( hitSound.m_pszName && CBaseEntity::GetParametersForSound( hitSound.m_pszName, params, NULL ) )
++			{
++				CLocalPlayerFilter filter;
++				EmitSound_t es( params );
++				es.m_nPitch = hitSound.GetPitchFromDamage( iDamage, bLastHit );
++				es.m_flVolume = bLastHit ? tf_dingaling_lasthit_volume.GetFloat() : tf_dingaling_volume.GetFloat();
++				pLocalPlayer->EmitSound( filter, pLocalPlayer->entindex(), es );
++			}
++		}
++
++		if ( hud_combattext.GetBool() )
++		{
++			account_delta_t *pNewAccount = OnAccountValueChanged( 0, -iDamage, account_delta_t::ACCOUNT_DELTA_DAMAGE );
++			if ( pNewAccount )
++			{
++				Vector vecDistance = pos - pLocalPlayer->GetAbsOrigin();
++				int nHeightoffset = RemapValClamped( vecDistance.LengthSqr(), 0.0f, (200.0f * 200.0f), 1, 16 );
++				pNewAccount->m_nX = pos.x;
++				pNewAccount->m_nXEnd = pNewAccount->m_nX;
++				pNewAccount->m_nY = pos.y;
++				pNewAccount->m_nHStart = pos.z + nHeightoffset;
++				pNewAccount->m_nHEnd = pNewAccount->m_nHStart + 32;	// how many units to float up
++				pNewAccount->m_bWorldSpace = true;
++				pNewAccount->m_nSourceID = -1;
++				pNewAccount->m_flBatchWindow = 0.f;
++				pNewAccount->m_bLargeFont = false;
++			}
++		}
++		m_flLastDamageEventTime = gpGlobals->curtime;
++	}
++
+ 	//-----------------------------------------------------------------------------
+ 	// Purpose: 
+ 	//-----------------------------------------------------------------------------
+@@ -970,6 +1020,14 @@ void CDamageAccountPanel::Paint( void )
+ 
+ DECLARE_HUDELEMENT( CDamageAccountPanel );
+ 
++// FortCraft: see CDamageAccountPanel::FortCraft_ShowMobHit.
++void FortCraft_ShowMobHit( const Vector &pos, int iDamage, bool bKilled )
++{
++	CDamageAccountPanel *pPanel = GET_HUDELEMENT( CDamageAccountPanel );
++	if ( pPanel )
++		pPanel->FortCraft_ShowMobHit( pos, iDamage, bKilled );
++}
++
+ //-----------------------------------------------------------------------------
+ // Purpose: 
+ //-----------------------------------------------------------------------------
+diff --git a/src/game/client/tf/tf_hud_target_id.cpp b/src/game/client/tf/tf_hud_target_id.cpp
+index 9f9a2db..61777d0 100644
+--- a/src/game/client/tf/tf_hud_target_id.cpp
++++ b/src/game/client/tf/tf_hud_target_id.cpp
+@@ -31,6 +31,7 @@
+ #include "tf_dropped_weapon.h"
+ #include "econ/econ_item_description.h"
+ #include "inputsystem/iinputsystem.h"
++#include "../../../../../my-passthrough/tf2mod/fortcraft_collision.h"
+ 
+ // memdbgon must be the last include file in a .cpp file!!!
+ #include "tier0/memdbgon.h"
+@@ -205,6 +206,8 @@ void CTargetID::FireGameEvent( IGameEvent * event )
+ bool CTargetID::DrawHealthIcon() 
+ {
+ 	C_BaseEntity *pEnt = cl_entitylist->GetEnt( GetTargetIndex() );
++	if ( FortCraft_IsMedicProxy( pEnt ) )
++		return true;
+ 	if ( pEnt && pEnt->IsBaseObject() )
+ 		return true;
+ 
+@@ -751,7 +754,20 @@ void CTargetID::UpdateID( void )
+ 		// Some entities we always want to check, cause the text may change
+ 		// even while we're looking at it
+ 		// Is it a player?
+-		if ( IsPlayerIndex( m_iTargetEntIndex ) )
++		if ( FortCraft_IsMedicProxy( pEnt ) )
++		{
++			char name[64];
++			if ( FortCraft_MedicTargetInfo( name, sizeof( name ), &flHealth, &flMaxHealth ) )
++			{
++				wchar_t wideName[64];
++				V_UTF8ToUnicode( name, wideName, sizeof( wideName ) );
++				g_pVGuiLocalize->ConstructString_safe( sIDString, L"Healing: %s1", 1, wideName );
++				bShowHealth = true;
++				iMaxBuffedHealth = (int)flMaxHealth;
++				iTargetTeam = pLocalTFPlayer->GetTeamNumber();
++			}
++		}
++		else if ( IsPlayerIndex( m_iTargetEntIndex ) )
+ 		{
+ 			const char *printFormatString = NULL;
+ 			wchar_t wszPlayerName[ MAX_PLAYER_NAME_LENGTH ];
+diff --git a/src/game/client/tf/vgui/crafting_panel.cpp b/src/game/client/tf/vgui/crafting_panel.cpp
+index 7137243..6dbd54d 100644
+--- a/src/game/client/tf/vgui/crafting_panel.cpp
++++ b/src/game/client/tf/vgui/crafting_panel.cpp
+@@ -36,6 +36,11 @@
+ #include "item_selection_criteria.h"
+ #include "rtime.h"
+ #include "c_tf_freeaccount.h"
++#include "../../../../../../my-passthrough/tf2mod/fortcraft_link.h"
++
++// FortCraft: Minecraft's 2x2 recipes appear as recipe buttons with these ids (-1000 - index).
++#define FORTCRAFT_RECIPE_BASE						-1000
++static int FortCraftRecipeIndex( int iRecipe ) { return iRecipe <= FORTCRAFT_RECIPE_BASE ? FORTCRAFT_RECIPE_BASE - iRecipe : -1; }
+ 
+ // memdbgon must be the last include file in a .cpp file!!!
+ #include <tier0/memdbgon.h>
+@@ -364,14 +369,30 @@ void CCraftingPanel::UpdateRecipeFilter( void )
+ 	m_iCurrentRecipeTotalInputs = 0;
+ 	m_iCurrentRecipeTotalOutputs = 0;
+ 
++	// FortCraft: only the first category for now (Minecraft recipes); the others come later.
++	m_iRecipeCategoryFilter = (recipecategories_t)0;
+ 	FOR_EACH_VEC( m_pRecipeFilterButtons, i )
+ 	{
+ 		bool bForceDepressed = ( i == m_iRecipeCategoryFilter );
+ 		m_pRecipeFilterButtons[i]->ForceDepressed( bForceDepressed );
++		m_pRecipeFilterButtons[i]->SetVisible( i == 0 );
++	}
++
++	// FortCraft: the Minecraft recipes the inventory can make right now, first in every category.
++	m_nFortCraftRecipesVersion = FortCraft_RecipesVersion();
++	for ( int k = 0; k < FortCraft_RecipeCount(); k++ )
++	{
++		wchar_t wName[256];
++		g_pVGuiLocalize->ConvertANSIToUnicode( CFmtStr( "Minecraft: %s", FortCraft_RecipeName( k ) ), wName, sizeof( wName ) );
++		SetButtonToRecipe( iMatchingRecipes, FORTCRAFT_RECIPE_BASE - k, wName );
++		iMatchingRecipes++;
+ 	}
+ 
++	// FortCraft: TF2's own recipes are hidden; only Minecraft's 2x2 recipes are offered.
++	const bool bShowTF2Recipes = false;
++
+ 	// Loop through the known recipes, and see which ones match our category filter
+-	for ( int i = 0; i < TFInventoryManager()->GetLocalTFInventory()->GetRecipeCount(); i++ )
++	for ( int i = 0; bShowTF2Recipes && i < TFInventoryManager()->GetLocalTFInventory()->GetRecipeCount(); i++ )
+ 	{
+ 		const CEconCraftingRecipeDefinition *pRecipeDef = TFInventoryManager()->GetLocalTFInventory()->GetRecipeDef(i);
+ 		if ( !pRecipeDef )
+@@ -392,7 +413,7 @@ void CCraftingPanel::UpdateRecipeFilter( void )
+ 	}
+ 
+ 	// Add a "Custom" option to the bottom of the Special recipe list
+-	if ( m_iRecipeCategoryFilter == RECIPE_CATEGORY_SPECIAL )
++	if ( bShowTF2Recipes && m_iRecipeCategoryFilter == RECIPE_CATEGORY_SPECIAL )
+ 	{
+ 		SetButtonToRecipe( iMatchingRecipes, RECIPE_CUSTOM, g_pVGuiLocalize->Find("#Craft_Recipe_Custom") );	
+ 		iMatchingRecipes++;
+@@ -542,6 +563,22 @@ void CCraftingPanel::UpdateRecipeItems( bool bClearInputItems )
+ 	if ( m_iCurrentlySelectedRecipe == -1 )
+ 		return;
+ 
++	// FortCraft: a Minecraft recipe shows what it uses (the backpack's own block items) and its
++	// result (a preview item with the Minecraft icon); the slots aren't filled by hand.
++	const int iFortCraft = FortCraftRecipeIndex( m_iCurrentlySelectedRecipe );
++	if ( iFortCraft >= 0 )
++	{
++		for ( int k = 0; k < 4 && k < CRAFTING_SLOTS_INPUTPANELS; k++ )
++		{
++			m_InputItems[k] = FortCraft_RecipeIngredientItem( iFortCraft, k );
++			if ( m_InputItems[k] || k < 1 )
++				m_iCurrentRecipeTotalInputs = k + 1;
++		}
++		m_iCurrentRecipeTotalOutputs = 1;
++		UpdateCraftButton();
++		return;
++	}
++
+ 	/*
+ 	// Build lists of items divided by class & loadout slot, so recipes can quickly test themselves
+ 	CUtlVector<CEconItem*> vecAllItems;
+@@ -688,6 +725,21 @@ void CCraftingPanel::UpdateCraftButton( void )
+ 	if ( m_iCurrentlySelectedRecipe == -1 )
+ 		return;
+ 
++	// FortCraft: a listed Minecraft recipe can always be crafted (Minecraft only lists those).
++	if ( FortCraftRecipeIndex( m_iCurrentlySelectedRecipe ) >= 0 )
++	{
++		if ( m_pCraftButton )
++		{
++			m_pCraftButton->SetVisible( true );
++			m_pCraftButton->SetEnabled( true );
++		}
++		if ( m_pUpgradeButton )
++			m_pUpgradeButton->SetVisible( false );
++		if ( m_pFreeAccountLabel )
++			m_pFreeAccountLabel->SetVisible( false );
++		return;
++	}
++
+ 	bool bAllowedToUse = true;
+ 
+ 	const CEconCraftingRecipeDefinition *pRecipeDef = NULL;
+@@ -855,6 +907,21 @@ void CCraftingPanel::UpdateModelPanels( void )
+ 		}
+ 	}
+ 
++	// FortCraft: the result tile of a Minecraft recipe.
++	const int iFortCraft = FortCraftRecipeIndex( m_iCurrentlySelectedRecipe );
++	if ( iFortCraft >= 0 && CRAFTING_SLOTS_INPUTPANELS < m_pItemModelPanels.Count() )
++	{
++		CEconItemView resultItem;
++		const itemid_t resultID = FortCraft_RecipeResultItem( iFortCraft );
++		if ( resultID )
++		{
++			resultItem.Init( 5000, AE_UNIQUE, 1, TFInventoryManager()->GetLocalTFInventory()->GetOwner().GetAccountID() );
++			resultItem.SetItemID( resultID );
++		}
++		m_pItemModelPanels[CRAFTING_SLOTS_INPUTPANELS]->SetItem( resultID ? &resultItem : NULL );
++		m_pItemModelPanels[CRAFTING_SLOTS_INPUTPANELS]->SetVisible( true );
++	}
++
+ 	vgui::Panel *pLabel = m_pSelectedRecipeContainer->FindChildByName("OutputLabel");
+ 	if ( pLabel )
+ 	{
+@@ -911,6 +978,13 @@ void CCraftingPanel::UpdateSelectedRecipe( bool bClearInputItems )
+ 			{
+ 				m_pSelectedRecipeContainer->SetDialogVariable( "recipeinputstring", g_pVGuiLocalize->Find("#Craft_Recipe_CustomDesc") );
+ 			}
++			else if ( FortCraftRecipeIndex( m_iCurrentlySelectedRecipe ) >= 0 )
++			{
++				// FortCraft: what the Minecraft recipe uses, taken from the backpack's last page.
++				wchar_t wInputs[512];
++				g_pVGuiLocalize->ConvertANSIToUnicode( CFmtStr( "Uses: %s", FortCraft_RecipeInputs( FortCraftRecipeIndex( m_iCurrentlySelectedRecipe ) ) ), wInputs, sizeof( wInputs ) );
++				m_pSelectedRecipeContainer->SetDialogVariable( "recipeinputstring", wInputs );
++			}
+ 			else
+ 			{
+ 				const CTFCraftingRecipeDefinition *pRecipeDef = (CTFCraftingRecipeDefinition*)TFInventoryManager()->GetLocalTFInventory()->GetRecipeDefByDefIndex( m_iCurrentlySelectedRecipe );
+@@ -1041,6 +1115,9 @@ void CCraftingPanel::OnItemPanelMousePressed( vgui::Panel *panel )
+ {
+ 	CItemModelPanel *pItemPanel = dynamic_cast < CItemModelPanel * > ( panel );
+ 
++	if ( FortCraftRecipeIndex( m_iCurrentlySelectedRecipe ) >= 0 )
++		return;  // FortCraft: a Minecraft recipe's slots show its items; nothing to pick
++
+ 	if ( pItemPanel && IsVisible() && !pItemPanel->IsGreyedOut() )
+ 	{
+ 		int iPos = GetItemPanelIndex(pItemPanel);
+@@ -1114,8 +1191,56 @@ bool CCraftingPanel::CheckForUntradableItems( void )
+ //-----------------------------------------------------------------------------
+ // Purpose: 
+ //-----------------------------------------------------------------------------
++//-----------------------------------------------------------------------------
++// FortCraft: when Minecraft sends a new recipe list (after crafting, or the inventory changed),
++// rebuild the buttons and keep the same recipe selected if it's still there.
++//-----------------------------------------------------------------------------
++void CCraftingPanel::OnThink( void )
++{
++	BaseClass::OnThink();
++
++	// A finished craft: TF2's metal pickup sound.
++	bool bOk = false;
++	const unsigned int nResults = FortCraft_CraftResults( &bOk );
++	if ( m_nFortCraftResultsSeen == 0xFFFFFFFF )
++		m_nFortCraftResultsSeen = nResults;
++	if ( nResults != m_nFortCraftResultsSeen )
++	{
++		m_nFortCraftResultsSeen = nResults;
++		if ( bOk && IsVisible() )
++			vgui::surface()->PlaySound( "ui/item_metal_scrap_pickup.wav" );
++	}
++
++	if ( !IsVisible() || FortCraft_RecipesVersion() == m_nFortCraftRecipesVersion )
++		return;
++	char szSelected[64] = "";
++	const int iOld = FortCraftRecipeIndex( m_iCurrentlySelectedRecipe );
++	if ( iOld >= 0 )
++		V_strncpy( szSelected, FortCraft_RecipeName( iOld ), sizeof( szSelected ) );
++	UpdateRecipeFilter();
++	if ( iOld < 0 )
++		return;
++	for ( int k = 0; k < FortCraft_RecipeCount(); k++ )
++	{
++		if ( !V_strcmp( FortCraft_RecipeName( k ), szSelected ) )
++		{
++			m_iCurrentlySelectedRecipe = FORTCRAFT_RECIPE_BASE - k;
++			UpdateSelectedRecipe( true );
++			UpdateCraftButton();
++			break;
++		}
++	}
++}
++
+ void CCraftingPanel::Craft( void )
+ {
++	// FortCraft: Minecraft crafts it; the backpack's last page updates by itself.
++	if ( FortCraftRecipeIndex( m_iCurrentlySelectedRecipe ) >= 0 )
++	{
++		FortCraft_CraftRecipe( FortCraftRecipeIndex( m_iCurrentlySelectedRecipe ) );
++		return;
++	}
++
+ 	// Build our list of items that we're trying to craft
+ 	++m_iCraftingAttempts;
+ 	CUtlVector<itemid_t> vecCraftingItems;
+diff --git a/src/game/client/tf/vgui/crafting_panel.h b/src/game/client/tf/vgui/crafting_panel.h
+index 5730615..b20cce0 100644
+--- a/src/game/client/tf/vgui/crafting_panel.h
++++ b/src/game/client/tf/vgui/crafting_panel.h
+@@ -115,6 +115,7 @@ public:
+ 	void		 OnCraftResponse( EGCMsgResponse eResponse, CUtlVector<uint64> *vecCraftedIndices, int iRecipeUsed );
+ 	void		 ShowCraftFinish( void );
+ 	virtual void OnTick( void );
++	virtual void OnThink( void );	// FortCraft: refresh when Minecraft's recipe list changes
+ 	void		 CleanupPostCraft( bool bClearInputItems );
+ 
+ 	MESSAGE_FUNC_PTR( OnItemPanelMousePressed, "ItemPanelMousePressed", panel );
+@@ -156,6 +157,8 @@ private:
+ 	int								m_iNewRecipeIndex;
+ 	bool							m_bEventLogging;
+ 	int								m_iCraftingAttempts;
++	unsigned int					m_nFortCraftRecipesVersion = 0;	// FortCraft: Minecraft recipe list shown
++	unsigned int					m_nFortCraftResultsSeen = 0xFFFFFFFF;	// FortCraft: craft answers heard
+ 
+ 	CTFTextToolTip					*m_pToolTip;
+ 	vgui::EditablePanel				*m_pToolTipEmbeddedPanel;
+diff --git a/src/game/client/view.cpp b/src/game/client/view.cpp
+index de0c0b0..4c55ba5 100644
+--- a/src/game/client/view.cpp
++++ b/src/game/client/view.cpp
+@@ -59,7 +59,10 @@
+ #include "c_prop_portal.h" //portal surface rendering functions
+ #endif
+ 
+-	
++#ifdef TF_CLIENT_DLL
++#include "../../../../my-passthrough/tf2mod/fortcraft_link.h"
++#endif
++
+ // memdbgon must be the last include file in a .cpp file!!!
+ #include "tier0/memdbgon.h"
+ 		  
+@@ -1138,6 +1141,12 @@ void CViewRender::Render( vrect_t *rect )
+ 		if( viewEye.m_flAspectRatio <= 0.f )
+ 			viewEye.m_flAspectRatio	= (float)viewEye.width / (float)viewEye.height;
+ 
++#ifdef TF_CLIENT_DLL
++		// FortCraft: render with Minecraft's exact field of view and screen shape, so TF2's
++		// effects line up with Minecraft's world when Minecraft stretches the picture to its window.
++		FortCraft_OverrideView( viewEye.fov, viewEye.m_flAspectRatio, viewEye.origin, viewEye.angles );
++#endif
++
+ 	    int nClearFlags = VIEW_CLEAR_DEPTH | VIEW_CLEAR_STENCIL;
+ 
+ 	    if( gl_clear_randomcolor.GetBool() )
+diff --git a/src/game/client/viewrender.cpp b/src/game/client/viewrender.cpp
+index b4011e2..c08e6d0 100644
+--- a/src/game/client/viewrender.cpp
++++ b/src/game/client/viewrender.cpp
+@@ -80,6 +80,10 @@
+ // Projective textures
+ #include "C_Env_Projected_Texture.h"
+ 
++#ifdef TF_CLIENT_DLL
++#include "../../../../my-passthrough/tf2mod/fortcraft_link.h"
++#endif
++
+ // memdbgon must be the last include file in a .cpp file!!!
+ #include "tier0/memdbgon.h"
+ 
+@@ -2156,6 +2160,12 @@ void CViewRender::RenderView( const CViewSetup &viewRender, int nClearFlags, int
+ 
+ 		GetClientModeNormal()->DoPostScreenSpaceEffects( &viewRender );
+ 
++#ifdef TF_CLIENT_DLL
++		// FortCraft: normally already done at the start of the 3D view (DrawWorld); this only
++		// acts if that didn't run this frame.
++		FortCraft_ClearForOverlay();
++#endif
++
+ 		// Now actually draw the viewmodel
+ 		DrawViewModels( viewRender, whatToDraw & RENDERVIEW_DRAWVIEWMODEL );
+ 
+@@ -2403,6 +2413,12 @@ void CViewRender::RenderView( const CViewSetup &viewRender, int nClearFlags, int
+ 		// maybe paint the main menu and cursor too if we're in stereo hud mode
+ 		if( bPaintMainMenu )
+ 			render->VGui_Paint( PAINT_UIPANELS | PAINT_CURSOR );
++#ifdef TF_CLIENT_DLL
++		// FortCraft: TF2's main menu and loadout live in this layer; while one is open, paint it
++		// into the overlay too, so Minecraft shows it.
++		else if ( FortCraft_UiOpen() )
++			render->VGui_Paint( PAINT_UIPANELS );
++#endif
+ 
+ 		AllowCurrentViewAccess( false );
+ 
+@@ -2441,6 +2457,12 @@ void CViewRender::RenderView( const CViewSetup &viewRender, int nClearFlags, int
+ 		pRenderContext.SafeRelease();
+ 	}
+ 
++#ifdef TF_CLIENT_DLL
++	// FortCraft: send the finished weapon + HUD frame to Minecraft.
++	if ( whatToDraw & RENDERVIEW_DRAWHUD )
++		FortCraft_ReadOverlay( viewRender.m_nUnscaledWidth, viewRender.m_nUnscaledHeight );
++#endif
++
+ 	CDebugViewRender::Draw2DDebuggingInfo( viewRender );
+ 
+ 	Render2DEffectsPostHUD( viewRender );
+@@ -3660,6 +3682,12 @@ void CRendering3dView::DrawWorld( float waterZAdjust )
+ {
+ 	VPROF_INCREMENT_COUNTER( "RenderWorld", 1 );
+ 	VPROF_BUDGET( "DrawWorld", VPROF_BUDGETGROUP_WORLD_RENDERING );
++#ifdef TF_CLIENT_DLL
++	// FortCraft: before entities are drawn, blank the screen and put Minecraft's blocks into the
++	// depth buffer, so TF2's rockets and effects go into Minecraft's picture, hidden behind blocks.
++	if ( CurrentViewID() == VIEW_MAIN )
++		FortCraft_ClearForOverlay();
++#endif
+ 	if( !r_drawopaqueworld.GetBool() )
+ 	{
+ 		return;
+diff --git a/src/game/server/gameinterface.cpp b/src/game/server/gameinterface.cpp
+index eb99cdf..e2e5588 100644
+--- a/src/game/server/gameinterface.cpp
++++ b/src/game/server/gameinterface.cpp
+@@ -148,6 +148,10 @@ CSteamGameServerAPIContext *steamgameserverapicontext = &s_SteamGameServerAPICon
+ 
+ IUploadGameStats *gamestatsuploader = NULL;
+ 
++#ifdef TF_DLL
++#include "../../../../my-passthrough/tf2mod/fortcraft_collision.h"
++#endif
++
+ // memdbgon must be the last include file in a .cpp file!!!
+ #include "tier0/memdbgon.h"
+ 
+@@ -2505,6 +2509,9 @@ void CServerGameEnts::CheckTransmit( CCheckTransmitInfo *pInfo, const unsigned s
+ 		    bIsReplay == ( pInfo->m_pTransmitAlways != NULL) );
+ #endif
+ 
++#ifdef TF_DLL
++	const bool bFortCraftSendAll = FortCraft_Active();
++#endif
+ 	for ( int i=0; i < nEdicts; i++ )
+ 	{
+ 		int iEdict = pEdictIndices[i];
+@@ -2512,6 +2519,12 @@ void CServerGameEnts::CheckTransmit( CCheckTransmitInfo *pInfo, const unsigned s
+ 		edict_t *pEdict = &pBaseEdict[iEdict];
+ 		Assert( pEdict == engine->PEntityOfEntIndex( iEdict ) );
+ 		int nFlags = pEdict->m_fStateFlags & (FL_EDICT_DONTSEND|FL_EDICT_ALWAYS|FL_EDICT_PVSCHECK|FL_EDICT_FULLCHECK);
++#ifdef TF_DLL
++		// FortCraft: the player stands outside TF2's map, where TF2's visibility check hides
++		// everything (rockets vanished away from the map). While linked, send everything.
++		if ( bFortCraftSendAll && !( nFlags & FL_EDICT_DONTSEND ) )
++			nFlags = FL_EDICT_ALWAYS;
++#endif
+ 
+ 		// entity needs no transmit
+ 		if ( nFlags & FL_EDICT_DONTSEND )
+diff --git a/src/game/server/physics_main.cpp b/src/game/server/physics_main.cpp
+index 7a2eaff..5c0331a 100644
+--- a/src/game/server/physics_main.cpp
++++ b/src/game/server/physics_main.cpp
+@@ -37,6 +37,9 @@
+ #include "vphysicsupdateai.h"
+ #include "tier0/vcrmode.h"
+ #include "pushentity.h"
++#ifdef TF_DLL
++#include "../../../../my-passthrough/tf2mod/fortcraft_collision.h"
++#endif
+ 
+ // memdbgon must be the last include file in a .cpp file!!!
+ #include "tier0/memdbgon.h"
+@@ -97,6 +100,18 @@ static void PhysicsCheckSweep( CBaseEntity *pEntity, const Vector& vecAbsStart,
+ 	}
+ 
+ 	Physics_TraceEntity( pEntity, vecAbsStart, vecAbsEnd, mask, pTrace );
++
++#ifdef TF_DLL
++	// FortCraft: while linked to Minecraft, projectiles and other flying things ignore the TF2
++	// map (it's invisible) and hit Minecraft's blocks instead. Players and buildings still count.
++	if ( FortCraft_Active() )
++	{
++		if ( pTrace->m_pEnt && pTrace->m_pEnt->IsWorld() )
++			FortCraft_ClearTrace( vecAbsStart, vecAbsEnd, *pTrace );
++		if ( mask & CONTENTS_SOLID )
++			FortCraft_ClipHullTrace( vecAbsStart, vecAbsEnd, pEntity->CollisionProp()->OBBMins(), pEntity->CollisionProp()->OBBMaxs(), *pTrace );
++	}
++#endif
+ }
+ 
+ CPhysicsPushedEntities s_PushedEntities;
+diff --git a/src/game/server/player.cpp b/src/game/server/player.cpp
+index b8a0519..a7b5dd5 100644
+--- a/src/game/server/player.cpp
++++ b/src/game/server/player.cpp
+@@ -8725,6 +8725,10 @@ const QAngle& CBasePlayer::GetPunchAngle()
+ 
+ void CBasePlayer::SetPunchAngle( const QAngle &punchAngle )
+ {
++	// FortCraft: no recoil (see sv_suppress_viewpunch in baseplayer_shared.cpp).
++	extern ConVar sv_suppress_viewpunch;
++	if ( sv_suppress_viewpunch.GetBool() && punchAngle != vec3_angle )
++		return;
+ 	m_Local.m_vecPunchAngle = punchAngle;
+ 
+ 	if ( IsAlive() )
+diff --git a/src/game/server/recipientfilter.cpp b/src/game/server/recipientfilter.cpp
+index 64889b3..7823fd8 100644
+--- a/src/game/server/recipientfilter.cpp
++++ b/src/game/server/recipientfilter.cpp
+@@ -9,6 +9,12 @@
+ #include "recipientfilter.h"
+ #include "team.h"
+ #include "ipredictionsystem.h"
++#ifdef TF_DLL
++#include "../../../../my-passthrough/tf2mod/fortcraft_collision.h"
++#define FORTCRAFT_EVERYONE || FortCraft_Active()
++#else
++#define FORTCRAFT_EVERYONE
++#endif
+ 
+ // memdbgon must be the last include file in a .cpp file!!!
+ #include "tier0/memdbgon.h"
+@@ -233,7 +239,9 @@ void CRecipientFilter::RemovePlayersFromBitMask( CBitVec< ABSOLUTE_PLAYER_LIMIT
+ 
+ void CRecipientFilter::AddRecipientsByPVS( const Vector& origin )
+ {
+-	if ( gpGlobals->maxClients == 1 )
++	// FortCraft: while linked the player is outside TF2's map, where TF2's visibility says
++	// nothing can be seen or heard; send effects and sounds to everyone instead.
++	if ( gpGlobals->maxClients == 1 FORTCRAFT_EVERYONE )
+ 	{
+ 		AddAllPlayers();
+ 	}
+@@ -263,7 +271,9 @@ void CRecipientFilter::RemoveRecipientsByPVS( const Vector& origin )
+ 
+ void CRecipientFilter::AddRecipientsByPAS( const Vector& origin )
+ {
+-	if ( gpGlobals->maxClients == 1 )
++	// FortCraft: while linked the player is outside TF2's map, where TF2's visibility says
++	// nothing can be seen or heard; send effects and sounds to everyone instead.
++	if ( gpGlobals->maxClients == 1 FORTCRAFT_EVERYONE )
+ 	{
+ 		AddAllPlayers();
+ 	}
+diff --git a/src/game/server/server_tf.vpc b/src/game/server/server_tf.vpc
+index 427c93d..b6c3886 100644
+--- a/src/game/server/server_tf.vpc
++++ b/src/game/server/server_tf.vpc
+@@ -121,6 +121,9 @@ $Project "Server (TF)"
+ 			$File	"$SRCDIR\game\shared\tf\passtime_convars.h"
+ 			$File	"$SRCDIR\game\shared\tf\trigger_catapult_shared.cpp"
+ 			$File	"tf\countdown_announcer.h"
++			$File	"..\..\..\..\my-passthrough\tf2mod\fortcraft_collision.cpp"
++			$File	"..\..\..\..\my-passthrough\tf2mod\fortcraft_collision.h"
++			$File	"..\..\..\..\my-passthrough\tf2mod\fortcraft_trace.cpp"
+ 			$File	"tf\entity_passtime_ball_spawn.cpp"
+ 			$File	"tf\entity_passtime_ball_spawn.h"
+ 			$File	"tf\func_passtime_goal.cpp"
+diff --git a/src/game/server/tf/tf_obj.cpp b/src/game/server/tf/tf_obj.cpp
+index c7a9e93..8bdedb0 100644
+--- a/src/game/server/tf/tf_obj.cpp
++++ b/src/game/server/tf/tf_obj.cpp
+@@ -44,6 +44,7 @@
+ #include "tf_weapon_wrench.h"
+ #include "tf_weapon_grenade_pipebomb.h"
+ #include "tf_weapon_builder.h"
++#include "../../../../../my-passthrough/tf2mod/fortcraft_collision.h"
+ 
+ #include "player_vs_environment/tf_population_manager.h"
+ 
+@@ -1156,7 +1157,20 @@ bool CBaseObject::UpdatePlacement( void )
+ 	
+ 	// Finds bsp-valid place for building to be built
+ 	// Checks for validity, nearby to other entities, in line of sight
++	const bool bWasPlacementOK = m_bPlacementOK;
+ 	m_bPlacementOK = IsPlacementPosValid();
++	if ( FortCraft_Active() )
++	{
++		static int s_nPlacementLogs = 0;
++		if ( s_nPlacementLogs < 8 || bWasPlacementOK != m_bPlacementOK )
++		{
++			if ( s_nPlacementLogs < 32 )
++				Msg( "FortCraft building placement: type=%d ent=%d valid=%d pos=(%.0f %.0f %.0f)\n",
++					ObjectType(), entindex(), m_bPlacementOK ? 1 : 0,
++					m_vecBuildOrigin.x, m_vecBuildOrigin.y, m_vecBuildOrigin.z );
++			++s_nPlacementLogs;
++		}
++	}
+ 
+ 	Teleport( &m_vecBuildOrigin, &GetLocalAngles(), NULL );
+ 
+@@ -1476,6 +1490,9 @@ bool CBaseObject::StartBuilding( CBaseEntity *pBuilder )
+ 	{
+ 		DoQuickBuild();
+ 	}
++	if ( FortCraft_Active() )
++		Msg( "FortCraft building construction started: type=%d ent=%d pos=(%.0f %.0f %.0f)\n",
++			ObjectType(), entindex(), GetAbsOrigin().x, GetAbsOrigin().y, GetAbsOrigin().z );
+ 
+ 	return true;
+ }
+@@ -1552,6 +1569,9 @@ void CBaseObject::SetControlPanelsActive( bool bState )
+ //-----------------------------------------------------------------------------
+ void CBaseObject::FinishedBuilding( void )
+ {
++	if ( FortCraft_Active() )
++		Msg( "FortCraft building active: type=%d ent=%d pos=(%.0f %.0f %.0f)\n",
++			ObjectType(), entindex(), GetAbsOrigin().x, GetAbsOrigin().y, GetAbsOrigin().z );
+ 	SetControlPanelsActive( true );
+ 
+ 	// Only make a shadow if the object doesn't use vphysics
+diff --git a/src/game/server/tf/tf_obj_sentrygun.cpp b/src/game/server/tf/tf_obj_sentrygun.cpp
+index aa261cb..7be8dde 100644
+--- a/src/game/server/tf/tf_obj_sentrygun.cpp
++++ b/src/game/server/tf/tf_obj_sentrygun.cpp
+@@ -25,6 +25,7 @@
+ #include "tf_weapon_knife.h"
+ #include "tf_logic_robot_destruction.h"
+ #include "tf_target_dummy.h"
++#include "../../../../../my-passthrough/tf2mod/fortcraft_collision.h"
+ 
+ // memdbgon must be the last include file in a .cpp file!!!
+ #include "tier0/memdbgon.h"
+@@ -282,6 +283,16 @@ void CObjectSentrygun::SentryThink( void )
+ 		break;
+ 
+ 	case SENTRY_STATE_SEARCHING:
++		// FortCraft: a hostile Minecraft mob in view starts the attack, like a TF2 enemy would.
++		{
++			Vector vecMob;
++			if ( !IsUsingReverseBuild() && FortCraft_NearestHostileMob( EyePosition(), m_flSentryRange, vecMob ) )
++			{
++				m_iState.Set( SENTRY_STATE_ATTACKING );
++				EmitSentrySound( "Building_Sentrygun.Alert" );
++				break;
++			}
++		}
+ 		SentryRotate();
+ 		break;
+ 
+@@ -302,6 +313,14 @@ void CObjectSentrygun::SentryThink( void )
+ 		m_vecGoalAngles.x = 0;
+ 	}
+ 
++	// FortCraft: unlimited sentry ammo while testing (see fortcraft_infinite_ammo in tf_player.cpp).
++	extern ConVar fortcraft_infinite_ammo;
++	if ( fortcraft_infinite_ammo.GetBool() )
++	{
++		m_iAmmoShells = m_iMaxAmmoShells;
++		m_iAmmoRockets = m_iMaxAmmoRockets;
++	}
++
+ 	// infinite ammo for enemy team in MvM mode
+ 	if ( TFGameRules()->IsMannVsMachineMode() && GetTeamNumber() == TF_TEAM_PVE_INVADERS )
+ 	{
+@@ -1228,8 +1247,10 @@ void CObjectSentrygun::Attack()
+ 
+ 	if ( IsUsingReverseBuild() || !FindTarget() )
+ 	{
+-		m_iState.Set( SENTRY_STATE_SEARCHING );
+ 		m_hEnemy = NULL;
++		if ( !IsUsingReverseBuild() && FortCraft_AttackMob() )
++			return;  // FortCraft: no TF2 enemy, but a hostile Minecraft mob
++		m_iState.Set( SENTRY_STATE_SEARCHING );
+ 		return;
+ 	}
+ 
+@@ -1307,6 +1328,106 @@ void CObjectSentrygun::Attack()
+ 	}
+ }
+ 
++//-----------------------------------------------------------------------------
++// FortCraft: aim at and shoot the nearest hostile Minecraft mob in range and in view. TF2 sees
++// the mob only as a box, so the bullets are fired for the look (tracer, muzzle flash, sound) and
++// the hit is sent to Minecraft as a shot, where the damage is applied. Level 3 sentries also fire
++// their rockets at it (a real TF2 rocket: its blast hurts mobs in Minecraft). Returns false if
++// there is no such mob.
++//-----------------------------------------------------------------------------
++bool CObjectSentrygun::FortCraft_AttackMob( void )
++{
++	Vector vecTarget;
++	if ( !FortCraft_NearestHostileMob( EyePosition(), m_flSentryRange, vecTarget ) )
++		return false;
++
++	Vector vecDirToEnemy = vecTarget - EyePosition();
++	QAngle angToTarget;
++	VectorAngles( vecDirToEnemy, angToTarget );
++	angToTarget.y = UTIL_AngleMod( angToTarget.y );
++	if ( angToTarget.x < -180 )
++		angToTarget.x += 360;
++	if ( angToTarget.x > 180 )
++		angToTarget.x -= 360;
++	angToTarget.x = clamp( angToTarget.x, -50.0f, 50.0f );
++	m_vecGoalAngles.y = angToTarget.y;
++	m_vecGoalAngles.x = angToTarget.x;
++	MoveTurret();
++
++	if ( ( m_vecGoalAngles - m_vecCurAngles ).Length() > 10 )
++		return true;
++
++	// Level 3: a rocket every 3 seconds, like at a TF2 enemy.
++	if ( m_iUpgradeLevel == 3 && m_iAmmoRockets > 0 && m_flNextRocketAttack < gpGlobals->curtime )
++	{
++		Vector vecRocketSrc;
++		QAngle angUnused;
++		GetAttachment( m_iAttachments[ SENTRYGUN_ATTACHMENT_ROCKET ], vecRocketSrc, angUnused );
++		QAngle angAim;
++		VectorAngles( vecTarget - vecRocketSrc, angAim );
++		EmitSentrySound( "Building_Sentrygun.FireRocket" );
++		CTFProjectile_SentryRocket *pRocket = CTFProjectile_SentryRocket::Create( vecRocketSrc, angAim, this, GetBuilder() );
++		if ( pRocket )
++		{
++			int iDamage = 100;
++			CALL_ATTRIB_HOOK_INT_ON_OTHER( GetOwner(), iDamage, mult_engy_sentry_damage );
++			pRocket->SetDamage( iDamage );
++		}
++		AddGesture( ACT_RANGE_ATTACK2 );
++		m_flNextRocketAttack = gpGlobals->curtime + 3;
++		m_iAmmoRockets--;
++		Msg( "FortCraft: sentry %d fired a rocket at a hostile Minecraft mob\n", entindex() );
++	}
++
++	if ( m_flNextAttack > gpGlobals->curtime )
++		return true;
++	m_flNextAttack = gpGlobals->curtime + ( m_iUpgradeLevel == 1 ? 0.2f : 0.1f );
++	if ( m_iAmmoShells <= 0 )
++		return true;
++
++	if ( !IsPlayingGesture( ACT_RANGE_ATTACK1 ) )
++	{
++		RemoveGesture( ACT_RANGE_ATTACK1_LOW );
++		AddGesture( ACT_RANGE_ATTACK1 );
++	}
++
++	int iAttachment = GetFireAttachment();
++	Vector vecSrc;
++	QAngle vecAng;
++	GetAttachment( iAttachment, vecSrc, vecAng );
++	Vector vecAimDir = vecTarget - vecSrc;
++	const float flDist = vecAimDir.NormalizeInPlace();
++
++	FireBulletsInfo_t info;
++	info.m_vecSrc = vecSrc;
++	info.m_vecDirShooting = vecAimDir;
++	info.m_iTracerFreq = 1;
++	info.m_iShots = 1;
++	info.m_pAttacker = GetBuilder() ? (CBaseEntity *)GetBuilder() : (CBaseEntity *)this;
++	info.m_vecSpread = vec3_origin;
++	info.m_flDistance = flDist + 100;
++	info.m_iAmmoType = m_iAmmoType;
++	info.m_flDamage = IsMiniBuilding() ? tf_sentrygun_mini_damage.GetFloat() : tf_sentrygun_damage.GetFloat();
++	CALL_ATTRIB_HOOK_FLOAT_ON_OTHER( GetOwner(), info.m_flDamage, mult_engy_sentry_damage );
++	FireBullets( info );
++	// At least 4 blocks: shorter shots count as melee swings in Minecraft's shot reader.
++	FortCraft_ReportShot( vecSrc, vecAimDir, MAX( flDist + 100.0f, 200.0f ), info.m_flDamage );
++
++	CEffectData data;
++	data.m_nEntIndex = entindex();
++	data.m_nAttachmentIndex = iAttachment;
++	data.m_fFlags = m_iUpgradeLevel;
++	data.m_vOrigin = vecSrc;
++	DispatchEffect( "TF_3rdPersonMuzzleFlash_SentryGun", data );
++	EmitSentrySound( m_iUpgradeLevel == 3 ? "Building_Sentrygun.Fire3" : m_iUpgradeLevel == 2 ? "Building_Sentrygun.Fire2" : "Building_Sentrygun.Fire" );
++	m_iAmmoShells--;
++
++	static int s_nLogged = 0;
++	if ( s_nLogged++ < 10 )
++		Msg( "FortCraft: sentry %d shot a hostile Minecraft mob at %.0f units (damage %.0f)\n", entindex(), flDist, info.m_flDamage );
++	return true;
++}
++
+ //-----------------------------------------------------------------------------
+ // 
+ //-----------------------------------------------------------------------------
+diff --git a/src/game/server/tf/tf_obj_sentrygun.h b/src/game/server/tf/tf_obj_sentrygun.h
+index 2c86d52..cc7b936 100644
+--- a/src/game/server/tf/tf_obj_sentrygun.h
++++ b/src/game/server/tf/tf_obj_sentrygun.h
+@@ -148,6 +148,7 @@ private:
+ 	void MakeTracer( const Vector &vecTracerSrc, const trace_t &tr, int iTracerType );
+ 	bool Fire( void );
+ 	bool FireRocket( void );
++	bool FortCraft_AttackMob( void );	// FortCraft: shoot the nearest hostile Minecraft mob
+ 	virtual void ModifyFireBulletsDamage( CTakeDamageInfo* dmgInfo );
+ 
+ 	int GetBaseTurnRate( void );
+diff --git a/src/game/server/tf/tf_player.cpp b/src/game/server/tf/tf_player.cpp
+index c030951..8c48e3c 100644
+--- a/src/game/server/tf/tf_player.cpp
++++ b/src/game/server/tf/tf_player.cpp
+@@ -6,6 +6,8 @@
+ //=============================================================================
+ 
+ #include "cbase.h"
++// FortCraft: player box size
++#include "../../../../../my-passthrough/tf2mod/fortcraft_hull.h"
+ #include "tf_player.h"
+ #include "tf_gamerules.h"
+ #include "tf_gamestats.h"
+@@ -136,6 +138,7 @@
+ #include "haptics/haptic_utils.h"
+ 
+ #include "gc_clientsystem.h"
++#include "../../../../../my-passthrough/tf2mod/fortcraft_collision.h"
+ 
+ // memdbgon must be the last include file in a .cpp file!!!
+ #include "tier0/memdbgon.h"
+@@ -2238,8 +2241,45 @@ bool CTFPlayer::ProcessSceneEvent( CSceneEventInfo *info, CChoreoScene *scene, C
+ //-----------------------------------------------------------------------------
+ // Purpose: 
+ //-----------------------------------------------------------------------------
++// FortCraft: unlimited ammo while testing (every weapon's clip and reserve, Engineer metal, and
++// sentry shells and rockets). fortcraft_infinite_ammo 0 turns it off.
++ConVar fortcraft_infinite_ammo( "fortcraft_infinite_ammo", "1", FCVAR_NONE, "FortCraft: unlimited ammo, metal and sentry ammo" );
++
++static void FortCraft_RefillAmmo( CTFPlayer *pPlayer )
++{
++	if ( !fortcraft_infinite_ammo.GetBool() || !pPlayer->IsAlive() )
++		return;
++	for ( int iAmmo = TF_AMMO_PRIMARY; iAmmo < TF_AMMO_COUNT; ++iAmmo )
++	{
++		const int iMax = pPlayer->GetMaxAmmo( iAmmo );
++		if ( iMax > 0 && pPlayer->GetAmmoCount( iAmmo ) < iMax )
++			pPlayer->SetAmmoCount( iMax, iAmmo );
++	}
++	for ( int i = 0; i < pPlayer->WeaponCount(); ++i )
++	{
++		CTFWeaponBase *pWeapon = dynamic_cast< CTFWeaponBase * >( pPlayer->GetWeapon( i ) );
++		if ( pWeapon && pWeapon->UsesClipsForAmmo1() && pWeapon->Clip1() < pWeapon->GetMaxClip1() )
++			pWeapon->m_iClip1 = pWeapon->GetMaxClip1();
++	}
++}
++
+ void CTFPlayer::PreThink()
+ {
++	// FortCraft: damage Minecraft did to its player (mob hits, lava...) lands on the TF2 player.
++	FortCraft_ApplyMinecraftDamage( this );
++	FortCraft_EnsureClearSpawn( this );
++	FortCraft_RefillAmmo( this );
++	{
++		// FortCraft: the Engineer's buildings to Minecraft, and mobs' hits on them back.
++		CBaseEntity *pObjects[ 16 ];
++		int nObjects = 0;
++		for ( int i = 0; i < GetObjectCount() && nObjects < 16; ++i )
++			pObjects[ nObjects++ ] = GetObject( i );
++		FortCraft_WriteBuildings( pObjects, nObjects );
++		FortCraft_ApplyBuildingHits();
++		FortCraft_MaybeRecentre( this, pObjects, nObjects );
++	}
++
+ 	// Update timers.
+ 	UpdateTimers();
+ 
+@@ -3944,6 +3984,10 @@ void CTFPlayer::Spawn()
+ 	}
+ 
+ 	SetContextThink( &CTFPlayer::PostSpawnThink, gpGlobals->curtime + 0.1f, "PostSpawnThink" );
++
++	// FortCraft: spawn on top of Minecraft's ground, not at TF2's own spawn point (which can sit
++	// below Minecraft's ground and dropped Alex into the void).
++	FortCraft_OnPlayerSpawn( this );
+ }
+ 
+ //-----------------------------------------------------------------------------
+@@ -6976,6 +7020,18 @@ void CTFPlayer::HandleCommand_JoinClass( const char *pClassName, bool bAllowSpaw
+ 		return;
+ 	}
+ 
++	// FortCraft: Minecraft's world has no respawn rooms, so a class change while alive is instant:
++	// respawn as the new class right where the player stands, looking the same way, no death.
++	if ( FortCraft_Active() && IsAlive() && !bShouldNotRespawn )
++	{
++		Vector vPos = GetAbsOrigin();
++		QAngle qEye = EyeAngles();
++		ForceRespawn();
++		Teleport( &vPos, &qEye, &vec3_origin );
++		SnapEyeAngles( qEye );
++		return;
++	}
++
+ 	// We can respawn instantly if:
+ 	//	- We're dead, and we're past the required post-death time
+ 	//	- We're inside a respawn room of our own team
+@@ -7518,6 +7574,27 @@ bool CTFPlayer::ClientCommand( const CCommand &args )
+ 		}
+ 		return true;
+ 	}
++	else if ( FStrEq( pcmd, "fortcraft_taunt" ) )
++	{
++		// FortCraft: a taunt picked from Minecraft's taunt menu, by TF2 item number (0: the
++		// weapon's own taunt). Plays without needing the taunt in an online inventory.
++		if ( m_flTauntNextStartTime < gpGlobals->curtime && args.ArgC() == 2 && IsAllowedToTaunt() )
++		{
++			int iItemDef = atoi( args[1] );
++			if ( iItemDef <= 0 )
++			{
++				HandleTauntCommand( 0 );
++			}
++			else
++			{
++				static CEconItemView s_TauntItem;
++				s_TauntItem.Init( iItemDef, AE_UNIQUE, AE_USE_SCRIPT_VALUE, 0 );
++				if ( !s_TauntItem.IsValid() || !PlayTauntSceneFromItem( &s_TauntItem ) )
++					Msg( "FortCraft: taunt item %d didn't play\n", iItemDef );
++			}
++		}
++		return true;
++	}
+ 	else if ( FStrEq( pcmd, "stop_taunt" ) )
+ 	{
+ 		if( m_Shared.GetTauntIndex() == TAUNT_LONG && !m_Shared.InCond( TF_COND_HALLOWEEN_KART ) )
+@@ -8662,7 +8739,7 @@ CTFPlayer *CTFPlayer::TeamFortress_GetDisguiseTarget( int nTeam, int nClass )
+ //-----------------------------------------------------------------------------
+ float DamageForce( const Vector &size, float damage, float scale )
+ { 
+-	float force = damage * ((48 * 48 * 82.0) / (size.x * size.y * size.z)) * scale;
++	float force = damage * ((48 * 48 * 82.0) / FortCraft_PushVolume( size )) * scale;  // FortCraft: Valve's push with the narrower box
+ 	
+ 	if ( force > 1000.0 )
+ 	{
+@@ -8813,7 +8890,18 @@ int CTFPlayer::OnTakeDamage( const CTakeDamageInfo &inputInfo )
+ 	CTFWeaponBase *pWeapon = dynamic_cast< CTFWeaponBase * >( inputInfo.GetWeapon() );
+ 
+ 	if ( GetFlags() & FL_GODMODE )
++	{
++		// FortCraft: creative mode's god mode: no health lost, but blasts still push, so rocket
++		// and sticky jumps keep working.
++		if ( ( inputInfo.GetDamageType() & DMG_PREVENT_PHYSICS_FORCE ) == 0 && inputInfo.GetInflictor()
++			&& inputInfo.GetAttacker() && GetMoveType() == MOVETYPE_WALK )
++		{
++			Vector vecDir = inputInfo.GetInflictor()->WorldSpaceCenter() - Vector( 0.0f, 0.0f, 10.0f ) - WorldSpaceCenter();
++			VectorNormalize( vecDir );
++			ApplyPushFromDamage( inputInfo, vecDir );
++		}
+ 		return 0;
++	}
+ 
+ 	if ( IsInCommentaryMode() )
+ 		return 0;
+diff --git a/src/game/server/tf/tf_projectile_arrow.cpp b/src/game/server/tf/tf_projectile_arrow.cpp
+index b6c14eb..01ed277 100644
+--- a/src/game/server/tf/tf_projectile_arrow.cpp
++++ b/src/game/server/tf/tf_projectile_arrow.cpp
+@@ -29,6 +29,7 @@
+ #include "tf_weapon_medigun.h"
+ #include "soundenvelope.h"
+ #include "tf_obj_sentrygun.h"
++#include "../../../../../my-passthrough/tf2mod/fortcraft_collision.h"
+ 
+ 
+ //=============================================================================
+@@ -764,6 +765,40 @@ void CTFProjectile_Arrow::ArrowTouch( CBaseEntity *pOther )
+ 	CTFRobotDestruction_Robot *pRobot = dynamic_cast< CTFRobotDestruction_Robot* >( pOther );
+ 	if ( pOther->IsWorld() || ( !pOtherCombatCharacter && !pPumpkinBomb && !pMerasmusProp && !bShield && !pRobot ) )
+ 	{
++		// Minecraft mobs appear as world boxes to TF2. Give real arrows and Medic
++		// bolts their Minecraft damage, then remove them instead of lodging in air.
++		const bool bDamageBolt = m_iProjectileType == TF_PROJECTILE_ARROW
++			|| m_iProjectileType == TF_PROJECTILE_FESTIVE_ARROW
++			|| m_iProjectileType == TF_PROJECTILE_HEALING_BOLT
++			|| m_iProjectileType == TF_PROJECTILE_FESTIVE_HEALING_BOLT;
++		if ( bDamageBolt && FortCraft_Active() )
++		{
++			Vector direction = GetAbsVelocity();
++			float speed = VectorNormalize( direction );
++			if ( speed < 1.0f )
++				AngleVectors( GetAbsAngles(), &direction );
++			const Vector impact = GetAbsOrigin();
++			const Vector pathStart = impact - direction * MAX( speed * gpGlobals->frametime + 4.0f, 20.0f );
++			const Vector pathEnd = impact + direction * 16.0f;
++			const bool bMobImpact = FortCraft_MobBeforeBlocks( pathStart, pathEnd, Vector( -1, -1, -1 ), Vector( 1, 1, 1 ) );
++			static int s_nLoggedArrowImpacts = 0;
++			if ( s_nLoggedArrowImpacts++ < 24 )
++				Msg( "FortCraft arrow impact: type=%d mob=%d pos=(%.0f %.0f %.0f)\n",
++					m_iProjectileType.Get(), bMobImpact ? 1 : 0, impact.x, impact.y, impact.z );
++			if ( bMobImpact )
++			{
++				const float damage = GetDamage();
++				// Four blocks avoids the short-range melee branch in Minecraft's shot reader.
++				FortCraft_ReportShot( pathStart, direction, 192.0f, damage,
++					( m_bCritical ? FC_CRIT : 0 ) | ( CanHeadshot() ? FC_HEADSHOT : 0 ) );
++				Msg( "FortCraft arrow mob impact: type=%d damage=%.1f pos=(%.0f %.0f %.0f)\n",
++					m_iProjectileType.Get(), damage, impact.x, impact.y, impact.z );
++				SetTouch( NULL );
++				RemoveTrail();
++				UTIL_Remove( this );
++				return;
++			}
++		}
+ 		// Check to see if we struck the skybox.
+ 		CheckSkyboxImpact( pOther );
+ 
+diff --git a/src/game/server/tf/tf_projectile_flare.cpp b/src/game/server/tf/tf_projectile_flare.cpp
+index 373dfbe..fd6f041 100644
+--- a/src/game/server/tf/tf_projectile_flare.cpp
++++ b/src/game/server/tf/tf_projectile_flare.cpp
+@@ -10,6 +10,7 @@
+ #include "tf_player.h"
+ #include "tf_weapon_flaregun.h"
+ #include "tf_gamerules.h"
++#include "../../../../../my-passthrough/tf2mod/fortcraft_collision.h"
+ 
+ //=============================================================================
+ //
+@@ -213,6 +214,28 @@ void CTFProjectile_Flare::Explode( trace_t *pTrace, CBaseEntity *pOther )
+ {
+ 	Vector vecOrigin = GetAbsOrigin();
+ 
++	// FortCraft: a flare (Flare Gun, Scorch Shot, Detonator, Manmelter) sets Minecraft mobs and
++	// land on fire where it lands; the Scorch Shot's burst reaches further.
++	{
++		CTFFlareGun *pFireGun = dynamic_cast< CTFFlareGun* >( GetLauncher() );
++		FortCraft_ReportFire( vecOrigin, ( pFireGun && pFireGun->GetFlareGunType() == FLAREGUN_SCORCHSHOT ) ? 110.0f : 40.0f, false );
++	}
++	// Minecraft mobs are world-shaped to TF2. A direct flare impact must do its normal hit
++	// damage as well as lighting the mob; a flare hitting a block must not damage through it.
++	if ( FortCraft_Active() && pOther && pOther->IsWorld() )
++	{
++		Vector direction = GetAbsVelocity();
++		float speed = VectorNormalize( direction );
++		if ( speed < 1.0f )
++			AngleVectors( GetAbsAngles(), &direction );
++		const Vector pathStart = vecOrigin - direction * MAX( speed * gpGlobals->frametime + 4.0f, 20.0f );
++		if ( FortCraft_MobBeforeBlocks( pathStart, vecOrigin + direction * 16.0f, Vector( -1, -1, -1 ), Vector( 1, 1, 1 ) ) )
++		{
++			FortCraft_ReportShot( pathStart, direction, 192.0f, GetDamage(), m_bCritical ? FC_CRIT : 0 );
++			Msg( "FortCraft flare mob impact: damage=%.1f pos=(%.0f %.0f %.0f)\n", GetDamage(), vecOrigin.x, vecOrigin.y, vecOrigin.z );
++		}
++	}
++
+ 	CBaseEntity *pAttacker = GetOwnerEntity();
+ 	IScorer *pScorerInterface = dynamic_cast<IScorer*>( pAttacker );
+ 	if ( pScorerInterface )
+@@ -381,6 +404,9 @@ void CTFProjectile_Flare::Explode( trace_t *pTrace, CBaseEntity *pOther )
+ //-----------------------------------------------------------------------------
+ void CTFProjectile_Flare::Explode_Air( trace_t *pTrace, int bitsDamageType, bool bSelfOnly )
+ {
++	// FortCraft: the Detonator's mid-air burst sets nearby Minecraft mobs and land on fire.
++	FortCraft_ReportFire( GetAbsOrigin(), 110.0f, false );
++
+ 	// Invisible.
+ 	AddSolidFlags( FSOLID_NOT_SOLID );
+ 	m_takedamage = DAMAGE_NO;
+diff --git a/src/game/shared/baseplayer_shared.cpp b/src/game/shared/baseplayer_shared.cpp
+index abbd319..003f710 100644
+--- a/src/game/shared/baseplayer_shared.cpp
++++ b/src/game/shared/baseplayer_shared.cpp
+@@ -1397,7 +1397,9 @@ void CBasePlayer::PlayerUse ( void )
+ #endif
+ }
+ 
+-ConVar	sv_suppress_viewpunch( "sv_suppress_viewpunch", "0", FCVAR_REPLICATED | FCVAR_CHEAT | FCVAR_DEVELOPMENTONLY );
++// FortCraft: on by default: Minecraft's camera doesn't follow TF2's weapon recoil (view punch),
++// so TF2 has none either (SetPunchAngle below obeys it too).
++ConVar	sv_suppress_viewpunch( "sv_suppress_viewpunch", "1", FCVAR_REPLICATED | FCVAR_CHEAT | FCVAR_DEVELOPMENTONLY );
+ 
+ //-----------------------------------------------------------------------------
+ // Purpose: 
+diff --git a/src/game/shared/econ/econ_item_description.cpp b/src/game/shared/econ/econ_item_description.cpp
+index 529e835..3c0e176 100644
+--- a/src/game/shared/econ/econ_item_description.cpp
++++ b/src/game/shared/econ/econ_item_description.cpp
+@@ -11,6 +11,9 @@
+ #include "rtime.h"
+ #include "econ_dynamic_recipe.h"
+ #include "econ_paintkit.h"
++#ifdef TF_CLIENT_DLL
++#include "../../../../../my-passthrough/tf2mod/fortcraft_link.h"
++#endif
+ 
+ 
+ 	#ifndef EXTERNALTESTS_DLL
+@@ -353,6 +356,21 @@ void CEconItemDescription::GenerateDescriptionLines( const CLocalizationProvider
+ 
+ 	m_vecDescLines.Purge();
+ 
++#ifdef TF_CLIENT_DLL
++	// FortCraft: a Minecraft item shows its plain name and how to hold it, nothing about the
++	// Scrap Metal it is built on.
++	if ( FortCraft_IsLocalItem( pEconItem->GetID() ) && pEconItem->GetCustomName() )
++	{
++		locchar_t loc_Name[ MAX_ITEM_NAME_LENGTH ];
++		pLocalizationProvider->ConvertUTF8ToLocchar( pEconItem->GetCustomName(), loc_Name, sizeof( loc_Name ) );
++		AddDescLine( loc_Name, ATTRIB_COL_LEVEL, kDescLineFlag_Name );
++		locchar_t loc_Desc[ MAX_ITEM_NAME_LENGTH ];
++		pLocalizationProvider->ConvertUTF8ToLocchar( "Minecraft item. Double-click or right-click > Equip to hand.", loc_Desc, sizeof( loc_Desc ) );
++		AddDescLine( loc_Desc, ATTRIB_COL_NEUTRAL, kDescLineFlag_Desc );
++		return;
++	}
++#endif
++
+ 	Generate_ItemName( pLocalizationProvider, pEconItem );
+ 	Generate_ItemRarityDesc( pLocalizationProvider, pEconItem );
+ 	Generate_ItemLevelDesc( pLocalizationProvider, pEconItem );
+diff --git a/src/game/shared/econ/econ_item_inventory.cpp b/src/game/shared/econ/econ_item_inventory.cpp
+index 953e08b..90a7528 100644
+--- a/src/game/shared/econ/econ_item_inventory.cpp
++++ b/src/game/shared/econ/econ_item_inventory.cpp
+@@ -6,6 +6,9 @@
+ 
+ #include "cbase.h"
+ #include "econ_item_inventory.h"
++#ifdef TF_CLIENT_DLL
++#include "../../../../../my-passthrough/tf2mod/fortcraft_link.h"
++#endif
+ #include "vgui/ILocalize.h"
+ #include "tier3/tier3.h"
+ #include "econ_item_system.h"
+@@ -2044,6 +2047,11 @@ void CPlayerInventory::DirtyItemHandles()
+ //-----------------------------------------------------------------------------
+ CEconItem	*CPlayerInventory::GetSOCDataForItem( itemid_t iItemID ) 
+ { 
++#ifdef TF_CLIENT_DLL
++	// FortCraft: local-only Minecraft block items are not in Steam's cache.
++	if ( CEconItem *pLocal = FortCraft_FindLocalItem( iItemID ) )
++		return pLocal;
++#endif
+ 	if ( !m_pSOCache )
+ 		return NULL;
+ 
+diff --git a/src/game/shared/econ/econ_item_inventory.h b/src/game/shared/econ/econ_item_inventory.h
+index 0726e18..7b2a06a 100644
+--- a/src/game/shared/econ/econ_item_inventory.h
++++ b/src/game/shared/econ/econ_item_inventory.h
+@@ -71,6 +71,12 @@ public:
+ 
+ 	// Returns true if this inventory has been filled out by Steam.
+ 	bool				RetrievedInventoryFromSteam( void ) { return m_bGotItemsFromSteam; }
++#ifdef TF_CLIENT_DLL
++	// FortCraft: add or remove a local-only item (a Minecraft block stack on the backpack's last
++	// page). It exists only in this client's list; nothing is sent to Steam.
++	bool				FortCraft_AddLocalItem( CEconItem *pItem ) { bool bAdded = AddEconItem( pItem, false, false, false ); SendInventoryUpdateEvent(); return bAdded; }
++	void				FortCraft_RemoveLocalItem( itemid_t iItemID ) { RemoveItem( iItemID ); SendInventoryUpdateEvent(); }
++#endif
+ 	bool				IsWaitingForSteam( void ) { return (m_iPendingRequests > 0); }
+ 
+ 	// Inventory access
+diff --git a/src/game/shared/econ/econ_item_view.cpp b/src/game/shared/econ/econ_item_view.cpp
+index 867c6f9..520c40c 100644
+--- a/src/game/shared/econ/econ_item_view.cpp
++++ b/src/game/shared/econ/econ_item_view.cpp
+@@ -9,6 +9,9 @@
+ #include "econ_item_system.h"
+ #include "econ_item_description.h"
+ #include "econ_item_inventory.h"
++#ifdef TF_CLIENT_DLL
++#include "../../../../../my-passthrough/tf2mod/fortcraft_link.h"
++#endif
+ 
+ #include "rtime.h"
+ #include "econ_gcmessages.h"
+@@ -875,6 +878,12 @@ const char *CEconItemView::GetInventoryImage( void )
+ 	if ( !GetStaticData() )
+ 		return NULL;
+ 
++#ifdef TF_CLIENT_DLL
++	// FortCraft: a Minecraft block item shows Minecraft's own texture.
++	if ( const char *pszLocal = FortCraft_LocalItemImage( GetItemID() ) )
++		return pszLocal;
++#endif
++
+ 	// Do we have a style set?
+ 	const char* pStyleImage = NULL;
+ 	if ( GetStaticData()->GetNumStyles() )
+diff --git a/src/game/shared/tf/tf_flame.cpp b/src/game/shared/tf/tf_flame.cpp
+index 7e9ceed..cf5c53e 100644
+--- a/src/game/shared/tf/tf_flame.cpp
++++ b/src/game/shared/tf/tf_flame.cpp
+@@ -15,6 +15,7 @@
+ #include "tf_logic_robot_destruction.h"
+ #include "ispatialpartition.h"
+ #include "tf_fx.h"
++#include "../../../../../my-passthrough/tf2mod/fortcraft_collision.h"
+ #endif // GAME_DLL
+ 
+ #ifdef CLIENT_DLL
+@@ -1073,6 +1074,11 @@ bool CTFFlameManager::OnPointHitWall( tf_point_t *pPoint, Vector &vecNewPos, Vec
+ 
+ 	flame_point_t *pFlame = static_cast< flame_point_t* >( pPoint );
+ 
++#ifdef GAME_DLL
++	// FortCraft: a flame reached Minecraft's world (a block or a mob box): set it alight there.
++	FortCraft_ReportFire( tr.endpos, 24.0f, true );
++#endif
++
+ 	pFlame->m_flLifeTime += ReflectionAdditionalLifeTime();
+ 
+ 	Vector vecNewDirVelocity = vecNewVelocity - DotProduct( tr.plane.normal, vecNewVelocity ) * tr.plane.normal;
+diff --git a/src/game/shared/tf/tf_gamemovement.cpp b/src/game/shared/tf/tf_gamemovement.cpp
+index 4766016..942fe8b 100644
+--- a/src/game/shared/tf/tf_gamemovement.cpp
++++ b/src/game/shared/tf/tf_gamemovement.cpp
+@@ -22,6 +22,7 @@
+ #include "tf_weapon_buff_item.h"
+ #include "halloween/tf_weapon_spellbook.h"
+ #include "tf_logic_player_destruction.h"
++#include "../../../../../my-passthrough/tf2mod/fortcraft_collision.h"
+ 
+ #ifdef CLIENT_DLL
+ 	#include "c_tf_player.h"
+@@ -983,6 +984,21 @@ bool CTFGameMovement::CheckWaterJumpButton( void )
+ 		return false;
+ 	}
+ 
++	// FortCraft's Minecraft shore is often one block above deep water. At the
++	// surface TF2 changes from waist-deep swimming to feet-deep, but an airborne
++	// player cannot make the normal ground jump needed to clear that block.
++	if ( FortCraft_Active() && player->GetWaterLevel() == WL_Feet &&
++		player->GetGroundEntity() == NULL )
++	{
++		mv->m_vecVelocity[2] = MAX( mv->m_vecVelocity[2], (float)TF_WATERJUMP_UP );
++#ifndef CLIENT_DLL
++		if ( m_nOldWaterLevel >= WL_Waist )
++			Msg( "FortCraft water exit assist: feet-deep, airborne at %.1f %.1f %.1f\n",
++				mv->GetAbsOrigin().x, mv->GetAbsOrigin().y, mv->GetAbsOrigin().z );
++#endif
++		return false;
++	}
++
+ 	return true;
+ }
+ 
+@@ -2299,7 +2315,12 @@ CBaseHandle CTFGameMovement::TestPlayerPosition( const Vector& pos, int collisio
+ 	ray.Init( pos, pos, GetPlayerMins(), GetPlayerMaxs() );
+ 	
+ 	CTraceFilterObject traceFilter( mv->m_nPlayerHandle.Get(), collisionGroup );
+-	enginetrace->TraceRay( ray, PlayerSolidMask(), &traceFilter, &pm );
++	// FortCraft: while linked to Minecraft, only Minecraft's blocks are solid; the TF2 map is ignored.
++	if ( FortCraft_Active() )
++		FortCraft_ClearTrace( pos, pos, pm );
++	else
++		enginetrace->TraceRay( ray, PlayerSolidMask(), &traceFilter, &pm );
++	FortCraft_ClipHullTrace( pos, pos, GetPlayerMins(), GetPlayerMaxs(), pm );
+ 
+ 	if ( (pm.contents & PlayerSolidMask()) && pm.m_pEnt )
+ 	{
+@@ -2316,15 +2337,28 @@ CBaseHandle CTFGameMovement::TestPlayerPosition( const Vector& pos, int collisio
+ //-----------------------------------------------------------------------------
+ void CTFGameMovement::TracePlayerBBox( const Vector& start, const Vector& end, unsigned int fMask, int collisionGroup, trace_t& pm )
+ {
+-	if( tf_solidobjects.GetBool() == false )
+-		return BaseClass::TracePlayerBBox( start, end, fMask, collisionGroup, pm );
++	// FortCraft: while linked to Minecraft, only Minecraft's blocks are solid; the TF2 map is ignored.
++	if ( FortCraft_Active() )
++	{
++		FortCraft_ClearTrace( start, end, pm );
++	}
++	else if( tf_solidobjects.GetBool() == false )
++	{
++		BaseClass::TracePlayerBBox( start, end, fMask, collisionGroup, pm );
++	}
++	else
++	{
++		Ray_t ray;
++		ray.Init( start, end, GetPlayerMins(), GetPlayerMaxs() );
+ 
+-	Ray_t ray;
+-	ray.Init( start, end, GetPlayerMins(), GetPlayerMaxs() );
+-	
+-	CTraceFilterObject traceFilter( mv->m_nPlayerHandle.Get(), collisionGroup );
++		CTraceFilterObject traceFilter( mv->m_nPlayerHandle.Get(), collisionGroup );
++
++		enginetrace->TraceRay( ray, fMask, &traceFilter, &pm );
++	}
+ 
+-	enginetrace->TraceRay( ray, fMask, &traceFilter, &pm );
++	// FortCraft: Minecraft blocks are solid too.
++	if ( fMask & CONTENTS_SOLID )
++		FortCraft_ClipHullTrace( start, end, GetPlayerMins(), GetPlayerMaxs(), pm );
+ }
+ 
+ //-----------------------------------------------------------------------------
+diff --git a/src/game/shared/tf/tf_gamerules.cpp b/src/game/shared/tf/tf_gamerules.cpp
+index b14837f..f554dc8 100644
+--- a/src/game/shared/tf/tf_gamerules.cpp
++++ b/src/game/shared/tf/tf_gamerules.cpp
+@@ -5,6 +5,9 @@
+ // $NoKeywords: $
+ //=============================================================================
+ #include "cbase.h"
++#include "../../../../../my-passthrough/tf2mod/fortcraft_collision.h"
++// FortCraft: player box size
++#include "../../../../../my-passthrough/tf2mod/fortcraft_hull.h"
+ #include "tf_gamerules.h"
+ #include "tf_classdata.h"
+ #include "ammodef.h"
+@@ -1342,11 +1345,11 @@ ConVar tf_flag_caps_per_round( "tf_flag_caps_per_round", "3", FCVAR_REPLICATED,
+ static CViewVectors g_TFViewVectors(
+ 	Vector( 0, 0, 72 ),		//VEC_VIEW (m_vView) eye position
+ 							
+-	Vector(-24, -24, 0 ),	//VEC_HULL_MIN (m_vHullMin) hull min
+-	Vector( 24,  24, 82 ),	//VEC_HULL_MAX (m_vHullMax) hull max
++	Vector(-FORTCRAFT_HULL_HALF, -FORTCRAFT_HULL_HALF, 0 ),	// FortCraft: narrower, fits 1-block gaps. VEC_HULL_MIN (m_vHullMin) hull min
++	Vector( FORTCRAFT_HULL_HALF,  FORTCRAFT_HULL_HALF, 82 ),	//VEC_HULL_MAX (m_vHullMax) hull max
+ 												
+-	Vector(-24, -24, 0 ),	//VEC_DUCK_HULL_MIN (m_vDuckHullMin) duck hull min
+-	Vector( 24,  24, 62 ),	//VEC_DUCK_HULL_MAX	(m_vDuckHullMax) duck hull max
++	Vector(-FORTCRAFT_HULL_HALF, -FORTCRAFT_HULL_HALF, 0 ),	//VEC_DUCK_HULL_MIN (m_vDuckHullMin) duck hull min
++	Vector( FORTCRAFT_HULL_HALF,  FORTCRAFT_HULL_HALF, 62 ),	//VEC_DUCK_HULL_MAX	(m_vDuckHullMax) duck hull max
+ 	Vector( 0, 0, 45 ),		//VEC_DUCK_VIEW		(m_vDuckView) duck view
+ 												
+ 	Vector( -10, -10, -10 ),	//VEC_OBS_HULL_MIN	(m_vObsHullMin) observer hull min
+@@ -5666,6 +5669,12 @@ public:
+ //-----------------------------------------------------------------------------
+ void CTFGameRules::RadiusDamage( CTFRadiusDamageInfo &info )
+ {
++	// One authoritative blast event, before per-victim falloff/crit processing.
++	CTFWeaponBase *fcWeapon = dynamic_cast<CTFWeaponBase *>( info.dmgInfo->GetWeapon() );
++	const int fcWeaponID = fcWeapon ? fcWeapon->GetWeaponID() : TF_WEAPON_NONE;
++	// Fire bursts already use the direct-hit/fire bridge, not terrain explosions.
++	if ( fcWeaponID != TF_WEAPON_FLAREGUN && fcWeaponID != TF_WEAPON_FLAREGUN_REVENGE && fcWeaponID != TF_WEAPON_FLAME_BALL )
++		FortCraft_ReportBlast( info.vecSrc, info.flRadius, info.dmgInfo->GetDamage(), info.dmgInfo->GetDamageType() );
+ 	float flRadSqr = (info.flRadius * info.flRadius);
+ 
+ 	int iDamageEnemies = 0;
+diff --git a/src/game/shared/tf/tf_player_shared.cpp b/src/game/shared/tf/tf_player_shared.cpp
+index 97be022..3a7740d 100644
+--- a/src/game/shared/tf/tf_player_shared.cpp
++++ b/src/game/shared/tf/tf_player_shared.cpp
+@@ -102,6 +102,7 @@
+ 
+ #include "tf_wearable_weapons.h"
+ #include "tf_weapon_bonesaw.h"
++#include "../../../../../my-passthrough/tf2mod/fortcraft_collision.h"
+ 
+ static ConVar tf_demoman_charge_frametime_scaling( "tf_demoman_charge_frametime_scaling", "1", FCVAR_REPLICATED | FCVAR_CHEAT, "When enabled, scale yaw limiting based on client performance (frametime)." );
+ static const float YAW_CAP_SCALE_MIN = 0.2f;
+@@ -10277,6 +10278,12 @@ static void UTIL_PlayerBulletTrace( const Vector& vecStart, const Vector& vecEnd
+ //-----------------------------------------------------------------------------
+ void CTFPlayer::FireBullet( CTFWeaponBase *pWpn, const FireBulletsInfo_t &info, bool bDoEffects, int nDamageType, int nCustomDamageType /*= TF_DMG_CUSTOM_NONE*/ )
+ {
++#ifndef CLIENT_DLL
++	// FortCraft: tell Minecraft, so the bullet can hit Minecraft mobs too.
++	FortCraft_ReportWeaponShot( pWpn, info.m_vecSrc, info.m_vecDirShooting, info.m_flDistance,
++		info.m_flDamage, nDamageType, false );
++#endif
++
+ 	// Fire a bullet (ignoring the shooter).
+ 	Vector vecStart = info.m_vecSrc;
+ 	Vector vecEnd = vecStart + info.m_vecDirShooting * info.m_flDistance;
+@@ -14793,4 +14800,3 @@ bool CTFPlayer::IsHelpmeButtonPressed() const
+ {
+ 	return m_flHelpmeButtonPressTime != 0.f;
+ }
+-
+diff --git a/src/game/shared/tf/tf_projectile_dragons_fury.cpp b/src/game/shared/tf/tf_projectile_dragons_fury.cpp
+index 5226c7a..93164fb 100644
+--- a/src/game/shared/tf/tf_projectile_dragons_fury.cpp
++++ b/src/game/shared/tf/tf_projectile_dragons_fury.cpp
+@@ -24,6 +24,7 @@
+ 	#include "halloween/merasmus/merasmus_trick_or_treat_prop.h"
+ 	#include "tf_robot_destruction_robot.h"
+ 	#include "tf_generic_bomb.h"
++	#include "../../../../../my-passthrough/tf2mod/fortcraft_collision.h"
+ #endif
+ 
+ #ifdef CLIENT_DLL
+@@ -219,6 +220,24 @@ public:
+ 			return;
+ 		}
+ 
++		// FortCraft: the fireball hit Minecraft's world (a block or a mob): set it alight there.
++		FortCraft_ReportFire( GetAbsOrigin(), 64.0f, false );
++		// Its direct impact also carries damage when the world-shaped target was a Minecraft mob.
++		if ( FortCraft_Active() && pOther->IsWorld() )
++		{
++			Vector direction = GetAbsVelocity();
++			float speed = VectorNormalize( direction );
++			if ( speed < 1.0f )
++				AngleVectors( GetAbsAngles(), &direction );
++			const Vector impact = GetAbsOrigin();
++			const Vector pathStart = impact - direction * MAX( speed * gpGlobals->frametime + 4.0f, 20.0f );
++			if ( FortCraft_MobBeforeBlocks( pathStart, impact + direction * 16.0f, Vector( -1, -1, -1 ), Vector( 1, 1, 1 ) ) )
++			{
++				FortCraft_ReportShot( pathStart, direction, 192.0f, GetDamage(), IsCritical() ? FC_CRIT : 0 );
++				Msg( "FortCraft Dragon's Fury mob impact: damage=%.1f pos=(%.0f %.0f %.0f)\n", GetDamage(), impact.x, impact.y, impact.z );
++			}
++		}
++
+ 		// Die if we hit a thing that's not a player, building, or projectile target
+ 		StopAndFizzle();
+ 	}
+diff --git a/src/game/shared/tf/tf_projectile_energy_ring.cpp b/src/game/shared/tf/tf_projectile_energy_ring.cpp
+index d4229ac..4d73e8e 100644
+--- a/src/game/shared/tf/tf_projectile_energy_ring.cpp
++++ b/src/game/shared/tf/tf_projectile_energy_ring.cpp
+@@ -24,6 +24,7 @@
+ #include "halloween/merasmus/merasmus_trick_or_treat_prop.h"
+ #include "tf_robot_destruction_robot.h"
+ #include "tf_generic_bomb.h"
++#include "../../../../../my-passthrough/tf2mod/fortcraft_collision.h"
+ #endif
+ 
+ #define ENERGY_RING_DISPATCH_EFFECT			"ClientProjectile_EnergyRing"
+@@ -211,6 +212,30 @@ void CTFProjectile_EnergyRing::Precache()
+ }
+ 
+ #ifdef GAME_DLL
++// FortCraft: Minecraft mobs are world boxes to TF2, so the Righteous Bison / Pomson ring just
++// vanishes on them. If a mob box is hit before a block, send the ring's damage to Minecraft.
++static bool FortCraft_EnergyRingMobImpact( CTFProjectile_EnergyRing *pRing )
++{
++	if ( !FortCraft_Active() )
++		return false;
++	Vector direction = pRing->GetAbsVelocity();
++	float speed = VectorNormalize( direction );
++	if ( speed < 1.0f )
++		AngleVectors( pRing->GetAbsAngles(), &direction );
++	const Vector impact = pRing->GetAbsOrigin();
++	const Vector pathStart = impact - direction * MAX( speed * gpGlobals->frametime + 4.0f, 20.0f );
++	const Vector pathEnd = impact + direction * 16.0f;
++	if ( !FortCraft_MobBeforeBlocks( pathStart, pathEnd, Vector( -1, -1, -1 ), Vector( 1, 1, 1 ) ) )
++		return false;
++	const float damage = pRing->GetDamage();
++	// Four blocks avoids the short-range melee branch in Minecraft's shot reader.
++	FortCraft_ReportShot( pathStart, direction, 192.0f, damage, pRing->IsCritical() ? FC_CRIT : 0 );
++	static int s_nLogged = 0;
++	if ( s_nLogged++ < 24 )
++		Msg( "FortCraft energy ring mob impact: damage=%.1f pos=(%.0f %.0f %.0f)\n", damage, impact.x, impact.y, impact.z );
++	return true;
++}
++
+ //-----------------------------------------------------------------------------
+ // Purpose: 
+ //-----------------------------------------------------------------------------
+@@ -296,6 +321,7 @@ void CTFProjectile_EnergyRing::ProjectileTouch( CBaseEntity *pOther )
+ 
+ 	if ( pOther->IsWorld() )
+ 	{
++		FortCraft_EnergyRingMobImpact( this );
+ 		SetAbsVelocity( vec3_origin	);
+ 		AddSolidFlags( FSOLID_NOT_SOLID );
+ 	}
+@@ -308,6 +334,7 @@ void CTFProjectile_EnergyRing::ProjectileTouch( CBaseEntity *pOther )
+ 
+ void CTFProjectile_EnergyRing::ResolveFlyCollisionCustom( trace_t &trace, Vector &vecVelocity )
+ {
++	FortCraft_EnergyRingMobImpact( this );
+ 	PlayImpactEffects( trace.endpos, false );
+ 	
+ 	// Remove by default.  Fixes this entity living forever on things like doors.
+diff --git a/src/game/shared/tf/tf_weapon_flamethrower.cpp b/src/game/shared/tf/tf_weapon_flamethrower.cpp
+index 65810b2..234ae2b 100644
+--- a/src/game/shared/tf/tf_weapon_flamethrower.cpp
++++ b/src/game/shared/tf/tf_weapon_flamethrower.cpp
+@@ -4,6 +4,8 @@
+ //
+ //=============================================================================
+ #include "cbase.h"
++// FortCraft: player box size
++#include "../../../../../my-passthrough/tf2mod/fortcraft_hull.h"
+ #include "tf_weapon_flamethrower.h"
+ #include "tf_fx_shared.h"
+ #include "in_buttons.h"
+@@ -24,6 +26,7 @@
+ #else
+ 
+ 	#include "explode.h"
++	#include "../../../../../my-passthrough/tf2mod/fortcraft_collision.h"
+ 	#include "tf_player.h"
+ 	#include "tf_gamestats.h"
+ 	#include "ilagcompensationmanager.h"
+@@ -949,7 +952,7 @@ void CTFFlameThrower::PrimaryAttack()
+ //-----------------------------------------------------------------------------
+ float AirBurstDamageForce( const Vector &size, float damage, float scale )
+ { 
+-	float force = damage * ((48 * 48 * 82.0) / (size.x * size.y * size.z)) * scale;
++	float force = damage * ((48 * 48 * 82.0) / FortCraft_PushVolume( size )) * scale;  // FortCraft: Valve's push with the narrower box
+ 
+ 	if ( force > 1000.0) 
+ 	{
+@@ -982,6 +985,9 @@ void CTFFlameThrower::FireAirBlast( int iAmmoPerShot )
+ 	m_flSecondaryAnimTime = gpGlobals->curtime + SequenceDuration( GetSequence() );
+ 	
+ #ifdef GAME_DLL
++	// FortCraft: an airblast puts out Minecraft fires and burning mobs around the Pyro (8 blocks).
++	FortCraft_ReportFire( pOwner->EyePosition(), -8.0f * 48.0f, false );
++
+ 	int nDash = 0;
+ 	CALL_ATTRIB_HOOK_INT( nDash, airblast_dashes );
+ 
+@@ -2963,6 +2969,9 @@ void CTFFlameEntity::FlameThink( void )
+ 		// remove the flame if it hits the world
+ 		if ( bHitWorld )
+ 		{
++			// FortCraft: the flame reached Minecraft's world (a block or a mob): set it alight there.
++			FortCraft_ReportFire( trWorld.endpos, 24.0f, true );
++
+ 			if ( tf_debug_flamethrower.GetInt() )
+ 			{
+ 				NDebugOverlay::SweptBox( m_vecInitialPos, GetAbsOrigin(), WorldAlignMins(), WorldAlignMaxs(), vec3_angle, 255, 0, 0, 100, 3.0 );
+diff --git a/src/game/shared/tf/tf_weapon_grenade_pipebomb.cpp b/src/game/shared/tf/tf_weapon_grenade_pipebomb.cpp
+index 9421f01..3d44aa6 100644
+--- a/src/game/shared/tf/tf_weapon_grenade_pipebomb.cpp
++++ b/src/game/shared/tf/tf_weapon_grenade_pipebomb.cpp
+@@ -946,6 +946,43 @@ void CTFGrenadePipebombProjectile::VPhysicsCollision( int index, gamevcollisione
+ 	}
+ }
+ 
++void CTFGrenadePipebombProjectile::FortCraft_OnMinecraftBlockHit( IPhysicsObject *pPhysics, const Vector &normal, bool bMob )
++{
++	// A pipe that hits a Minecraft mob before touching the ground explodes at once, as it would
++	// on a TF2 player.
++	if ( bMob && !m_bTouched && !HasStickyEffects() )
++	{
++		Msg( "FortCraft: pipe hit a Minecraft mob directly: detonating\n" );
++		Detonate();
++		return;
++	}
++
++	if ( m_bWallShatter )
++	{
++		Fizzle();
++		Detonate();
++		return;
++	}
++
++	if ( HasStickyEffects() )
++	{
++		if ( !m_bTouched )
++		{
++			m_bTouched = true;
++			m_bUseImpactNormal = true;
++			m_vecImpactNormal = normal;
++			m_flTouchedTime = gpGlobals->curtime;
++			pPhysics->EnableMotion( false );
++		}
++		return;
++	}
++
++	if ( !m_bTouched )
++		SetDamage( GetDamageScaleOnWorldContact() * GetDamage() );
++	m_bTouched = true;
++	BaseClass::FortCraft_OnMinecraftBlockHit( pPhysics, normal, bMob );
++}
++
+ ConVar tf_grenade_forcefrom_bullet( "tf_grenade_forcefrom_bullet", "2.0", FCVAR_CHEAT | FCVAR_DEVELOPMENTONLY );
+ ConVar tf_grenade_forcefrom_buckshot( "tf_grenade_forcefrom_buckshot", "0.75", FCVAR_CHEAT | FCVAR_DEVELOPMENTONLY );
+ ConVar tf_grenade_forcefrom_blast( "tf_grenade_forcefrom_blast", "0.15", FCVAR_CHEAT | FCVAR_DEVELOPMENTONLY );
+diff --git a/src/game/shared/tf/tf_weapon_grenade_pipebomb.h b/src/game/shared/tf/tf_weapon_grenade_pipebomb.h
+index 3b2c6a1..6b26772 100644
+--- a/src/game/shared/tf/tf_weapon_grenade_pipebomb.h
++++ b/src/game/shared/tf/tf_weapon_grenade_pipebomb.h
+@@ -122,6 +122,7 @@ public:
+ 	virtual void	PipebombTouch( CBaseEntity *pOther );
+ 	virtual void	StickybombTouch( CBaseEntity *pOther );
+ 	virtual void	VPhysicsCollision( int index, gamevcollisionevent_t *pEvent );
++	virtual void	FortCraft_OnMinecraftBlockHit( IPhysicsObject *pPhysics, const Vector &normal, bool bMob );
+ 
+ 	virtual int		OnTakeDamage( const CTakeDamageInfo &info ) OVERRIDE;
+ 	virtual void	IncrementDeflected( void );
+diff --git a/src/game/shared/tf/tf_weapon_medigun.cpp b/src/game/shared/tf/tf_weapon_medigun.cpp
+index 4caa185..3fa5101 100644
+--- a/src/game/shared/tf/tf_weapon_medigun.cpp
++++ b/src/game/shared/tf/tf_weapon_medigun.cpp
+@@ -41,6 +41,7 @@
+ #include "tf_revive.h"
+ #include "tf_weapon_medigun.h"
+ #include "tf_weapon_shovel.h"
++#include "../../../../../my-passthrough/tf2mod/fortcraft_collision.h"
+ 
+ // memdbgon must be the last include file in a .cpp file!!!
+ #include "tier0/memdbgon.h"
+@@ -562,6 +563,8 @@ bool CWeaponMedigun::HealingTarget( CBaseEntity *pTarget )
+ //-----------------------------------------------------------------------------
+ bool CWeaponMedigun::AllowedToHealTarget( CBaseEntity *pTarget )
+ {
++	if ( FortCraft_IsMedicProxy( pTarget ) )
++		return true; // local offline Minecraft mob; all ordinary TF2 target rules remain below
+ 	CTFPlayer *pOwner = ToTFPlayer( GetOwnerEntity() );
+ 	if ( !pOwner )
+ 		return false;
+@@ -655,6 +658,10 @@ void CWeaponMedigun::MaintainTargetInSlot()
+ 
+ 	CBaseEntity *pTarget = m_hHealingTarget;
+ 	Assert( pTarget );
++	// Minecraft has already checked sight, team, distance and life this frame. The
++	// proxy is deliberately non-solid, so TF2's normal trace could never hit it.
++	if ( FortCraft_IsMedicProxy( pTarget ) )
++		return;
+ 
+ 	// Make sure the guy didn't go out of range.
+ 	bool bLostTarget = true;
+@@ -721,6 +728,27 @@ void CWeaponMedigun::FindNewTargetForSlot()
+ 	{
+ 		RemoveHealingTarget();
+ 	}
++	if ( CBaseEntity *pProxy = FortCraft_MedicProxy() )
++	{
++		static float s_flFortCraftNextAttachLog;
++		if ( gpGlobals->curtime >= s_flFortCraftNextAttachLog )
++		{
++			s_flFortCraftNextAttachLog = gpGlobals->curtime + 1.0f;
++			Msg( "FortCraft Medic %s: attach proxy=%d alive=%d\n",
++#ifdef GAME_DLL
++				"server",
++#else
++				"client",
++#endif
++				pProxy->entindex(), pProxy->IsAlive() ? 1 : 0 );
++		}
++		m_hHealingTarget.Set( pProxy );
++		m_flNextTargetCheckTime = gpGlobals->curtime + 1.0f;
++#ifdef GAME_DLL
++		SetContextThink( &CWeaponMedigun::HealTargetThink, gpGlobals->curtime, s_pszMedigunHealTargetThink );
++#endif
++		return;
++	}
+ 
+ 	// In Normal mode, we heal players under our crosshair
+ 	Vector vecAiming;
+@@ -1222,7 +1250,20 @@ bool CWeaponMedigun::FindAndHealTargets( void )
+ 	{
+ 		INetChannelInfo *pNetChanInfo = engine->GetPlayerNetInfo( pOwner->entindex() );
+ 		if ( !pNetChanInfo || pNetChanInfo->IsTimingOut() )
++		{
++			char fortcraftName[64];
++			if ( FortCraft_MedicTargetInfo( fortcraftName, sizeof( fortcraftName ), NULL, NULL ) )
++			{
++				static float s_flFortCraftNextNetLog;
++				if ( gpGlobals->curtime >= s_flFortCraftNextNetLog )
++				{
++					s_flFortCraftNextNetLog = gpGlobals->curtime + 1.0f;
++					Msg( "FortCraft Medic server: rejected before target check net=%d timeout=%d\n",
++						pNetChanInfo ? 1 : 0, pNetChanInfo && pNetChanInfo->IsTimingOut() ? 1 : 0 );
++				}
++			}
+ 			return false;
++		}
+ 	}
+ #endif // GAME_DLL
+ 
+@@ -1406,6 +1447,12 @@ bool CWeaponMedigun::FindAndHealTargets( void )
+ #endif
+ 					SetChargeLevel( flNewLevel );
+ 			}
++			else if ( FortCraft_IsMedicProxy( pNewTarget ) )
++			{
++				// Use the weapon's real charge field (and therefore its stock HUD and
++				// release/drain path), at its ordinary no-patient-modifier rate.
++				m_flChargeLevel = MIN( m_flChargeLevel + flChargeAmount, 1.0f );
++			}
+ 			else if ( IsAttachedToBuilding() )
+ 			{
+ 				m_flChargeLevel = MIN( m_flChargeLevel + flChargeAmount, 1.0 );
+@@ -1413,6 +1460,28 @@ bool CWeaponMedigun::FindAndHealTargets( void )
+ 		}
+ 	}
+ 
++	if ( FortCraft_Active() )
++	{
++		char name[64];
++		if ( FortCraft_MedicTargetInfo( name, sizeof( name ), NULL, NULL ) )
++		{
++			static float s_flFortCraftNextStateLog;
++			if ( gpGlobals->curtime >= s_flFortCraftNextStateLog )
++			{
++				s_flFortCraftNextStateLog = gpGlobals->curtime + 1.0f;
++				CBaseEntity *pProxy = FortCraft_MedicProxy();
++				CBaseEntity *pHeal = m_hHealingTarget;
++				Msg( "FortCraft Medic %s: mob=%s proxy=%d alive=%d heal=%d found=%d charge=%.3f\n",
++#ifdef GAME_DLL
++					"server",
++#else
++					"client",
++#endif
++					name, pProxy ? pProxy->entindex() : 0, pProxy && pProxy->IsAlive() ? 1 : 0,
++					pHeal ? pHeal->entindex() : 0, bFound ? 1 : 0, (float)m_flChargeLevel );
++			}
++		}
++	}
+ 	return bFound;
+ }
+ 
+@@ -2454,7 +2523,7 @@ void CWeaponMedigun::UpdateEffects( void )
+ 		}
+ 
+ 		// Attach differently if targeting a revive marker
+-		float flVecHeightOffset = bReviveMarker ? 0.f : 50.f;
++		float flVecHeightOffset = ( bReviveMarker || FortCraft_IsMedicProxy( m_hHealingTarget ) ) ? 0.f : 50.f;
+ 		ParticleAttachment_t attachType = bReviveMarker ? PATTACH_POINT_FOLLOW : PATTACH_ABSORIGIN_FOLLOW;
+ 		const char *pszAttachName = bReviveMarker ? "healbeam" : NULL;
+ 
+diff --git a/src/game/shared/tf/tf_weaponbase.cpp b/src/game/shared/tf/tf_weaponbase.cpp
+index 638cc6f..9f0e843 100644
+--- a/src/game/shared/tf/tf_weaponbase.cpp
++++ b/src/game/shared/tf/tf_weaponbase.cpp
+@@ -4,6 +4,8 @@
+ //
+ //=============================================================================
+ #include "cbase.h"
++// FortCraft: player box size
++#include "../../../../../my-passthrough/tf2mod/fortcraft_hull.h"
+ #include "in_buttons.h"
+ #include "takedamageinfo.h"
+ #include "tf_weaponbase.h"
+@@ -6102,7 +6104,7 @@ bool CTFWeaponBase::DeflectEntity( CBaseEntity *pTarget, CTFPlayer *pOwner, Vect
+ //-----------------------------------------------------------------------------
+ float CTFWeaponBase::DeflectionForce( const Vector &size, float damage, float scale )
+ { 
+-	float force = damage * ((48 * 48 * 82.0) / (size.x * size.y * size.z)) * scale;
++	float force = damage * ((48 * 48 * 82.0) / FortCraft_PushVolume( size )) * scale;  // FortCraft: Valve's push with the narrower box
+ 
+ 	if ( force > 1000.0) 
+ 	{
+diff --git a/src/game/shared/tf/tf_weaponbase_grenadeproj.cpp b/src/game/shared/tf/tf_weaponbase_grenadeproj.cpp
+index 5422343..0c80661 100644
+--- a/src/game/shared/tf/tf_weaponbase_grenadeproj.cpp
++++ b/src/game/shared/tf/tf_weaponbase_grenadeproj.cpp
+@@ -19,6 +19,7 @@
+ #include "func_nogrenades.h"
+ #include "Sprite.h"
+ #include "tf_fx.h"
++#include "../../../../../my-passthrough/tf2mod/fortcraft_collision.h"
+ #include "halloween/merasmus/merasmus.h"
+ #endif
+ 
+@@ -84,6 +85,7 @@ CTFWeaponBaseGrenadeProj::CTFWeaponBaseGrenadeProj()
+ 	m_flDestroyableTime = 0.0f;
+ 	m_bIsMerasmusGrenade = false;
+ 	m_iDestroyableHitCount = 0;
++	m_bFortCraftHaveLastPhysicsPos = false;
+ #endif
+ }
+ 
+@@ -278,6 +280,8 @@ void CTFWeaponBaseGrenadeProj::Spawn( void )
+ 	SetCollisionGroup( TF_COLLISIONGROUP_GRENADES );
+ 
+ 	VPhysicsInitNormal( SOLID_BBOX, 0, false );
++	m_vecFortCraftLastPhysicsPos = GetAbsOrigin();
++	m_bFortCraftHaveLastPhysicsPos = true;
+ 
+ 	m_takedamage = DAMAGE_EVENTS_ONLY;
+ 
+@@ -717,6 +721,36 @@ void CTFWeaponBaseGrenadeProj::VPhysicsUpdate( IPhysicsObject *pPhysics )
+ {
+ 	BaseClass::VPhysicsUpdate( pPhysics );
+ 
++	// VPhysics moves grenades without calling the engine trace wrapper. Sweep the
++	// actual travelled segment so a fast pipebomb cannot tunnel through a block.
++	Vector physicsPos;
++	QAngle physicsAngles;
++	pPhysics->GetPosition( &physicsPos, &physicsAngles );
++	if ( FortCraft_Active() && m_bFortCraftHaveLastPhysicsPos )
++	{
++		trace_t blockTrace;
++		FortCraft_ClearTrace( m_vecFortCraftLastPhysicsPos, physicsPos, blockTrace );
++		FortCraft_ClipHullTrace( m_vecFortCraftLastPhysicsPos, physicsPos,
++			TF_GRENADE_PROJECTILE_MINS, TF_GRENADE_PROJECTILE_MAXS, blockTrace );
++		if ( blockTrace.DidHit() )
++		{
++			// Did it hit a Minecraft mob's box before any block? (Mobs are world boxes to TF2.)
++			const bool bMob = FortCraft_MobBeforeBlocks( m_vecFortCraftLastPhysicsPos, physicsPos,
++				TF_GRENADE_PROJECTILE_MINS, TF_GRENADE_PROJECTILE_MAXS );
++			// Rest just off the surface, so the next step doesn't start inside the block.
++			physicsPos = blockTrace.endpos + blockTrace.plane.normal * 0.5f;
++			pPhysics->SetPosition( physicsPos, physicsAngles, true );
++			SetAbsOrigin( physicsPos );
++			FortCraft_OnMinecraftBlockHit( pPhysics, blockTrace.plane.normal, bMob );
++			static int s_nLoggedBlockHits = 0;
++			if ( s_nLoggedBlockHits++ < 12 )
++				Msg( "FortCraft projectile block hit: %s ent=%d pos=(%.0f %.0f %.0f)\n",
++					GetClassname(), entindex(), physicsPos.x, physicsPos.y, physicsPos.z );
++		}
++	}
++	m_vecFortCraftLastPhysicsPos = physicsPos;
++	m_bFortCraftHaveLastPhysicsPos = true;
++
+ 	Vector vel;
+ 	AngularImpulse angVel;
+ 	pPhysics->GetVelocity( &vel, &angVel );
+@@ -794,5 +828,27 @@ void CTFWeaponBaseGrenadeProj::VPhysicsUpdate( IPhysicsObject *pPhysics )
+ 	}
+ }
+ 
++// Bounce off a Minecraft block like off TF2's world: the part of the velocity into the surface
++// bounces back (scaled by elasticity) and the part along it is kept, with a little friction, so
++// grenades roll along the ground instead of stopping dead. A slow bounce just rests on the surface.
++void CTFWeaponBaseGrenadeProj::FortCraft_OnMinecraftBlockHit( IPhysicsObject *pPhysics, const Vector &normal, bool bMob )
++{
++	Vector velocity;
++	AngularImpulse angularVelocity;
++	pPhysics->GetVelocity( &velocity, &angularVelocity );
++	const float flInto = DotProduct( velocity, normal );
++	if ( flInto >= 0.0f )
++		return;  // already moving away
++	Vector along = velocity - flInto * normal;
++	float flBounce = -flInto * GetElasticity();
++	if ( flBounce < 60.0f )
++		flBounce = 0.0f;  // resting contact: no endless tiny hops
++	velocity = along * 0.97f + normal * flBounce;
++	// Spin as if rolling along the surface (degrees per second about the rolling axis).
++	Vector axis = CrossProduct( normal, along );
++	angularVelocity = axis * 2.0f;
++	pPhysics->SetVelocity( &velocity, &angularVelocity );
++}
++
+ 
+ #endif
+diff --git a/src/game/shared/tf/tf_weaponbase_grenadeproj.h b/src/game/shared/tf/tf_weaponbase_grenadeproj.h
+index e7671ea..daf1b22 100644
+--- a/src/game/shared/tf/tf_weaponbase_grenadeproj.h
++++ b/src/game/shared/tf/tf_weaponbase_grenadeproj.h
+@@ -117,6 +117,7 @@ public:
+ 	void					SetDetonateTimerLength( float timer );
+ 
+ 	void					VPhysicsUpdate( IPhysicsObject *pPhysics );
++	virtual void			FortCraft_OnMinecraftBlockHit( IPhysicsObject *pPhysics, const Vector &normal, bool bMob );
+ 
+ 	virtual bool			IsAllowedToExplode( void ) { return true; }
+ 	void					Explode( trace_t *pTrace, int bitsDamageType );
+@@ -143,6 +144,8 @@ protected:
+ private:
+ 
+ 	bool					m_bInSolid;
++	Vector					m_vecFortCraftLastPhysicsPos;
++	bool					m_bFortCraftHaveLastPhysicsPos;
+ 
+ 	CNetworkVar( bool,		m_bCritical );
+ 
+diff --git a/src/game/shared/tf/tf_weaponbase_melee.cpp b/src/game/shared/tf/tf_weaponbase_melee.cpp
+index 0dac987..cbe745c 100644
+--- a/src/game/shared/tf/tf_weaponbase_melee.cpp
++++ b/src/game/shared/tf/tf_weaponbase_melee.cpp
+@@ -22,6 +22,7 @@
+ // NVNT haptics system interface
+ #include "haptics/ihaptics.h"
+ #endif
++#include "../../../../../my-passthrough/tf2mod/fortcraft_collision.h"
+ 
+ ConVar tf_weapon_criticals_melee( "tf_weapon_criticals_melee", "1", FCVAR_REPLICATED | FCVAR_NOTIFY, "Controls random crits for melee weapons. 0 - Melee weapons do not randomly crit. 1 - Melee weapons can randomly crit only if tf_weapon_criticals is also enabled. 2 - Melee weapons can always randomly crit regardless of the tf_weapon_criticals setting." );
+ 
+@@ -707,6 +708,21 @@ void CTFWeaponBaseMelee::Smack( void )
+ 	if ( !pPlayer )
+ 		return;
+ 
++#if !defined (CLIENT_DLL)
++	// FortCraft: tell Minecraft about the swing, so it can hit Minecraft mobs too.
++	{
++		Vector vecForward;
++		AngleVectors( pPlayer->EyeAngles(), &vecForward );
++		int damageType = DMG_MELEE | DMG_CLUB;
++		int customDamage = GetDamageCustom();
++		// Base implementation applies item/health damage attributes without assuming
++		// the Minecraft target is a TF2 player (knife subclasses dereference it).
++		float damage = CTFWeaponBaseMelee::GetMeleeDamage( NULL, &damageType, &customDamage );
++		FortCraft_ReportWeaponShot( this, pPlayer->Weapon_ShootPosition(), vecForward,
++			(float)GetSwingRange(), damage, damageType, true, m_bMiniCrit );
++	}
++#endif
++
+ #if !defined (CLIENT_DLL)
+ 	// Move other players back to history positions based on local player's lag
+ 	lagcompensation->StartLagCompensation( pPlayer, pPlayer->GetCurrentCommand() );
