@@ -10,9 +10,10 @@ import net.minecraft.world.phys.EntityHitResult;
  * Who gets the right mouse button while TF2 is linked. Decided once when the button goes down,
  * by Minecraft itself: the aimed block or mob within reach is offered the click first (doors,
  * chests, bells, note blocks, feeding and breeding animals, villager trading, leads...). If it
- * reacts, the press is Minecraft's. If it doesn't, or nothing is aimed at, the whole hold is
- * TF2's secondary fire (scope, detonate, charge, cloak, airblast...). The hidden Minecraft item
- * itself never does anything on its own (ItemStackMixin), so no block is placed.
+ * reacts, the press is Minecraft's. An item explicitly held through TF2's backpack also gets
+ * its normal Minecraft use after the target declines, including use in air (food and pearls).
+ * Otherwise the whole hold is TF2's secondary fire (scope, detonate, charge, cloak, airblast...).
+ * A hidden Minecraft item never runs on its own (ItemStackMixin).
  */
 public final class RightClick {
 	private static boolean wasDown;
@@ -35,7 +36,9 @@ public final class RightClick {
 	private static boolean latch(Minecraft minecraft) {
 		boolean down = minecraft.options.keyUse.isDown();
 		if (down && !wasDown) {
-			toMinecraft = tryMinecraft(minecraft);
+			boolean heldItem = Hand.equipped();
+			boolean used = tryMinecraft(minecraft, heldItem);
+			toMinecraft = heldItem || used;
 			if (!toMinecraft) {
 				FortCraft.LOG.info("FortCraft: right-click goes to TF2");
 			}
@@ -44,26 +47,38 @@ public final class RightClick {
 		return down;
 	}
 
-	/** Offers this press to the aimed block or mob, as Minecraft would; true if it reacted. */
-	private static boolean tryMinecraft(Minecraft minecraft) {
+	/** Offers the target first, then an explicitly held item; true if Minecraft reacted. */
+	private static boolean tryMinecraft(Minecraft minecraft, boolean heldItem) {
 		var player = minecraft.player;
-		if (player == null || minecraft.gameMode == null || minecraft.level == null || minecraft.hitResult == null) {
+		if (player == null || minecraft.gameMode == null || minecraft.level == null) {
 			return false;
 		}
-		InteractionResult result;
-		String target;
-		if (minecraft.hitResult instanceof EntityHitResult hit) {
-			if (!player.isWithinEntityInteractionRange(hit.getEntity(), 0)) {
-				return false;
+		if (heldItem && PackItems.heldPack(player)) {
+			return minecraft.gameMode.useItem(player, InteractionHand.MAIN_HAND).consumesAction();
+		}
+		if (minecraft.hitResult != null) {
+			InteractionResult result;
+			String target;
+			if (minecraft.hitResult instanceof EntityHitResult hit) {
+				if (player.isWithinEntityInteractionRange(hit.getEntity(), 0)) {
+					target = hit.getEntity().getName().getString();
+					result = minecraft.gameMode.interact(player, hit.getEntity(), hit, InteractionHand.MAIN_HAND);
+					if (logAndConsumed(target, result)) return true;
+				}
+			} else if (minecraft.hitResult instanceof BlockHitResult hit && hit.getType() == BlockHitResult.Type.BLOCK) {
+				target = minecraft.level.getBlockState(hit.getBlockPos()).getBlock().getName().getString();
+				result = minecraft.gameMode.useItemOn(player, InteractionHand.MAIN_HAND, hit);
+				if (logAndConsumed(target, result)) return true;
 			}
-			target = hit.getEntity().getName().getString();
-			result = minecraft.gameMode.interact(player, hit.getEntity(), hit, InteractionHand.MAIN_HAND);
-		} else if (minecraft.hitResult instanceof BlockHitResult hit && hit.getType() == BlockHitResult.Type.BLOCK) {
-			target = minecraft.level.getBlockState(hit.getBlockPos()).getBlock().getName().getString();
-			result = minecraft.gameMode.useItemOn(player, InteractionHand.MAIN_HAND, hit);
-		} else {
-			return false;
 		}
+		if (!heldItem) return false;
+		InteractionResult itemResult = minecraft.gameMode.useItem(player, InteractionHand.MAIN_HAND);
+		FortCraft.LOG.info("FortCraft: held Minecraft item {} use: {}",
+			player.getMainHandItem().getDisplayName().getString(), itemResult);
+		return itemResult.consumesAction();
+	}
+
+	private static boolean logAndConsumed(String target, InteractionResult result) {
 		boolean used = result.consumesAction();
 		FortCraft.LOG.info("FortCraft: right-click offered to {}: {}{}", target, result, used ? " -> Minecraft" : "");
 		return used;

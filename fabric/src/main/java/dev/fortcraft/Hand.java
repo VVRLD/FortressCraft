@@ -69,6 +69,10 @@ public final class Hand {
 			String id = FortLink.handRequestId();
 			if (id.isEmpty()) {
 				putAway(minecraft, "TF2 asked");
+			} else if (id.startsWith("use:")) {
+				useFromBackpack(minecraft, id.substring(4));
+			} else if (PackItems.isPackId(id)) {
+				useFromBackpack(minecraft, id);  // packs are used, never held (no hand model)
 			} else {
 				equip(minecraft, id);
 			}
@@ -92,6 +96,21 @@ public final class Hand {
 			minecraft.player.swing(InteractionHand.MAIN_HAND, minecraft.player.getMainHandItem().getAttackAnimation(), false); // melee-style swing
 		}
 		attackWasDown = attack;
+	}
+
+	/** "Use" on a supply pack in TF2's backpack. */
+	private static void useFromBackpack(Minecraft minecraft, String id) {
+		var server = minecraft.getSingleplayerServer();
+		if (server == null) {
+			return;
+		}
+		java.util.UUID player = minecraft.player.getUUID();
+		server.execute(() -> {
+			var serverPlayer = server.getPlayerList().getPlayer(player);
+			if (serverPlayer != null) {
+				PackItems.useFromInventory(serverPlayer, id);
+			}
+		});
 	}
 
 	/** A TF2 weapon key or wheel step: the weapon comes back instead of the held item. */

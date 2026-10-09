@@ -28,7 +28,8 @@ import net.minecraft.world.item.crafting.ShapedRecipe;
 import net.minecraft.world.item.crafting.ShapelessRecipe;
 
 /**
- * Backpack phase C (docs/DESIGN.md): Minecraft's 2x2 crafting, offered in TF2's crafting screen.
+ * Backpack phase C (docs/DESIGN.md): Minecraft's 2x2 crafting and FortCraft supplies,
+ * offered in TF2's crafting screen.
  * Twice a second Minecraft's built-in server lists the crafting recipes that fit a 2x2 grid and
  * that the player's inventory can make now, using Minecraft's own recipe matching; TF2 shows
  * them. A craft request from TF2 is done on the server like a crafting grid would: the inputs
@@ -72,10 +73,11 @@ public final class Crafting {
 			if (player == null) {
 				return;
 			}
+			PackItems.tickServer(player);
 			List<FortLink.CraftRecipe> recipes = scan(player);
 			if (!recipes.equals(sent)) {
 				FortLink.writeRecipes(recipes);
-				FortCraft.LOG.info("FortCraft: {} Minecraft recipes craftable: {}", recipes.size(),
+				FortCraft.LOG.info("FortCraft: {} recipes craftable: {}", recipes.size(),
 					recipes.stream().map(FortLink.CraftRecipe::name).toList());
 				sent = recipes;
 			}
@@ -106,12 +108,18 @@ public final class Crafting {
 			out.add(new FortLink.CraftRecipe(holder.id().identifier().toString(), label(result), describe(plan.used()),
 				resultId, Backpack.icon(Minecraft.getInstance(), resultId), ingredients));
 		}
-		out.sort(Comparator.comparing(FortLink.CraftRecipe::name).thenComparing(FortLink.CraftRecipe::key));
+		out.addAll(PackItems.craftable(player));
+		out.sort(Comparator.comparingInt((FortLink.CraftRecipe r) -> r.key().startsWith("fortcraft:") ? 0 : 1)
+			.thenComparing(FortLink.CraftRecipe::name).thenComparing(FortLink.CraftRecipe::key));
 		return out.size() > MAX_RECIPES ? out.subList(0, MAX_RECIPES) : out;
 	}
 
 	private static void craft(ServerPlayer player, String key) {
 		if (player == null || key.isEmpty()) {
+			return;
+		}
+		if (PackItems.isPackRecipe(key)) {
+			FortLink.writeCraftResult(PackItems.craft(player, key));
 			return;
 		}
 		var holder = player.level().getServer().getRecipeManager()

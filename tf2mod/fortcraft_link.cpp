@@ -21,46 +21,23 @@
 #include "viewport_panel_names.h"
 #include "tf_item_inventory.h"
 #include "econ_item.h"
+#include "econ_wearable.h"
+#include "econ_ui.h"
+#include "ivieweffects.h"
+#include "shake.h"
+#include "backpack_panel.h"
 #include "../protocol/fortcraft_protocol.h"
+#include "fortcraft_platform.h"
 
 #include <stdio.h>
 
 // memdbgon must be the last include file in a .cpp file!!!
 #include "tier0/memdbgon.h"
 
-// The few Windows calls we need, declared here rather than pulling windows.h into game code.
-extern "C" __declspec( dllimport ) void *__stdcall OpenFileMappingW( unsigned long access, int inherit, const wchar_t *name );
-extern "C" __declspec( dllimport ) void *__stdcall MapViewOfFile( void *mapping, unsigned long access, unsigned long offHigh, unsigned long offLow, size_t bytes );
-extern "C" __declspec( dllimport ) unsigned long long __stdcall GetTickCount64();
-extern "C" __declspec( dllimport ) unsigned long __stdcall GetCurrentProcessId();
-typedef int( __stdcall *FortCraftEnumProc )( void *hwnd, intptr_t param );
-extern "C" __declspec( dllimport ) int __stdcall EnumWindows( FortCraftEnumProc proc, intptr_t param );
-extern "C" __declspec( dllimport ) unsigned long __stdcall GetWindowThreadProcessId( void *hwnd, unsigned long *pid );
-extern "C" __declspec( dllimport ) int __stdcall IsWindowVisible( void *hwnd );
-extern "C" __declspec( dllimport ) int __stdcall ShowWindow( void *hwnd, int cmd );
-extern "C" __declspec( dllimport ) void *__stdcall GetForegroundWindow();
-struct FortCraftRect { long left, top, right, bottom; };
-extern "C" __declspec( dllimport ) int __stdcall GetClipCursor( FortCraftRect *pRect );
-extern "C" __declspec( dllimport ) int __stdcall ClipCursor( const FortCraftRect *pRect );
-extern "C" __declspec( dllimport ) int __stdcall GetSystemMetrics( int index );
-extern "C" __declspec( dllimport ) int __stdcall SetForegroundWindow( void *hwnd );
-struct FortCraftPoint { long x, y; };
-extern "C" __declspec( dllimport ) int __stdcall GetWindowRect( void *hwnd, FortCraftRect *pRect );
-extern "C" __declspec( dllimport ) int __stdcall GetClientRect( void *hwnd, FortCraftRect *pRect );
-extern "C" __declspec( dllimport ) int __stdcall ClientToScreen( void *hwnd, FortCraftPoint *pPoint );
-extern "C" __declspec( dllimport ) int __stdcall SetWindowPos( void *hwnd, void *insertAfter, int x, int y, int width, int height, unsigned int flags );
-#pragma push_macro("GetCursorPos")
-#undef GetCursorPos
-extern "C" __declspec( dllimport ) int __stdcall GetCursorPos( FortCraftPoint *pPoint );
-static bool FortCraft_GetSystemCursor( FortCraftPoint *pPoint ) { return ::GetCursorPos( pPoint ) != 0; }
-#pragma pop_macro("GetCursorPos")
-extern "C" __declspec( dllimport ) int __stdcall SetCursorPos( int x, int y );
-
 namespace proto = fortcraft::proto;
 
 extern vgui::IInputInternal *g_InputInternal;  // TF2's UI input, set up in vgui_int.cpp
 
-static const unsigned long FILE_MAP_ALL_ACCESS_ = 0xF001F;
 static const float UNITS_PER_BLOCK = (float)fortcraft::proto::kUnitsPerBlock;
 static const double MC_FLOOR_Y = -60.0;            // TF2 spawn height lands on a flat world's surface
 
@@ -82,7 +59,8 @@ static char s_szOriginMap[ MAX_PATH ];
 static double s_flLastJoinTry;
 static bool s_bHidden;
 static double s_flRehideAt;
-static void *s_hRestoreFocus;
+
+static void PlatLog( const char *pszLine ) { Msg( "%s", pszLine ); }
 
 template < typename T > static T &At( uint64_t off ) { return *reinterpret_cast< T * >( s_pShm + off ); }
 
@@ -91,7 +69,7 @@ static proto::Header &Hdr() { return At< proto::Header >( proto::kOffHeader ); }
 static bool HostAlive()
 {
 	uint64_t beat = *(volatile uint64_t *)&Hdr().hostHeartbeatMs;
-	return beat != 0 && GetTickCount64() - beat < proto::kHeartbeatTimeoutMs;
+	return beat != 0 && FortCraftPlat_NowMs() - beat < proto::kHeartbeatTimeoutMs;
 }
 
 static void TryOpen()
@@ -102,13 +80,31 @@ static void TryOpen()
 		return;
 	s_flLastOpenTry = Plat_FloatTime();
 
-	void *hMapping = OpenFileMappingW( FILE_MAP_ALL_ACCESS_, 0, proto::kMappingName );
-	if ( !hMapping )
-		return;  // Minecraft isn't running yet
-	void *pView = MapViewOfFile( hMapping, FILE_MAP_ALL_ACCESS_, 0, 0, (size_t)proto::kMappingBytes );
+	void *pView = FortCraftPlat_OpenLink( (size_t)proto::kMappingBytes );
 	if ( !pView )
-		return;
+		return;  // Minecraft isn't running yet
 	s_pShm = (unsigned char *)pView;
+}
+
+// Periodic measurements (perf, depth layer, jitter, far objects) go to logs/tf2_perf.log, not
+// TF2's console: Alex found them filling the console (2026-10-09). tools/analyze_jitter.py reads it.
+static void PerfLog( const char *fmt, ... )
+{
+	static FILE *s_pPerf;
+	if ( !s_pPerf )
+	{
+		const char *pszDir = CommandLine()->ParmValue( "-fortcraft_logs", "." );
+		char szPath[ MAX_PATH ];
+		V_snprintf( szPath, sizeof( szPath ), "%s/tf2_perf.log", pszDir );
+		s_pPerf = fopen( szPath, "w" );
+		if ( !s_pPerf )
+			return;
+	}
+	va_list args;
+	va_start( args, fmt );
+	vfprintf( s_pPerf, fmt, args );
+	va_end( args );
+	fflush( s_pPerf );
 }
 
 static void LinkLog( const char *fmt, ... )
@@ -117,7 +113,7 @@ static void LinkLog( const char *fmt, ... )
 	{
 		const char *pszDir = CommandLine()->ParmValue( "-fortcraft_logs", "." );
 		char szPath[ MAX_PATH ];
-		V_snprintf( szPath, sizeof( szPath ), "%s\\tf2_sent.log", pszDir );
+		V_snprintf( szPath, sizeof( szPath ), "%s/tf2_sent.log", pszDir );
 		s_pLog = fopen( szPath, "w" );
 		if ( !s_pLog )
 			return;
@@ -127,41 +123,6 @@ static void LinkLog( const char *fmt, ... )
 	vfprintf( s_pLog, fmt, args );
 	va_end( args );
 	fflush( s_pLog );
-}
-
-// Hide TF2's window once, when launched with -fortcraft_hidden: Minecraft is the one you see.
-static int __stdcall HideOurWindow( void *hwnd, intptr_t )
-{
-	unsigned long pid = 0;
-	GetWindowThreadProcessId( hwnd, &pid );
-	if ( pid == GetCurrentProcessId() && IsWindowVisible( hwnd ) )
-		ShowWindow( hwnd, 0 /* SW_HIDE */ );
-	return 1;
-}
-
-struct FortCraftWindowPair
-{
-	unsigned long hostPid;
-	int width, height;
-	void *ours, *host;
-};
-
-static int __stdcall FindLinkedWindows( void *hwnd, intptr_t param )
-{
-	FortCraftWindowPair *pair = reinterpret_cast< FortCraftWindowPair * >( param );
-	unsigned long pid = 0;
-	GetWindowThreadProcessId( hwnd, &pid );
-	if ( pid != pair->hostPid && pid != GetCurrentProcessId() )
-		return 1;
-	FortCraftRect client;
-	if ( !GetClientRect( hwnd, &client ) || client.right - client.left != pair->width
-		|| client.bottom - client.top != pair->height )
-		return 1;
-	if ( pid == pair->hostPid && IsWindowVisible( hwnd ) )
-		pair->host = hwnd;
-	else if ( pid == GetCurrentProcessId() )
-		pair->ours = hwnd;
-	return 1;
 }
 
 // VGUI reads the Windows cursor relative to TF2's hidden client area. Video-mode
@@ -179,30 +140,64 @@ static void AlignHiddenWindowToMinecraft()
 	const proto::HostDisplay &display = At< proto::HostDisplay >( proto::kOffHostDisplay );
 	if ( display.width <= 0 || display.height <= 0 || ScreenWidth() != display.width || ScreenHeight() != display.height )
 		return;
-	FortCraftWindowPair pair = { Hdr().hostPid, display.width, display.height, NULL, NULL };
-	EnumWindows( FindLinkedWindows, reinterpret_cast< intptr_t >( &pair ) );
-	if ( !pair.ours || !pair.host )
-		return;
-	FortCraftPoint ourOrigin = { 0, 0 }, hostOrigin = { 0, 0 };
-	FortCraftRect ourWindow;
-	if ( !ClientToScreen( pair.ours, &ourOrigin ) || !ClientToScreen( pair.host, &hostOrigin )
-		|| !GetWindowRect( pair.ours, &ourWindow ) )
-		return;
-	if ( ourOrigin.x == hostOrigin.x && ourOrigin.y == hostOrigin.y )
-		return;
-	const int x = ourWindow.left + hostOrigin.x - ourOrigin.x;
-	const int y = ourWindow.top + hostOrigin.y - ourOrigin.y;
-	// NOSIZE | NOZORDER | NOACTIVATE | NOOWNERZORDER. Do not show or focus TF2.
-	if ( SetWindowPos( pair.ours, NULL, x, y, 0, 0, 0x0215 ) )
-	{
-		FortCraftPoint aligned = { 0, 0 };
-		ClientToScreen( pair.ours, &aligned );
-		Msg( "FortCraft menu windows: TF2 client %dx%d origin %ld,%ld -> %ld,%ld; Minecraft origin %ld,%ld\n",
-			display.width, display.height, ourOrigin.x, ourOrigin.y, aligned.x, aligned.y, hostOrigin.x, hostOrigin.y );
-	}
+	FortCraftPlat_AlignToHost( Hdr().hostPid, display.width, display.height, PlatLog );
 }
 
 static bool UiOpen();
+
+// Report what TF2 has actually equipped. This is diagnostic evidence, not a claim
+// that Minecraft displayed the model, paint, particle effect, or animation.
+static void AuditEquippedContent( C_TFPlayer *pPlayer, C_TFWeaponBase *pActive )
+{
+	static float s_flNextCheck;
+	static unsigned int s_nPreviousSignature;
+	static bool s_bHadPlayer;
+	if ( gpGlobals->curtime < s_flNextCheck )
+		return;
+	s_flNextCheck = gpGlobals->curtime + 2.0f;
+	if ( !pPlayer )
+	{
+		s_bHadPlayer = false;
+		return;
+	}
+	unsigned int signature = 2166136261u;
+	const int weaponEntity = pActive ? pActive->entindex() : -1;
+	CEconItemView *pWeaponItem = pActive ? pActive->GetAttributeContainer()->GetItem() : NULL;
+	signature = ( signature ^ (unsigned int)weaponEntity ) * 16777619u;
+	signature = ( signature ^ (unsigned int)( pWeaponItem ? pWeaponItem->GetItemDefIndex() : -1 ) ) * 16777619u;
+	signature = ( signature ^ (unsigned int)( pWeaponItem ? pWeaponItem->GetItemStyle() : -1 ) ) * 16777619u;
+	const int count = pPlayer->GetNumWearables();
+	for ( int i = 0; i < count; ++i )
+	{
+		C_EconWearable *pWearable = pPlayer->GetWearable( i );
+		if ( !pWearable ) continue;
+		CEconItemView *pItem = pWearable->GetAttributeContainer()->GetItem();
+		signature = ( signature ^ (unsigned int)pWearable->entindex() ) * 16777619u;
+		signature = ( signature ^ (unsigned int)( pItem ? pItem->GetItemDefIndex() : -1 ) ) * 16777619u;
+		signature = ( signature ^ (unsigned int)( pItem ? pItem->GetItemQuality() : -1 ) ) * 16777619u;
+		signature = ( signature ^ (unsigned int)( pItem ? pItem->GetItemStyle() : -1 ) ) * 16777619u;
+		signature = ( signature ^ (unsigned int)pWearable->GetModelIndex() ) * 16777619u;
+		signature = ( signature ^ (unsigned int)pWearable->IsEffectActive( EF_NODRAW ) ) * 16777619u;
+	}
+	if ( s_bHadPlayer && signature == s_nPreviousSignature ) return;
+	s_bHadPlayer = true;
+	s_nPreviousSignature = signature;
+	Msg( "FortCraft content: active_weapon_entity=%d weapon_id=%d item_def=%d quality=%d style=%d wearables=%d\n",
+		weaponEntity, pActive ? pActive->GetWeaponID() : -1,
+		pWeaponItem ? pWeaponItem->GetItemDefIndex() : -1,
+		pWeaponItem ? pWeaponItem->GetItemQuality() : -1,
+		pWeaponItem ? (int)pWeaponItem->GetItemStyle() : -1, count );
+	for ( int i = 0; i < count; ++i )
+	{
+		C_EconWearable *pWearable = pPlayer->GetWearable( i );
+		if ( !pWearable ) continue;
+		CEconItemView *pItem = pWearable->GetAttributeContainer()->GetItem();
+		Msg( "FortCraft content: wearable=%d item_def=%d quality=%d style=%d model=%d hidden=%d\n",
+			i, pItem ? pItem->GetItemDefIndex() : -1,
+			pItem ? pItem->GetItemQuality() : -1, pItem ? (int)pItem->GetItemStyle() : -1,
+			pWearable->GetModelIndex(), pWearable->IsEffectActive( EF_NODRAW ) ? 1 : 0 );
+	}
+}
 
 // The look each overlay was drawn with is sent with it, so Minecraft can draw its world the same
 // way (see "Overlay" below).
@@ -321,6 +316,14 @@ static void WriteCamera( const Vector &origin, const QAngle &angles )
 	bool bThird = pPlayer && ( pPlayer->m_Shared.InCond( TF_COND_TAUNTING ) || ( ::input && ::input->CAM_IsThirdPerson() )
 		|| !pPlayer->IsAlive() || pPlayer->GetObserverMode() != OBS_MODE_NONE );
 	C_TFWeaponBase *pActive = pPlayer ? pPlayer->GetActiveTFWeapon() : NULL;
+	AuditEquippedContent( pPlayer, pActive );
+	static bool s_bWasTaunting;
+	const bool bTaunting = pPlayer && pPlayer->m_Shared.InCond( TF_COND_TAUNTING );
+	if ( bTaunting != s_bWasTaunting )
+	{
+		s_bWasTaunting = bTaunting;
+		Msg( "FortCraft content: taunt %s\n", bTaunting ? "started" : "ended" );
+	}
 	const bool bMedigun = pPlayer && pPlayer->IsAlive() && pPlayer->IsPlayerClass( TF_CLASS_MEDIC )
 		&& pActive && pActive->GetWeaponID() == TF_WEAPON_MEDIGUN;
 	proto::Camera &cam = At< proto::Camera >( proto::kOffCamera );
@@ -363,6 +366,7 @@ static void WriteCamera( const Vector &origin, const QAngle &angles )
 // Set when Alex asked for a class or team menu; HideMenus leaves those alone. TF2's own popups
 // (map info, team and class menus on joining) are still hidden: AutoJoin answers those.
 static bool s_bUserMenu;
+static double s_flBackpackLastPageUntil;  // E: turn the backpack to the Minecraft items until then
 static double s_flUserMenuAt;
 
 static bool ViewportMenuOpen()
@@ -469,8 +473,8 @@ static void MenuMouseButton( const proto::UiEvent &ev, bool pressed )
 	MoveCursor( ev.x, ev.y );
 	const int px = clamp( (int)( ev.x * ScreenWidth() ), 0, ScreenWidth() - 1 );
 	const int py = clamp( (int)( ev.y * ScreenHeight() ), 0, ScreenHeight() - 1 );
-	FortCraftPoint saved;
-	const bool restore = FortCraft_GetSystemCursor( &saved );
+	int savedX = 0, savedY = 0;
+	const bool restore = FortCraftPlat_GetCursor( &savedX, &savedY );
 	g_InputInternal->SetCursorPos( px, py );
 	g_InputInternal->UpdateCursorPosInternal( px, py );
 	g_InputInternal->InternalCursorMoved( px, py );
@@ -489,7 +493,7 @@ static void MenuMouseButton( const proto::UiEvent &ev, bool pressed )
 		g_InputInternal->InternalMouseReleased( MouseFromCode( ev.code ) );
 	}
 	if ( restore )
-		::SetCursorPos( saved.x, saved.y );
+		FortCraftPlat_SetCursor( savedX, savedY );
 }
 
 static void CloseAllMenus()
@@ -666,6 +670,25 @@ static void UiCommand( C_TFPlayer *pPlayer, uint32_t cmd )
 		CloseAllMenus();
 		Msg( "FortCraft: closing TF2's menus\n" );
 		return;
+	case proto::kUiBackpack:
+		engine->ClientCmd_Unrestricted( "open_charinfo_backpack\n" );
+		s_flBackpackLastPageUntil = Plat_FloatTime() + 2.0;  // turn to the last page once it shows
+		Msg( "FortCraft: opening TF2's backpack at the Minecraft items\n" );
+		return;
+	case proto::kUiConsole:
+		// The console shows inside TF2's main menu layer (GameUI), so Minecraft's pass-through
+		// screen forwards keys and typing to it like any TF2 menu. Closing it also closes that layer.
+		if ( engine->Con_IsVisible() )
+		{
+			engine->ClientCmd_Unrestricted( "hideconsole; gameui_hide\n" );
+			Msg( "FortCraft: closing TF2's console\n" );
+		}
+		else
+		{
+			engine->ClientCmd_Unrestricted( "con_enable 1; showconsole\n" );
+			Msg( "FortCraft: opening TF2's console\n" );
+		}
+		return;
 	}
 
 	bool bMenu = pPlayer->ShouldShowHudMenuTauntSelection();
@@ -747,7 +770,7 @@ static void ApplyLatestLook( C_TFPlayer *pPlayer )
 	engine->SetViewAngles( ang );
 	s_LastLookPose.yaw = flYaw;
 	s_LastLookPose.pitch = flPitch;
-	s_LastLookPose.timeMs = GetTickCount64();
+	s_LastLookPose.timeUs = FortCraftPlat_NowUs();  // this frame's start, for Minecraft's pacing
 }
 
 // ---- Overlay ---------------------------------------------------------------------------------
@@ -956,7 +979,7 @@ static void DrawBlockDepth()
 	if ( Plat_FloatTime() >= s_flNextDepthLog )
 	{
 		s_flNextDepthLog = Plat_FloatTime() + 5.0;
-		Msg( "FortCraft depth: %d solid, %d visual skipped, %d mob boxes\n", counts[ 0 ], counts[ 1 ], counts[ 2 ] );
+		PerfLog( "FortCraft depth: %d solid, %d visual skipped, %d mob boxes\n", counts[ 0 ], counts[ 1 ], counts[ 2 ] );
 	}
 }
 
@@ -1122,7 +1145,7 @@ static void LogPerf( int width, int height, const char *pszPath )
 	else if ( flNow - s_flLogStart >= 5.0 )
 	{
 		double flSpan = flNow - s_flLogStart;
-		Msg( "FortCraft: perf %dx%d (%s): TF2 %.0f fps, overlay %.0f fps, read %.1f ms each (on TF2's frame), combine %.1f ms (worker) (fps_max %d)\n",
+		PerfLog( "FortCraft: perf %dx%d (%s): TF2 %.0f fps, overlay %.0f fps, read %.1f ms each (on TF2's frame), combine %.1f ms (worker) (fps_max %d)\n",
 			width, height, pszPath, ( s_nFrame - s_nFrameAtLog ) / flSpan, s_nPairs / flSpan,
 			1000.0 * s_flSumRead / MAX( 1, s_nReads ), 1000.0 * s_flSumCombine / MAX( 1, s_nPairs ), s_nOverlayFps );
 		s_flLogStart = flNow;
@@ -1197,15 +1220,14 @@ static void MatchHostDisplay()
 	s_nRequestedH = h;
 
 	Msg( "FortCraft: resizing TF2 to %dx%d to match Minecraft\n", w, h );
-	s_hRestoreFocus = GetForegroundWindow();  // Minecraft, normally
+	FortCraftPlat_RememberFocus();  // Minecraft, normally
 	engine->ClientCmd_Unrestricted( VarArgs( "mat_setvideomode %d %d 1\n", w, h ) );
 	if ( s_bHidden )
 		s_flRehideAt = Plat_FloatTime() + 0.5;  // a mode change can show the window again
 }
 
-// When Minecraft has let go of the mouse (pause menu, chat, alt-tab), nobody may hold it. The
-// cursor lock on Windows is one global rectangle (ClipCursor) that any program can set; if one
-// is still in place then, release it, and log who had focus so the real culprit shows up.
+// When Minecraft has let go of the mouse (pause menu, chat, alt-tab), nobody may hold it.
+// FortCraftPlat_ReleaseCursor undoes any lock (Windows: ClipCursor; Linux: SDL grab).
 static void FreeCursorIfMinecraftLetGo()
 {
 	const proto::HostDisplay &d = At< proto::HostDisplay >( proto::kOffHostDisplay );
@@ -1216,29 +1238,79 @@ static void FreeCursorIfMinecraftLetGo()
 	if ( !bFree )
 		return;
 
-	FortCraftRect clip;
-	GetClipCursor( &clip );
-	FortCraftRect screen = { GetSystemMetrics( 76 ), GetSystemMetrics( 77 ), 0, 0 };  // virtual screen
-	screen.right = screen.left + GetSystemMetrics( 78 );
-	screen.bottom = screen.top + GetSystemMetrics( 79 );
-	// Only a pin (a tiny rectangle, e.g. the 1-pixel one seen at Minecraft's centre) counts as a
-	// lock. A fullscreen game is normally kept to its own monitor, and that must stay.
-	bool bClipped = ( clip.right - clip.left ) < 200 || ( clip.bottom - clip.top ) < 200;
-	(void)screen;
+	FortCraftPlat_ReleaseCursor( Hdr().hostPid, bChanged, PlatLog );
+}
 
-	unsigned long fgPid = 0;
-	GetWindowThreadProcessId( GetForegroundWindow(), &fgPid );
-	static bool s_bWasClipped;
-	bool bLog = bChanged || ( bClipped && !s_bWasClipped );
-	s_bWasClipped = bClipped;
-	if ( bLog )
+// Jitter measurement. When TF2's server disagrees with where the client predicted the player
+// (for example the two read a different set of Minecraft blocks), TF2 snaps the player back and
+// smooths the view over cl_smoothtime (0.1 s); a burst of these is felt as jitter. TF2 keeps
+// the leftover correction as a smoothing offset: a new error shows as that offset growing.
+static void NotePredictionErrors( C_TFPlayer *pPlayer, const Vector &pos )
+{
+	static Vector s_vecLastSmooth;
+	static double s_flWindowStart;
+	static int s_nErrors, s_nLines;
+	static float s_flMaxError;
+	Vector vSmooth;
+	pPlayer->GetPredictionErrorSmoothingVector( vSmooth );
+	const float flGrowth = ( vSmooth - s_vecLastSmooth ).Length();
+	if ( vSmooth.Length() > s_vecLastSmooth.Length() + 0.01f )
 	{
-		Msg( "FortCraft: Minecraft let go of the mouse; focus is with pid %lu (%s), cursor %s %ld,%ld-%ld,%ld\n",
-			fgPid, fgPid == GetCurrentProcessId() ? "TF2" : fgPid == Hdr().hostPid ? "Minecraft" : "other",
-			bClipped ? "LOCKED to" : "free,", clip.left, clip.top, clip.right, clip.bottom );
+		++s_nErrors;
+		s_flMaxError = MAX( s_flMaxError, flGrowth );
+		if ( s_nLines < 20 )  // the first few of each 5 s, with where and how the player moved
+		{
+			++s_nLines;
+			const Vector vel = pPlayer->GetAbsVelocity();
+			PerfLog( "FortCraft jitter: prediction error %.3f units (%.3f %.3f %.3f) at %.1f %.1f %.1f vel %.0f %.0f %.0f onGround=%d\n",
+				flGrowth, vSmooth.x - s_vecLastSmooth.x, vSmooth.y - s_vecLastSmooth.y, vSmooth.z - s_vecLastSmooth.z,
+				pos.x, pos.y, pos.z, vel.x, vel.y, vel.z, ( pPlayer->GetFlags() & FL_ONGROUND ) ? 1 : 0 );
+		}
 	}
-	if ( bClipped )
-		ClipCursor( NULL );
+	s_vecLastSmooth = vSmooth;
+	const double flNow = Plat_FloatTime();
+	if ( s_flWindowStart == 0.0 )
+		s_flWindowStart = flNow;
+	else if ( flNow - s_flWindowStart >= 5.0 )
+	{
+		PerfLog( "FortCraft jitter: %d prediction errors in %.0f s (largest %.3f units)\n", s_nErrors, flNow - s_flWindowStart, s_flMaxError );
+		s_flWindowStart = flNow;
+		s_nErrors = s_nLines = 0;
+		s_flMaxError = 0.0f;
+	}
+}
+
+// The backpack opens on page 1 (CBackpackPanel::OnShowPanel); the Minecraft items are on the
+// last page. Once the panel is showing, turn it there (SetCurrentPage(-1) means the last page).
+static void TurnBackpackToMinecraftItems()
+{
+	if ( s_flBackpackLastPageUntil == 0.0 )
+		return;
+	if ( Plat_FloatTime() > s_flBackpackLastPageUntil )
+	{
+		s_flBackpackLastPageUntil = 0.0;
+		Msg( "FortCraft: backpack didn't open; not turning the page\n" );
+		return;
+	}
+	CBackpackPanel *pBackpack = EconUI() ? EconUI()->GetBackpackPanel() : NULL;
+	if ( !pBackpack || !pBackpack->IsVisible() )
+		return;
+	// The backpack resets itself to page 1 once more as it finishes opening (Alex: E showed page
+	// 1 although the log said page 18), so hold it on the last page for a moment after it shows.
+	static double s_flHoldUntil;
+	if ( s_flHoldUntil == 0.0 )
+		s_flHoldUntil = Plat_FloatTime() + 0.75;
+	const int nLast = pBackpack->GetNumPages() - 1;
+	if ( pBackpack->GetCurrentPage() != nLast )
+	{
+		pBackpack->SetCurrentPage( nLast );
+		Msg( "FortCraft: backpack turned to page %d of %d (Minecraft items)\n", nLast + 1, nLast + 1 );
+	}
+	if ( Plat_FloatTime() > s_flHoldUntil )
+	{
+		s_flHoldUntil = 0.0;
+		s_flBackpackLastPageUntil = 0.0;
+	}
 }
 
 static void AutoJoin( C_TFPlayer *pPlayer )
@@ -1269,6 +1341,9 @@ static void AutoJoin( C_TFPlayer *pPlayer )
 			" r_shadows 0; r_flashlightdepthtexture 0; r_dynamic 0; r_decals 0; mp_decals 0; r_drawbatchdecals 0;"
 			" r_waterforceexpensive 0; r_waterforcereflectentities 0; r_lod 2; r_rootlod 2; mat_picmip 2;"
 			" mat_hdr_level 0; mat_disable_bloom 1; mat_motion_blur_enabled 0; mat_colorcorrection 0;"
+			// No full-screen TF2 effects over Minecraft (burning, Jarate, Bonk, Ubercharge tints;
+			// strafing view roll).
+			" r_drawscreenoverlay 0; cl_rollangle 0;"
 			" mat_antialias 0; mat_forceaniso 0; mat_trilinear 0; mat_reducefillrate 1; cl_detaildist 0;"
 			" cl_ragdoll_physics_enable 0; cl_phys_props_enable 0; tf_particles_disable_weather 1\n" );
 
@@ -1318,6 +1393,105 @@ static void HideMapEntities()
 		bool bBrush = pModel && modelinfo->GetModelType( pModel ) == mod_brush;
 		if ( bBrush || V_stristr( pszClass, "Prop" ) || V_stristr( pszClass, "World" ) )
 			pEnt->AddEffects( EF_NODRAW );
+	}
+}
+
+// ---- Far objects behind Minecraft blocks (protocol FarObjects / FarHidden) -------------------
+// Beyond the scanned blocks TF2 has no depth for Minecraft's world, so far objects drew through
+// houses and hills. TF2 lists them; Minecraft answers which it can't see; TF2 hides those with
+// EF_NODRAW on its own copy (re-applied each frame, since a network update can clear it).
+static const float kFarObjectUnits = 10.0f * UNITS_PER_BLOCK;  // the depth boxes cover nearer
+static CUtlVector< int > s_FarHiddenByUs;
+
+static bool FarCandidate( C_BaseEntity *pEnt, C_BasePlayer *pLocal )
+{
+	if ( pEnt->IsDormant() || !pEnt->GetClientClass() || !pEnt->GetModel() || pEnt == pLocal )
+		return false;
+	if ( pEnt->GetMoveParent() == pLocal || pEnt->IsBaseCombatWeapon() )
+		return false;  // what the player holds or wears
+	const char *pszClass = pEnt->GetClientClass()->m_pNetworkName;
+	if ( V_stristr( pszClass, "ViewModel" ) || V_stristr( pszClass, "Prop" ) || V_stristr( pszClass, "World" ) )
+		return false;  // TF2's map pieces stay hidden by HideMapEntities
+	return modelinfo->GetModelType( pEnt->GetModel() ) != mod_brush;
+}
+
+static void UpdateFarOcclusion( C_TFPlayer *pPlayer )
+{
+	const Vector eye = pPlayer->EyePosition();
+	struct Candidate { C_BaseEntity *pEnt; float flDist; };
+	CUtlVector< Candidate > found;
+	for ( C_BaseEntity *pEnt = ClientEntityList().FirstBaseEntity(); pEnt; pEnt = ClientEntityList().NextBaseEntity( pEnt ) )
+	{
+		if ( !FarCandidate( pEnt, pPlayer ) )
+			continue;
+		const float flDist = ( pEnt->WorldSpaceCenter() - eye ).Length();
+		if ( flDist > kFarObjectUnits )
+		{
+			Candidate c = { pEnt, flDist };
+			found.AddToTail( c );
+		}
+	}
+	// Nearest first, if there are more than fit.
+	for ( int i = 1; i < found.Count(); ++i )
+		for ( int j = i; j > 0 && found[ j ].flDist < found[ j - 1 ].flDist; --j )
+		{
+			Candidate t = found[ j ];
+			found[ j ] = found[ j - 1 ];
+			found[ j - 1 ] = t;
+		}
+
+	proto::FarObjects &q = At< proto::FarObjects >( proto::kOffFarObjects );
+	uint32_t seq = q.seq;
+	*(volatile uint32_t *)&q.seq = ( seq + 1 ) | 1;  // odd: writing
+	uint32_t n = 0;
+	for ( int i = 0; i < found.Count() && n < proto::kMaxFarObjects; ++i )
+	{
+		proto::FarObject &o = q.list[ n++ ];
+		o.ent = found[ i ].pEnt->entindex();
+		ToMinecraft( found[ i ].pEnt->WorldSpaceCenter(), o.x, o.y, o.z );
+		o.radius = MAX( 0.2f, found[ i ].pEnt->CollisionProp()->BoundingRadius() / UNITS_PER_BLOCK );
+	}
+	q.count = n;
+	*(volatile uint32_t *)&q.seq = ( ( seq + 1 ) | 1 ) + 1;  // even: done
+
+	// Minecraft's answer: which of them it can't see.
+	const proto::FarHidden &a = At< proto::FarHidden >( proto::kOffFarHidden );
+	const uint32_t aseq = *(volatile const uint32_t *)&a.seq;
+	if ( aseq & 1 )
+		return;
+	int hidden[ proto::kMaxFarObjects ];
+	const uint32_t count = MIN( a.count, proto::kMaxFarObjects );
+	for ( uint32_t i = 0; i < count; ++i )
+		hidden[ i ] = a.ent[ i ];
+	if ( *(volatile const uint32_t *)&a.seq != aseq )
+		return;
+	for ( int i = s_FarHiddenByUs.Count() - 1; i >= 0; --i )
+	{
+		bool bStill = false;
+		for ( uint32_t k = 0; k < count && !bStill; ++k )
+			bStill = hidden[ k ] == s_FarHiddenByUs[ i ];
+		if ( bStill )
+			continue;
+		C_BaseEntity *pEnt = ClientEntityList().GetBaseEntity( s_FarHiddenByUs[ i ] );
+		if ( pEnt )
+			pEnt->RemoveEffects( EF_NODRAW );
+		s_FarHiddenByUs.Remove( i );
+	}
+	for ( uint32_t k = 0; k < count; ++k )
+	{
+		C_BaseEntity *pEnt = ClientEntityList().GetBaseEntity( hidden[ k ] );
+		if ( !pEnt || !FarCandidate( pEnt, pPlayer ) )
+			continue;
+		if ( !pEnt->IsEffectActive( EF_NODRAW ) )
+			pEnt->AddEffects( EF_NODRAW );
+		if ( s_FarHiddenByUs.Find( hidden[ k ] ) < 0 )
+			s_FarHiddenByUs.AddToTail( hidden[ k ] );
+	}
+	static double s_flNextLog;
+	if ( Plat_FloatTime() > s_flNextLog && ( n > 0 || s_FarHiddenByUs.Count() > 0 ) )
+	{
+		s_flNextLog = Plat_FloatTime() + 5.0;
+		PerfLog( "FortCraft far objects: %u beyond the block depth layer, %d hidden behind Minecraft blocks\n", n, s_FarHiddenByUs.Count() );
 	}
 }
 
@@ -1531,15 +1705,38 @@ bool FortCraft_IsLocalItem( unsigned long long itemID )
 	return LocalStackFor( itemID ) != NULL;
 }
 
+// FortCraft's supply packs are used straight from the backpack ("Use"), never held: they have
+// no hand model (Alex saw a missing-texture block).
+static bool IsSupplyPack( const char *pszId )
+{
+	return V_strncmp( pszId, "fortcraft:", 10 ) == 0 && V_stristr( pszId, "_pack" ) != NULL;
+}
+
+const char *FortCraft_LocalItemMenuLabel( unsigned long long itemID )
+{
+	LocalStack *p = LocalStackFor( itemID );
+	return p && IsSupplyPack( p->id ) ? "Use" : "Equip to hand";
+}
+
 void FortCraft_EquipLocalItem( unsigned long long itemID )
 {
 	LocalStack *p = LocalStackFor( itemID );
 	if ( !s_pShm || !p )
 		return;
 	proto::HandRequest &req = At< proto::HandRequest >( proto::kOffHandRequest );
-	V_strncpy( req.id, p->id, sizeof( req.id ) );
+	if ( IsSupplyPack( p->id ) )
+	{
+		V_snprintf( req.id, sizeof( req.id ), "use:%s", p->id );  // TF2's server plays the pickup sound
+		Msg( "FortCraft hand: asked Minecraft to use %s\n", p->id );
+	}
+	else
+	{
+		V_strncpy( req.id, p->id, sizeof( req.id ) );
+		if ( vgui::surface() )
+			vgui::surface()->PlaySound( "ui/item_default_pickup.wav" );
+		Msg( "FortCraft hand: asked Minecraft to hold %s\n", p->id );
+	}
 	*(volatile uint32_t *)&req.count = req.count + 1;
-	Msg( "FortCraft hand: asked Minecraft to hold %s\n", p->id );
 }
 
 static void SyncHand()
@@ -1708,17 +1905,15 @@ void FortCraft_OnRenderStart()
 	if ( !s_bHidden && CommandLine()->FindParm( "-fortcraft_hidden" ) )
 	{
 		s_bHidden = true;
-		EnumWindows( HideOurWindow, 0 );
+		FortCraftPlat_HideOwnWindows( PlatLog );
 	}
 	if ( s_flRehideAt > 0.0 && Plat_FloatTime() >= s_flRehideAt )
 	{
 		s_flRehideAt = 0.0;
-		EnumWindows( HideOurWindow, 0 );
+		FortCraftPlat_HideOwnWindows( PlatLog );
 		// A mode change can also make TF2 the active window, which steals the keyboard and
 		// locks the mouse; hand focus back to whoever had it (Minecraft).
-		if ( s_hRestoreFocus )
-			SetForegroundWindow( s_hRestoreFocus );
-		s_hRestoreFocus = NULL;
+		FortCraftPlat_RestoreFocus( PlatLog );
 	}
 
 	TryOpen();
@@ -1732,7 +1927,7 @@ void FortCraft_OnRenderStart()
 		s_bLinked = bLinked;
 		if ( bLinked )
 		{
-			h.guestPid = GetCurrentProcessId();
+			h.guestPid = (uint32_t)FortCraftPlat_ProcessId();
 			Msg( "FortCraft: linked to Minecraft (pid %u)\n", h.hostPid );
 		}
 		else
@@ -1748,10 +1943,19 @@ void FortCraft_OnRenderStart()
 
 	++s_nFrame;
 	h.guestFrame = s_nFrame;
-	*(volatile uint64_t *)&h.guestHeartbeatMs = GetTickCount64();
+	*(volatile uint64_t *)&h.guestHeartbeatMs = FortCraftPlat_NowMs();
 
 	HideMenus();
 	HideMapEntities();
+	// No TF2 screen shake (explosions, fall damage, earthquakes) or screen fades: Minecraft's
+	// camera follows TF2's eye, so a shake moved Minecraft's world too. (Recoil and other view
+	// punches are already off: sv_suppress_viewpunch.)
+	if ( vieweffects )
+	{
+		ScreenShake_t stop = { SHAKE_STOP, 0.0f, 0.0f, 0.0f };
+		vieweffects->Shake( stop );
+		vieweffects->ClearAllFades();
+	}
 	MatchHostDisplay();
 	AlignHiddenWindowToMinecraft();
 	PublishGpuOverlay();
@@ -1766,11 +1970,12 @@ void FortCraft_OnRenderStart()
 		s_bMouseOff = true;
 		engine->ClientCmd_Unrestricted( "cl_mouseenable 0; m_rawinput 0\n" );
 	}
-	if ( input )
-		input->DeactivateMouse();
+	if ( ::input )
+		::input->DeactivateMouse();
 	if ( vgui::surface() )
 		vgui::surface()->SetCursorAlwaysVisible( true );
 	FreeCursorIfMinecraftLetGo();
+	TurnBackpackToMinecraftItems();
 	SyncBackpack();
 	SyncHand();
 
@@ -1787,6 +1992,7 @@ void FortCraft_OnRenderStart()
 
 	// Position after this frame's interpolation and prediction: what TF2 is about to draw.
 	Vector pos = pPlayer->GetAbsOrigin();
+	NotePredictionErrors( pPlayer, pos );
 	static int s_nLastWaterLevel = -1;
 	if ( pPlayer->GetWaterLevel() != s_nLastWaterLevel )
 	{
@@ -1861,6 +2067,7 @@ void FortCraft_OnRenderStart()
 	*(volatile uint32_t *)&ps.seq = ( ( seq + 1 ) | 1 ) + 1;  // even: done
 
 	WriteProjectiles();
+	UpdateFarOcclusion( pPlayer );
 
 	LinkLog( "sample=%llu tick=%d alpha=%.3f sent=(%.4f,%.4f,%.4f) yaw=%.2f tf2=(%.1f,%.1f,%.1f) speed=%.0f onGround=%d\n",
 		(unsigned long long)s_nSample, gpGlobals->tickcount, gpGlobals->interpolation_amount, x, y, z, yaw,

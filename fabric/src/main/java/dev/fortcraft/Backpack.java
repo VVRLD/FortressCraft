@@ -93,7 +93,7 @@ public final class Backpack {
 		if (!modDirOk) {
 			return "";
 		}
-		String file = "v2_" + id.replace(':', '_').replace('/', '_'); // v2: tinted leaves and grass
+		String file = "v3_" + id.replace(':', '_').replace('/', '_'); // v3: chest and block-variant icons
 		String material = "backpack/fortcraft/" + file;
 		Path dir = MOD_DIR.resolve("materials").resolve("backpack").resolve("fortcraft");
 		Path vtf = dir.resolve(file + "_large.vtf");
@@ -122,13 +122,31 @@ public final class Backpack {
 	private static int[] loadTexture(Minecraft minecraft, String id) throws IOException {
 		Identifier key = Identifier.parse(id);
 		String path = key.getPath();
-		String[] candidates = {
+		if (key.getNamespace().equals("minecraft") &&
+			(path.equals("chest") || path.equals("trapped_chest") || path.equals("ender_chest"))) {
+			boolean ender = path.equals("ender_chest");
+			int[] base = loadTexture(minecraft, ender ? "minecraft:obsidian" : "minecraft:oak_planks");
+			if (base != null) {
+				FortCraft.LOG.info("FortCraft: backpack icon {} uses Minecraft block texture with chest shape", id);
+				return chestIcon(base, ender, path.equals("trapped_chest"));
+			}
+		}
+		if (key.getNamespace().equals("fortcraft") && path.endsWith("_pack")) {
+			key = Identifier.fromNamespaceAndPath("minecraft", path.contains("ammo") ? "iron_ingot" : "apple");
+			path = key.getPath();
+		}
+		List<String> candidates = new ArrayList<>(List.of(
 			"textures/item/" + path + ".png",
 			"textures/block/" + path + "_side.png",
 			"textures/block/" + path + "_front.png",
 			"textures/block/" + path + ".png",
-			"textures/block/" + path + "_top.png",
-		};
+			"textures/block/" + path + "_top.png"));
+		String base = path.replaceFirst("_(button|pressure_plate|slab|stairs|fence|fence_gate|wall)$", "");
+		if (!base.equals(path)) {
+			candidates.add("textures/block/" + base + ".png");
+			candidates.add("textures/block/" + base + "_planks.png");
+			candidates.add("textures/block/" + base + "_side.png");
+		}
 		for (String candidate : candidates) {
 			var resource = minecraft.getResourceManager().getResource(Identifier.fromNamespaceAndPath(key.getNamespace(), candidate));
 			if (resource.isEmpty()) {
@@ -136,6 +154,7 @@ public final class Backpack {
 			}
 			int tint = tintFor(candidate);
 			try (InputStream in = resource.get().open(); NativeImage image = NativeImage.read(in)) {
+				FortCraft.LOG.info("FortCraft: backpack icon {} uses {}", id, candidate);
 				int w = image.getWidth();
 				int h = Math.min(image.getHeight(), w); // animated textures are a vertical strip: first frame
 				int[] out = new int[ICON_SIZE * ICON_SIZE];
@@ -148,6 +167,35 @@ public final class Backpack {
 			}
 		}
 		return null;
+	}
+
+	/** A readable chest tile using textures from the installed game, not a bundled asset. */
+	private static int[] chestIcon(int[] base, boolean ender, boolean trapped) {
+		int[] out = new int[ICON_SIZE * ICON_SIZE];
+		for (int y = 18; y < 110; y++) {
+			for (int x = 13; x < 115; x++) {
+				boolean lid = y < 52;
+				if (!lid && (x < 18 || x >= 110)) continue;
+				boolean edge = x < (lid ? 17 : 22) || x >= (lid ? 111 : 106)
+					|| y < 22 || y >= 105 || (y >= 48 && y < 54);
+				int source = base[y * ICON_SIZE + x];
+				out[y * ICON_SIZE + x] = shade(source, edge ? 0.42f : (lid ? 0.85f : 0.68f));
+			}
+		}
+		for (int y = 42; y < 72; y++) {
+			for (int x = 56; x < 72; x++) {
+				boolean edge = x < 59 || x >= 69 || y < 45 || y >= 69;
+				out[y * ICON_SIZE + x] = edge ? 0xFF302B20 : (ender ? 0xFF61B0A6 : trapped ? 0xFFD07062 : 0xFFE1C782);
+			}
+		}
+		return out;
+	}
+
+	private static int shade(int argb, float factor) {
+		int r = Math.round(((argb >> 16) & 0xFF) * factor);
+		int g = Math.round(((argb >> 8) & 0xFF) * factor);
+		int b = Math.round((argb & 0xFF) * factor);
+		return (argb & 0xFF000000) | (r << 16) | (g << 8) | b;
 	}
 
 	/**

@@ -4,11 +4,15 @@
   "compatibilityLevel": "JAVA_25",
   "client": [
     "CameraMixin",
+    "ClientLanguageMixin",
+    "GameRendererMixin",
     "HandsMixin",
     "HudMixin",
     "ItemStackMixin",
+    "ItemsMixin",
     "MinecraftMixin",
     "MouseHandlerMixin",
+    "OptionsMixin",
     "ServerPlayerMixin",
     "ServerMoveMixin"
   ],

@@ -43,3 +43,13 @@ Needs Source SDK Base 2013 Multiplayer and Team Fortress 2 installed through Ste
 
 `tools\play.bat` starts Minecraft and the hidden TF2 together. `tools\run_tf2.bat visible`
 starts only TF2 with its window showing.
+
+## Linux
+
+All Windows/Linux differences are in `fortcraft_platform.cpp` (shared memory in
+`/dev/shm/FortCraft_v1`, `CLOCK_MONOTONIC`, TF2's SDL2 window). `fortcraft_gpu.cpp` is
+Windows-only (Linux stubs). Build with `tools/build_tf2.sh` (podman + Valve's Steam Runtime
+container, release by default; `--regen` after a `.vpc` change). Output goes to
+`game/mod_tf/bin/linux64/` with the launcher at `game/mod_tf_linux64`. `tools/setup_linux.sh`
+clones the SDK and applies `sdk-changes.patch`. Not yet built or run on Linux; see
+`../LINUX-TESTING.md`.

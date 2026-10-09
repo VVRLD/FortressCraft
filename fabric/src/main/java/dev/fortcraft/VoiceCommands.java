@@ -23,9 +23,9 @@ public final class VoiceCommands {
 		if (openMenu != 0 && (!canOpen || System.nanoTime() > expiresAt)) {
 			cancel();
 		}
-		int[] keys = {InputConstants.KEY_Z, InputConstants.KEY_X, InputConstants.KEY_C};
+		net.minecraft.client.KeyMapping[] keys = {Tf2Keys.VOICE_1, Tf2Keys.VOICE_2, Tf2Keys.VOICE_3};
 		for (int i = 0; i < keys.length; i++) {
-			if (edge(InputConstants.isKeyDown(keys[i]), i) && canOpen) {
+			if (edge(keys[i].isDown(), i) && canOpen) {
 				int requested = i + 1;
 				FortLink.sendUiCommand(MENU_1 + i);
 				openMenu = openMenu == requested ? 0 : requested;
@@ -33,7 +33,7 @@ public final class VoiceCommands {
 				FortCraft.LOG.info("FortCraft: TF2 voice menu {} {}", requested, openMenu == 0 ? "closed" : "opened");
 			}
 		}
-		if (edge(InputConstants.isKeyDown(InputConstants.KEY_0), 3) && openMenu != 0) {
+		if (edge(Tf2Keys.VOICE_CANCEL.isDown(), 3) && openMenu != 0) {
 			cancel();
 		}
 	}

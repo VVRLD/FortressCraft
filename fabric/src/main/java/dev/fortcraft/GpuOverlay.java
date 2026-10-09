@@ -41,7 +41,9 @@ final class GpuOverlay {
 
 	private static final Linker LINKER = Linker.nativeLinker();
 
-	private static int state;  // 0 untried, 1 ready, 2 failed
+	// 0 untried, 1 ready, 2 failed. Direct3D sharing exists only on Windows; on Linux TF2 sends
+	// pixels through shared memory from the start (see docs/DESIGN.md, "Linux port").
+	private static int state = FortLink.WINDOWS ? 0 : 2;
 	private static MemorySegment device = MemorySegment.NULL;
 	private static long interopDevice;
 

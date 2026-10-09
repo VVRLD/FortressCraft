@@ -46,6 +46,8 @@ const char *FortCraft_LocalItemImage( unsigned long long itemID );
 // Backpack phase B: true for a Minecraft item; asks Minecraft to hold it instead of TF2's melee.
 bool FortCraft_IsLocalItem( unsigned long long itemID );
 void FortCraft_EquipLocalItem( unsigned long long itemID );
+// The backpack menu entry for a Minecraft item: "Use" (supply packs) or "Equip to hand".
+const char *FortCraft_LocalItemMenuLabel( unsigned long long itemID );
 
 // Backpack phase C: Minecraft's craftable 2x2 recipes for TF2's crafting screen. The version
 // changes whenever Minecraft sends a new list; indexes are valid until then.

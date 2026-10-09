@@ -14,8 +14,10 @@
 namespace fortcraft { namespace proto
 {
 	static constexpr std::uint32_t kMagic = 0x46524346;  // "FCRF"
-	static constexpr std::uint32_t kVersion = 38;
+	static constexpr std::uint32_t kVersion = 42;
 	static constexpr wchar_t       kMappingName[] = L"Local\\FortCraft_v1";
+	// Linux: a file in RAM that Minecraft creates and both sides map (same bytes as on Windows).
+	static constexpr char          kMappingPathPosix[] = "/dev/shm/FortCraft_v1";
 	// Sized for the block boxes plus two overlay frames up to 4K; see kOffOverlayPixels below.
 	static constexpr std::uint64_t kMappingBytes = 0x100000 + 2ull * 3840 * 2160 * 4;
 
@@ -39,12 +41,12 @@ namespace fortcraft { namespace proto
 		std::uint32_t version;
 		std::uint32_t hostPid;            // Minecraft process id
 		std::uint32_t guestPid;           // TF2 process id; 0 until TF2 connects
-		std::uint64_t hostHeartbeatMs;    // GetTickCount64() at Minecraft's last frame
-		std::uint64_t guestHeartbeatMs;   // GetTickCount64() at TF2's last frame
+		std::uint64_t hostHeartbeatMs;    // ms at Minecraft's last frame: GetTickCount64 (Windows) or CLOCK_MONOTONIC (Linux)
+		std::uint64_t guestHeartbeatMs;   // ms at TF2's last frame, same clock
 		std::uint64_t hostFrame;          // counts up once per Minecraft frame
 		std::uint64_t guestFrame;         // counts up once per TF2 frame
 	};
-	static_assert(sizeof(Header) == 0x30);
+	static_assert(sizeof(Header) == 0x30, "FortCraft protocol layout");
 
 	// ---- TF2 -> Minecraft player state @0x100 -----------------------------------------------
 	// TF2 decides where the player is. TF2 writes this once per TF2 render frame, using its
@@ -69,7 +71,7 @@ namespace fortcraft { namespace proto
 		float         eyeHeight; // TF2's eye above the feet, blocks; Minecraft puts its camera there
 		std::uint32_t pad;
 	};
-	static_assert(sizeof(PlayerState) == 0x38);
+	static_assert(sizeof(PlayerState) == 0x38, "FortCraft protocol layout");
 
 	// ---- Minecraft -> TF2 input @0x140 ------------------------------------------------------
 	// The Minecraft window has the keyboard and mouse, so Minecraft forwards what the player is
@@ -98,7 +100,7 @@ namespace fortcraft { namespace proto
 		std::uint32_t weaponSlot;  // Minecraft's selected hotbar slot (0, 1, 2...); TF2 switches to that weapon slot
 		std::uint32_t pad;
 	};
-	static_assert(sizeof(InputState) == 0x20);
+	static_assert(sizeof(InputState) == 0x20, "FortCraft protocol layout");
 
 	// ---- TF2 -> both TF2 modules: coordinate anchor @0x180 ----------------------------------
 	// The TF2 position (TF2 units) that corresponds to Minecraft (0.5, -60, 0.5): where the TF2
@@ -112,7 +114,7 @@ namespace fortcraft { namespace proto
 		std::uint32_t pad;
 		double        x, y, z;
 	};
-	static_assert(sizeof(Anchor) == 0x20);
+	static_assert(sizeof(Anchor) == 0x20, "FortCraft protocol layout");
 
 	// ---- Minecraft -> TF2: window size @0x1A0 -----------------------------------------------
 	// Minecraft's framebuffer size in pixels. TF2 switches its (hidden) window to match, scaled
@@ -141,8 +143,8 @@ namespace fortcraft { namespace proto
 		// Minecraft can't open the GPU overlay's shared textures: TF2 must use the read-back path.
 		kHostNoGpuOverlay = 1u << 2,
 	};
-	static_assert(sizeof(HostDisplay) == 0x1C);
-	static_assert(kOffHostDisplay + sizeof(HostDisplay) <= 0x1C0);  // SpawnPoint follows
+	static_assert(sizeof(HostDisplay) == 0x1C, "FortCraft protocol layout");
+	static_assert(kOffHostDisplay + sizeof(HostDisplay) <= 0x1C0, "FortCraft protocol layout");  // SpawnPoint follows
 
 	// ---- Minecraft -> TF2 spawn point @0x1C0 ----------------------------------------------
 	// Where TF2 should (re)spawn the player: on top of Minecraft's ground at the world's spawn
@@ -154,7 +156,7 @@ namespace fortcraft { namespace proto
 		std::uint32_t valid;
 		float         x, y, z;
 	};
-	static_assert(sizeof(SpawnPoint) == 16);
+	static_assert(sizeof(SpawnPoint) == 16, "FortCraft protocol layout");
 
 	// ---- TF2 -> Minecraft camera @0x1D0 ---------------------------------------------------
 	// The camera TF2 actually rendered with. While TF2 is in third person (taunting), Minecraft
@@ -180,7 +182,7 @@ namespace fortcraft { namespace proto
 		float         pitch;    // Minecraft degrees
 		float         zoom;     // TF2's zoom (Sniper scope): tan(fov/2) / tan(default fov/2); 1 = none
 	};
-	static_assert(sizeof(Camera) == 32);
+	static_assert(sizeof(Camera) == 32, "FortCraft protocol layout");
 
 	// 0x1F0..0x200: unused (was the single-slot UiCommand before version 14; see UiEvents).
 
@@ -193,7 +195,7 @@ namespace fortcraft { namespace proto
 		float minX, minY, minZ;
 		float maxX, maxY, maxZ;
 	};
-	static_assert(sizeof(BlockBox) == 24);
+	static_assert(sizeof(BlockBox) == 24, "FortCraft protocol layout");
 
 	static constexpr std::uint32_t kMaxBlockBoxes = 8192;
 
@@ -203,7 +205,7 @@ namespace fortcraft { namespace proto
 		std::uint32_t count;  // boxes in use, at most kMaxBlockBoxes
 		BlockBox      boxes[kMaxBlockBoxes];
 	};
-	static_assert(kOffBlockBoxes + sizeof(BlockBoxes) <= kOffOverlayPixels);
+	static_assert(kOffBlockBoxes + sizeof(BlockBoxes) <= kOffOverlayPixels, "FortCraft protocol layout");
 
 	// VisualBoxes (Minecraft -> TF2, seqlock like BlockBoxes): blocks you can see but walk through
 	// (grass, flowers, crops, torches...), one box per block around its outline. TF2 doesn't
@@ -218,8 +220,8 @@ namespace fortcraft { namespace proto
 		std::uint32_t count;
 		BlockBox      boxes[kMaxVisualBoxes];
 	};
-	static_assert(kOffVisualBoxes >= kOffBlockBoxes + sizeof(BlockBoxes));
-	static_assert(kOffVisualBoxes + sizeof(VisualBoxes) <= 0x40000);  // Shots
+	static_assert(kOffVisualBoxes >= kOffBlockBoxes + sizeof(BlockBoxes), "FortCraft protocol layout");
+	static_assert(kOffVisualBoxes + sizeof(VisualBoxes) <= 0x40000, "FortCraft protocol layout");  // Shots
 
 	// ---- TF2 -> Minecraft projectiles @0x400 ------------------------------------------------
 	// Rockets, grenades and other projectiles in flight, written every TF2 frame, so Minecraft
@@ -240,7 +242,7 @@ namespace fortcraft { namespace proto
 		std::uint32_t kind;  // ProjectileKind
 		float         x, y, z;
 	};
-	static_assert(sizeof(Projectile) == 20);
+	static_assert(sizeof(Projectile) == 20, "FortCraft protocol layout");
 
 	struct Projectiles
 	{
@@ -248,7 +250,7 @@ namespace fortcraft { namespace proto
 		std::uint32_t count;
 		Projectile    list[kMaxProjectiles];
 	};
-	static_assert(kOffProjectiles + sizeof(Projectiles) <= 0xC00);
+	static_assert(kOffProjectiles + sizeof(Projectiles) <= 0xC00, "FortCraft protocol layout");
 
 	// ---- TF2 -> Minecraft explosions @0xC00 -------------------------------------------------
 	// A ring of the last 32 explosions. TF2 writes slot (count % 32), then bumps count; Minecraft
@@ -270,7 +272,7 @@ namespace fortcraft { namespace proto
 		std::uint32_t pad;
 		Explosion     ring[kMaxExplosions];
 	};
-	static_assert(kOffExplosions + sizeof(Explosions) <= kOffBlockBoxes);
+	static_assert(kOffExplosions + sizeof(Explosions) <= kOffBlockBoxes, "FortCraft protocol layout");
 
 	// ---- TF2 -> Minecraft overlay @0x200, pixels @0x100000 ----------------------------------
 	// TF2's weapon (viewmodel) and HUD, drawn by TF2 with its world blanked out, read back from
@@ -288,7 +290,7 @@ namespace fortcraft { namespace proto
 		std::uint32_t width;   // pixels, at most kMaxOverlayWidth
 		std::uint32_t height;
 	};
-	static_assert(sizeof(OverlayHeader) == 0x10);
+	static_assert(sizeof(OverlayHeader) == 0x10, "FortCraft protocol layout");
 
 	// ---- TF2 -> Minecraft overlay pose @0x240 -----------------------------------------------
 	// The look direction an overlay frame was rendered with (Minecraft's yaw/pitch that TF2
@@ -300,12 +302,14 @@ namespace fortcraft { namespace proto
 	struct OverlayPose
 	{
 		float         yaw, pitch;  // Minecraft degrees
-		std::uint64_t timeMs;      // GetTickCount64 when TF2 started rendering it
+		std::uint64_t timeUs;      // microseconds when TF2 started rendering it, on the clock Java's
+		                           // System.nanoTime uses (Windows QueryPerformanceCounter, Linux
+		                           // CLOCK_MONOTONIC); Minecraft paces frames by it (v41)
 		float         x, y, z;     // TF2's eye (camera) position for it, Minecraft coordinates
 		std::uint32_t hasPosition; // 1 when x, y, z are set
 	};
-	static_assert(sizeof(OverlayPose) == 32);
-	static_assert(kOffOverlayPose + 2 * sizeof(OverlayPose) <= 0x300);
+	static_assert(sizeof(OverlayPose) == 32, "FortCraft protocol layout");
+	static_assert(kOffOverlayPose + 2 * sizeof(OverlayPose) <= 0x300, "FortCraft protocol layout");
 
 	// ---- TF2 -> Minecraft overlay on the GPU @0x300 -----------------------------------------
 	// The fast path: no pixels through shared memory. TF2 (Direct3D 9Ex) renders the finished
@@ -324,8 +328,8 @@ namespace fortcraft { namespace proto
 		std::uint32_t generation; // bumps when the textures are re-created (resize): reopen them
 		std::uint64_t handle[2];  // Direct3D 9Ex shared handles (A8R8G8B8, D3DPOOL_DEFAULT)
 	};
-	static_assert(sizeof(OverlayGpu) == 0x28);
-	static_assert(kOffOverlayPixels + 2 * kOverlaySlotBytes <= kMappingBytes);
+	static_assert(sizeof(OverlayGpu) == 0x28, "FortCraft protocol layout");
+	static_assert(kOffOverlayPixels + 2 * kOverlaySlotBytes <= kMappingBytes, "FortCraft protocol layout");
 
 	// ---- TF2 -> Minecraft shots @0x40000 ---------------------------------------------------
 	// Every bullet (each shotgun pellet separately) and every melee swing, from TF2's server,
@@ -345,7 +349,7 @@ namespace fortcraft { namespace proto
 		std::uint32_t tool; // generic=0, shovel=1, pickaxe=2, axe=3, blade=4
 		float headshotRange; // blocks from shot origin; 0 means no extra limit
 	};
-	static_assert(sizeof(Shot) == 48);
+	static_assert(sizeof(Shot) == 48, "FortCraft protocol layout");
 
 	struct Shots
 	{
@@ -353,7 +357,7 @@ namespace fortcraft { namespace proto
 		std::uint32_t pad;
 		Shot          ring[kMaxShots];
 	};
-	static_assert(kOffShots + sizeof(Shots) <= 0x41000);
+	static_assert(kOffShots + sizeof(Shots) <= 0x41000, "FortCraft protocol layout");
 
 	// ---- Minecraft -> TF2 damage to the player @0x41000 ------------------------------------
 	// Damage Minecraft would have done to its player (mob hits, lava, ...), after Minecraft's own
@@ -368,7 +372,7 @@ namespace fortcraft { namespace proto
 		float amount;            // Minecraft damage points (2 = one heart)
 		float fromX, fromY, fromZ; // where it came from, Minecraft coordinates (for direction)
 	};
-	static_assert(sizeof(Hurt) == 16);
+	static_assert(sizeof(Hurt) == 16, "FortCraft protocol layout");
 
 	struct Hurts
 	{
@@ -376,7 +380,7 @@ namespace fortcraft { namespace proto
 		std::uint32_t pad;
 		Hurt          ring[kMaxHurts];
 	};
-	static_assert(kOffHurts + sizeof(Hurts) <= kOffOverlayPixels);
+	static_assert(kOffHurts + sizeof(Hurts) <= kOffOverlayPixels, "FortCraft protocol layout");
 
 	// ---- Minecraft -> TF2 mob hitboxes @0x42000 --------------------------------------------
 	// Living mobs near the player (Minecraft block coordinates), rewritten every Minecraft frame.
@@ -392,13 +396,13 @@ namespace fortcraft { namespace proto
 		std::uint32_t count;
 		BlockBox      boxes[kMaxMobBoxes];
 	};
-	static_assert(kOffMobBoxes + sizeof(MobBoxes) <= kOffOverlayPixels);
+	static_assert(kOffMobBoxes + sizeof(MobBoxes) <= kOffOverlayPixels, "FortCraft protocol layout");
 
 	// Written with MobBoxes under the same seq: 1 if mob i is hostile (Minecraft's Enemy, e.g.
 	// zombies and slimes), 0 for animals and villagers. Engineer sentries shoot hostile mobs.
 	static constexpr std::uint64_t kOffMobHostile = 0x42E00;
-	static_assert(kOffMobHostile >= kOffMobBoxes + sizeof(MobBoxes));
-	static_assert(kOffMobHostile + kMaxMobBoxes <= 0x43000);
+	static_assert(kOffMobHostile >= kOffMobBoxes + sizeof(MobBoxes), "FortCraft protocol layout");
+	static_assert(kOffMobHostile + kMaxMobBoxes <= 0x43000, "FortCraft protocol layout");
 
 	// ---- Minecraft -> TF2 UI events @0x43000 ----------------------------------------------
 	// Everything Minecraft passes on to TF2's own menus and UI: menu keys (taunt menu, class
@@ -431,6 +435,8 @@ namespace fortcraft { namespace proto
 		kUiScoresUp = 24,
 		kUiMainMenu = 25,    // P: open / close TF2's main (pause) menu
 		kUiCloseAll = 26,    // Esc in Minecraft while a TF2 menu is open: close every TF2 menu
+		kUiConsole = 27,     // `: open / close TF2's developer console
+		kUiBackpack = 28,    // E: TF2's backpack, opened at its last page (the Minecraft items)
 		kUiBuildSlot1 = 30,  // fresh number-key press 1..4; TF2 uses it only while an Engineer PDA is active
 		kUiVoiceMenu1 = 40,  // Z/X/C: TF2's three stock voice menus
 		kUiVoiceSelect1 = 50,  // number keys 1..9 while a voice menu is open
@@ -443,7 +449,7 @@ namespace fortcraft { namespace proto
 		std::int32_t  code;
 		float         x, y;
 	};
-	static_assert(sizeof(UiEvent) == 16);
+	static_assert(sizeof(UiEvent) == 16, "FortCraft protocol layout");
 
 	struct UiEvents
 	{
@@ -451,8 +457,8 @@ namespace fortcraft { namespace proto
 		std::uint32_t pad;
 		UiEvent       ring[kMaxUiEvents];
 	};
-	static_assert(kOffUiEvents >= kOffMobBoxes + sizeof(MobBoxes));
-	static_assert(kOffUiEvents + sizeof(UiEvents) <= kOffOverlayPixels);
+	static_assert(kOffUiEvents >= kOffMobBoxes + sizeof(MobBoxes), "FortCraft protocol layout");
+	static_assert(kOffUiEvents + sizeof(UiEvents) <= kOffOverlayPixels, "FortCraft protocol layout");
 
 	// ---- Minecraft -> TF2 backpack stacks @0x45000 -------------------------------------------
 	// Minecraft's inventory, one entry per item type (counts summed over all slots). TF2 shows
@@ -471,7 +477,7 @@ namespace fortcraft { namespace proto
 		std::uint32_t count;
 		std::uint32_t pad;
 	};
-	static_assert(sizeof(BackpackStack) == 200);
+	static_assert(sizeof(BackpackStack) == 200, "FortCraft protocol layout");
 
 	struct Backpack
 	{
@@ -479,8 +485,8 @@ namespace fortcraft { namespace proto
 		std::uint32_t count;
 		BackpackStack stacks[kMaxBackpackStacks];
 	};
-	static_assert(kOffBackpack >= kOffUiEvents + sizeof(UiEvents));
-	static_assert(kOffBackpack + sizeof(Backpack) <= kOffOverlayPixels);
+	static_assert(kOffBackpack >= kOffUiEvents + sizeof(UiEvents), "FortCraft protocol layout");
+	static_assert(kOffBackpack + sizeof(Backpack) <= kOffOverlayPixels, "FortCraft protocol layout");
 
 	// ---- TF2 -> Minecraft hand request @0x48000 -------------------------------------------------
 	// Backpack phase B: "Equip to hand" on a Minecraft item in TF2's backpack. Each request bumps
@@ -493,7 +499,7 @@ namespace fortcraft { namespace proto
 		std::uint32_t pad;
 		char          id[64];
 	};
-	static_assert(kOffHandRequest >= kOffBackpack + sizeof(Backpack));
+	static_assert(kOffHandRequest >= kOffBackpack + sizeof(Backpack), "FortCraft protocol layout");
 
 	// ---- Minecraft -> TF2 hand state @0x48100 ---------------------------------------------------
 	// What Minecraft's hand holds instead of TF2's weapon: while equipped, Minecraft draws the item
@@ -506,8 +512,8 @@ namespace fortcraft { namespace proto
 		std::uint32_t pad;
 		char          id[64];
 	};
-	static_assert(kOffHandState >= kOffHandRequest + sizeof(HandRequest));
-	static_assert(kOffHandState + sizeof(HandState) <= kOffOverlayPixels);
+	static_assert(kOffHandState >= kOffHandRequest + sizeof(HandRequest), "FortCraft protocol layout");
+	static_assert(kOffHandState + sizeof(HandState) <= kOffOverlayPixels, "FortCraft protocol layout");
 
 	// ---- Minecraft -> TF2 craftable recipes @0x48200 --------------------------------------------
 	// Backpack phase C: the Minecraft crafting recipes that fit a 2x2 grid and that the player's
@@ -528,7 +534,7 @@ namespace fortcraft { namespace proto
 		char resultIcon[64];
 		char ingredients[4][64];
 	};
-	static_assert(sizeof(CraftRecipe) == 640);
+	static_assert(sizeof(CraftRecipe) == 640, "FortCraft protocol layout");
 
 	struct CraftRecipes
 	{
@@ -536,7 +542,7 @@ namespace fortcraft { namespace proto
 		std::uint32_t count;
 		CraftRecipe   recipes[kMaxRecipes];
 	};
-	static_assert(kOffRecipes >= kOffHandState + sizeof(HandState));
+	static_assert(kOffRecipes >= kOffHandState + sizeof(HandState), "FortCraft protocol layout");
 
 	// ---- TF2 -> Minecraft craft request @0x53000 ------------------------------------------------
 	// Each request bumps count; key is the recipe to craft once.
@@ -548,7 +554,7 @@ namespace fortcraft { namespace proto
 		std::uint32_t pad;
 		char          key[64];
 	};
-	static_assert(kOffCraftRequest >= kOffRecipes + sizeof(CraftRecipes));
+	static_assert(kOffCraftRequest >= kOffRecipes + sizeof(CraftRecipes), "FortCraft protocol layout");
 
 	// ---- Minecraft -> TF2 craft result @0x53100 -------------------------------------------------
 	// After each craft request Minecraft sets ok, then bumps count (TF2 plays a sound on success).
@@ -559,8 +565,8 @@ namespace fortcraft { namespace proto
 		std::uint32_t count;
 		std::uint32_t ok;  // 1 if the last request crafted something
 	};
-	static_assert(kOffCraftResult >= kOffCraftRequest + sizeof(CraftRequest));
-	static_assert(kOffCraftResult + sizeof(CraftResult) <= kOffOverlayPixels);
+	static_assert(kOffCraftResult >= kOffCraftRequest + sizeof(CraftRequest), "FortCraft protocol layout");
+	static_assert(kOffCraftResult + sizeof(CraftResult) <= kOffOverlayPixels, "FortCraft protocol layout");
 
 	// ---- TF2 -> Minecraft fire @0x53200 ---------------------------------------------------------
 	// Where TF2's fire weapons touched the world or a mob (flamethrower flames, flares, Scorch Shot
@@ -575,7 +581,7 @@ namespace fortcraft { namespace proto
 		float x, y, z;  // Minecraft coordinates
 		float radius;   // blocks; negative = put fire out within -radius (Pyro airblast)
 	};
-	static_assert(sizeof(FirePoint) == 16);
+	static_assert(sizeof(FirePoint) == 16, "FortCraft protocol layout");
 
 	struct FirePoints
 	{
@@ -583,8 +589,8 @@ namespace fortcraft { namespace proto
 		std::uint32_t pad;
 		FirePoint     ring[kMaxFires];
 	};
-	static_assert(kOffFires >= kOffCraftResult + sizeof(CraftResult));
-	static_assert(kOffFires + sizeof(FirePoints) <= kOffOverlayPixels);
+	static_assert(kOffFires >= kOffCraftResult + sizeof(CraftResult), "FortCraft protocol layout");
+	static_assert(kOffFires + sizeof(FirePoints) <= kOffOverlayPixels, "FortCraft protocol layout");
 
 	// ---- Minecraft -> TF2 mob hits @0x53800 -----------------------------------------------------
 	// Each time a TF2 attack actually hurt a Minecraft mob: where (top of the mob), how much (TF2
@@ -600,7 +606,7 @@ namespace fortcraft { namespace proto
 		std::uint32_t killed;   // 1 if this hit killed it
 		std::uint32_t pad;
 	};
-	static_assert(sizeof(MobHit) == 24);
+	static_assert(sizeof(MobHit) == 24, "FortCraft protocol layout");
 
 	struct MobHits
 	{
@@ -608,8 +614,8 @@ namespace fortcraft { namespace proto
 		std::uint32_t pad;
 		MobHit        ring[kMaxMobHits];
 	};
-	static_assert(kOffMobHits >= kOffFires + sizeof(FirePoints));
-	static_assert(kOffMobHits + sizeof(MobHits) <= kOffOverlayPixels);
+	static_assert(kOffMobHits >= kOffFires + sizeof(FirePoints), "FortCraft protocol layout");
+	static_assert(kOffMobHits + sizeof(MobHits) <= kOffOverlayPixels, "FortCraft protocol layout");
 
 	// ---- TF2 -> Minecraft Engineer buildings @0x54000 -------------------------------------------
 	// The player's buildings (sentry, dispenser, teleporters) as boxes in Minecraft coordinates,
@@ -623,7 +629,7 @@ namespace fortcraft { namespace proto
 		std::uint32_t pad;
 		float         minX, minY, minZ, maxX, maxY, maxZ;
 	};
-	static_assert(sizeof(Building) == 32);
+	static_assert(sizeof(Building) == 32, "FortCraft protocol layout");
 
 	struct Buildings
 	{
@@ -631,7 +637,7 @@ namespace fortcraft { namespace proto
 		std::uint32_t count;
 		Building      list[kMaxBuildings];
 	};
-	static_assert(kOffBuildings >= kOffMobHits + sizeof(MobHits));
+	static_assert(kOffBuildings >= kOffMobHits + sizeof(MobHits), "FortCraft protocol layout");
 
 	// ---- Minecraft -> TF2 hits on buildings @0x54400 --------------------------------------------
 	// A hostile mob hit a building: entity index and the hit in Minecraft health points (TF2 takes
@@ -651,8 +657,8 @@ namespace fortcraft { namespace proto
 		std::uint32_t pad;
 		BuildingHit   ring[kMaxBuildingHits];
 	};
-	static_assert(kOffBuildingHits >= kOffBuildings + sizeof(Buildings));
-	static_assert(kOffBuildingHits + sizeof(BuildingHits) <= kOffOverlayPixels);
+	static_assert(kOffBuildingHits >= kOffBuildings + sizeof(Buildings), "FortCraft protocol layout");
+	static_assert(kOffBuildingHits + sizeof(BuildingHits) <= kOffOverlayPixels, "FortCraft protocol layout");
 
 	// ---- TF2 server <-> TF2 client: re-centring @0x54800 -----------------------------------------
 	// TF2's playing field is the Source engine's maximum box (about 340 blocks each way). When the
@@ -668,8 +674,8 @@ namespace fortcraft { namespace proto
 		double serverX, serverY;  // TF2 units, total moved so far by the server
 		double clientX, clientY;  // TF2 units, total the client has applied to its anchor
 	};
-	static_assert(kOffRecentre >= kOffBuildingHits + sizeof(BuildingHits));
-	static_assert(kOffRecentre + sizeof(Recentre) <= kOffOverlayPixels);
+	static_assert(kOffRecentre >= kOffBuildingHits + sizeof(BuildingHits), "FortCraft protocol layout");
+	static_assert(kOffRecentre + sizeof(Recentre) <= kOffOverlayPixels, "FortCraft protocol layout");
 
 	// McTeleport (Minecraft -> TF2): Minecraft moved its player itself (a portal to the Nether or
 	// the End, an ender pearl, /tp, a respawn in another dimension). TF2 puts its player there.
@@ -681,7 +687,7 @@ namespace fortcraft { namespace proto
 		std::uint32_t seq;
 		float x, y, z;  // Minecraft feet coordinates
 	};
-	static_assert(kOffMcTeleport >= kOffRecentre + sizeof(Recentre));
+	static_assert(kOffMcTeleport >= kOffRecentre + sizeof(Recentre), "FortCraft protocol layout");
 
 	// Minecraft -> TF2: the one friendly mob currently selected for native Medigun healing.
 	// TF2 owns only an invisible presentation proxy; Minecraft owns the real mob and health.
@@ -696,9 +702,9 @@ namespace fortcraft { namespace proto
 		char name[64];         // UTF-8 Minecraft display name
 		std::int32_t proxyEntIndex; // TF2 server writes; 0 while absent
 	};
-	static_assert(sizeof(MedicTarget) == 96);
-	static_assert(kOffMedicTarget >= kOffMcTeleport + sizeof(McTeleport));
-	static_assert(kOffMedicTarget + sizeof(MedicTarget) <= kOffOverlayPixels);
+	static_assert(sizeof(MedicTarget) == 96, "FortCraft protocol layout");
+	static_assert(kOffMedicTarget >= kOffMcTeleport + sizeof(McTeleport), "FortCraft protocol layout");
+	static_assert(kOffMedicTarget + sizeof(MedicTarget) <= kOffOverlayPixels, "FortCraft protocol layout");
 
 	// Minecraft water near the player, in block coordinates. The TF2 trace
 	// wrapper exposes these as CONTENTS_WATER for its stock swimming movement.
@@ -710,9 +716,67 @@ namespace fortcraft { namespace proto
 		std::uint32_t count;
 		BlockBox boxes[kMaxWaterBoxes];
 	};
-	static_assert(kOffWaterBoxes >= kOffMedicTarget + sizeof(MedicTarget));
-	static_assert(kOffWaterBoxes + sizeof(WaterBoxes) <= kOffOverlayPixels);
-	static_assert(kOffMcTeleport + sizeof(McTeleport) <= kOffOverlayPixels);
+	static_assert(kOffWaterBoxes >= kOffMedicTarget + sizeof(MedicTarget), "FortCraft protocol layout");
+	static_assert(kOffWaterBoxes + sizeof(WaterBoxes) <= kOffOverlayPixels, "FortCraft protocol layout");
+
+	// Minecraft -> TF2 supply use, with TF2's reply. The integrated server owns
+	// ingredient and pack inventory; TF2's server owns the actual health/ammo.
+	static constexpr std::uint64_t kOffPackUse = 0x58000;
+	enum PackKind { kSmallHealth = 1, kLargeHealth = 2, kSmallAmmo = 3, kLargeAmmo = 4 };
+	struct PackUse
+	{
+		std::uint32_t request;
+		std::uint32_t kind;
+		std::uint32_t result;
+		std::uint32_t ok;
+	};
+	static_assert(kOffPackUse >= kOffWaterBoxes + sizeof(WaterBoxes), "FortCraft protocol layout");
+	static_assert(kOffPackUse + sizeof(PackUse) <= kOffOverlayPixels, "FortCraft protocol layout");
+
+	// Minecraft -> TF2: food completed on Minecraft's server. Vanilla restores hunger;
+	// TF2 restores a share of class health. Ring entries are hunger/nutrition points.
+	static constexpr std::uint64_t kOffFoodHeals = 0x58100;
+	static constexpr std::uint32_t kMaxFoodHeals = 32;
+	struct FoodHeals
+	{
+		std::uint32_t count;
+		std::int32_t nutrition[kMaxFoodHeals];
+	};
+	static_assert(kOffFoodHeals >= kOffPackUse + sizeof(PackUse), "FortCraft protocol layout");
+	static_assert(kOffFoodHeals + sizeof(FoodHeals) <= kOffOverlayPixels, "FortCraft protocol layout");
+	static_assert(kOffMcTeleport + sizeof(McTeleport) <= kOffOverlayPixels, "FortCraft protocol layout");
+
+	// ---- Far TF2 objects behind Minecraft blocks (v42) ---------------------------------------
+	// TF2's invisible block depth layer only covers the blocks scanned around the player, so a
+	// sticky, building or rocket further away showed through Minecraft's houses and hills. TF2
+	// lists the drawn objects beyond that range (seqlocked); Minecraft checks its own line of sight
+	// to each from the camera and lists the ones fully blocked; TF2 doesn't draw those.
+	static constexpr std::uint64_t kOffFarObjects = 0x58300;
+	static constexpr std::uint32_t kMaxFarObjects = 64;
+	struct FarObject
+	{
+		std::int32_t ent;          // TF2 client entity index
+		float        x, y, z;      // centre, Minecraft coordinates
+		float        radius;       // blocks
+	};
+	struct FarObjects
+	{
+		std::uint32_t seq;
+		std::uint32_t count;
+		FarObject     list[kMaxFarObjects];
+	};
+	static_assert(sizeof(FarObject) == 20, "FortCraft protocol layout");
+	static_assert(kOffFarObjects >= kOffFoodHeals + sizeof(FoodHeals), "FortCraft protocol layout");
+
+	static constexpr std::uint64_t kOffFarHidden = 0x58900;
+	struct FarHidden
+	{
+		std::uint32_t seq;
+		std::uint32_t count;
+		std::int32_t  ent[kMaxFarObjects];  // entity indices Minecraft can't see from its camera
+	};
+	static_assert(kOffFarHidden >= kOffFarObjects + sizeof(FarObjects), "FortCraft protocol layout");
+	static_assert(kOffFarHidden + sizeof(FarHidden) <= kOffOverlayPixels, "FortCraft protocol layout");
 
 	// Minecraft damage = TF2 damage / kDamageScale (a rocket's 90 is 18 Minecraft health, nine
 	// hearts; a zombie has 20).

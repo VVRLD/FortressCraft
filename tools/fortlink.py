@@ -7,12 +7,17 @@ import ctypes
 import mmap
 import os
 import struct
+import sys
+import time
 
 MAGIC = 0x46524346  # "FCRF"
-VERSION = 38
+VERSION = 42
 OFF_WATER_BOXES = 0x56000
 MAX_WATER_BOXES = 256
-NAME = os.environ.get("FORTCRAFT_LINK", "Local\\FortCraft_v1")
+OFF_PACK_USE = 0x58000  # request, kind, result, ok (four uint32 values)
+WINDOWS = sys.platform == "win32"
+# Windows: a named page-file mapping. Linux: a file in /dev/shm (RAM), as in FortLink.java.
+NAME = os.environ.get("FORTCRAFT_LINK", "Local\\FortCraft_v1" if WINDOWS else "/dev/shm/FortCraft_v1")
 SIZE = 0x100000 + 2 * 3840 * 2160 * 4
 HEARTBEAT_TIMEOUT_MS = 1000
 
@@ -37,17 +42,29 @@ IN_FORWARD, IN_BACK, IN_LEFT, IN_RIGHT, IN_JUMP, IN_CROUCH = 1, 2, 4, 8, 16, 32
 IN_ATTACK, IN_RELOAD, IN_ATTACK2 = 64, 128, 256
 _INPUT_FIELDS = struct.Struct("<IQff")  # buttons, sample, yaw, pitch (after seq)
 
-_kernel32 = ctypes.windll.kernel32
-_kernel32.GetTickCount64.restype = ctypes.c_uint64
+if WINDOWS:
+    _kernel32 = ctypes.windll.kernel32
+    _kernel32.GetTickCount64.restype = ctypes.c_uint64
 
 
 def now_ms():
-    return _kernel32.GetTickCount64()
+    """Heartbeat clock: GetTickCount64 on Windows, CLOCK_MONOTONIC on Linux (as both games use)."""
+    if WINDOWS:
+        return _kernel32.GetTickCount64()
+    return time.clock_gettime_ns(time.CLOCK_MONOTONIC) // 1_000_000
 
 
 def open_mapping():
-    """Create or open the named mapping. Python can't tell which, so callers check MAGIC."""
-    return mmap.mmap(-1, SIZE, tagname=NAME)
+    """Create or open the mapping. Python can't tell which, so callers check MAGIC."""
+    if WINDOWS:
+        return mmap.mmap(-1, SIZE, tagname=NAME)
+    fd = os.open(NAME, os.O_RDWR | os.O_CREAT, 0o600)
+    try:
+        if os.fstat(fd).st_size < SIZE:
+            os.ftruncate(fd, SIZE)
+        return mmap.mmap(fd, SIZE)
+    finally:
+        os.close(fd)
 
 
 def u32(m, off):

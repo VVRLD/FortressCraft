@@ -12,7 +12,8 @@ import net.minecraft.network.chat.Component;
 
 /**
  * TF2's own menus, used from Minecraft: class select (,), team select (.), loadout and items (M),
- * scoreboard (hold Tab) and TF2's main menu (P). Esc stays Minecraft's pause menu.
+ * scoreboard (hold Tab), TF2's main menu (P) and TF2's developer console (`). Esc stays Minecraft's
+ * pause menu. The keys are Tf2Keys mappings, rebindable in Minecraft's Controls ("FortCraft (TF2)").
  *
  * TF2 draws its menus into the overlay. While one that needs the mouse is open (TF2 reports it),
  * Minecraft opens an invisible screen of its own: that frees the mouse cursor, and every mouse
@@ -26,7 +27,7 @@ import net.minecraft.network.chat.Component;
 public final class Tf2Menus {
 	// Protocol UiCommands.
 	private static final int CLASS_MENU = 20, TEAM_MENU = 21, LOADOUT = 22, SCORES_DOWN = 23, SCORES_UP = 24,
-		MAIN_MENU = 25, CLOSE_ALL = 26;
+		MAIN_MENU = 25, CLOSE_ALL = 26, CONSOLE = 27, BACKPACK = 28;
 
 	private static final long OPEN_GRACE_NANOS = 1_500_000_000L;   // TF2 may take a moment to show a menu
 	private static final long CLOSE_DELAY_NANOS = 300_000_000L;
@@ -43,17 +44,24 @@ public final class Tf2Menus {
 		boolean free = screen == null;
 
 		// Menu keys (only while playing; on TF2's menu screen the keys go to TF2 itself).
-		if (edge(InputConstants.isKeyDown(InputConstants.KEY_COMMA), 0) && free) {
-			open(minecraft, CLASS_MENU, ", -> TF2 class menu");
+		if (edge(Tf2Keys.CLASS_MENU.isDown(), 0) && free) {
+			open(minecraft, CLASS_MENU, "class key -> TF2 class menu");
 		}
-		if (edge(InputConstants.isKeyDown(InputConstants.KEY_PERIOD), 1) && free) {
-			open(minecraft, TEAM_MENU, ". -> TF2 team menu");
+		if (edge(Tf2Keys.TEAM_MENU.isDown(), 1) && free) {
+			open(minecraft, TEAM_MENU, "team key -> TF2 team menu");
 		}
-		if (edge(InputConstants.isKeyDown(InputConstants.KEY_M), 2) && free) {
-			open(minecraft, LOADOUT, "M -> TF2 loadout");
+		if (edge(Tf2Keys.LOADOUT.isDown(), 2) && free) {
+			open(minecraft, LOADOUT, "loadout key -> TF2 loadout");
 		}
-		if (edge(InputConstants.isKeyDown(InputConstants.KEY_P), 3) && free) {
-			open(minecraft, MAIN_MENU, "P -> TF2 main menu");
+		if (edge(Tf2Keys.BACKPACK.isDown(), 5) && free) {
+			open(minecraft, BACKPACK, "backpack key -> TF2 backpack, Minecraft items page");
+		}
+		if (edge(Tf2Keys.MAIN_MENU.isDown(), 3) && free) {
+			open(minecraft, MAIN_MENU, "main menu key -> TF2 main menu");
+		}
+		if (edge(Tf2Keys.CONSOLE.isDown(), 4) && free) {
+			consoleToggledAt = System.nanoTime();
+			open(minecraft, CONSOLE, "console key -> TF2 console");
 		}
 
 		// Scoreboard: shown while Minecraft's player-list key (Tab) is held.
@@ -86,7 +94,8 @@ public final class Tf2Menus {
 		}
 	}
 
-	private static final boolean[] wasDown = new boolean[4];
+	private static final boolean[] wasDown = new boolean[6];
+	private static long consoleToggledAt;
 
 	private static boolean edge(boolean down, int key) {
 		boolean pressed = down && !wasDown[key];
@@ -108,8 +117,17 @@ public final class Tf2Menus {
 	 * dropped while TF2 is linked, since P opens TF2's menu.
 	 */
 	public static void beforeKeybinds(Minecraft minecraft) {
-		while (minecraft.options.keySocialInteractions.consumeClick()) {
-			// TF2's main menu instead (see tick)
+		if (Tf2Keys.MAIN_MENU.same(minecraft.options.keySocialInteractions)) {
+			while (minecraft.options.keySocialInteractions.consumeClick()) {
+				// TF2's main menu instead (see tick)
+			}
+		}
+		// E: TF2's backpack (with the Minecraft items) instead of Minecraft's inventory, while the
+		// backpack key shares Minecraft's inventory key. Rebind either to get Minecraft's back.
+		if (Tf2Keys.BACKPACK.same(minecraft.options.keyInventory)) {
+			while (minecraft.options.keyInventory.consumeClick()) {
+				// TF2's backpack instead (see tick)
+			}
 		}
 	}
 
@@ -194,8 +212,18 @@ public final class Tf2Menus {
 				onClose();
 				return true;
 			}
-			if (event.input() == InputConstants.KEY_P) {
+			if (Tf2Keys.MAIN_MENU.matches(event)) {
 				FortLink.sendUiCommand(MAIN_MENU);  // P again: TF2 closes (or opens) its main menu
+				return true;
+			}
+			if (Tf2Keys.BACKPACK.matches(event)) {
+				onClose();  // E again: close the backpack, like Minecraft's inventory
+				return true;
+			}
+			if (Tf2Keys.CONSOLE.matches(event)) {
+				consoleToggledAt = System.nanoTime();
+				FortLink.sendUiCommand(CONSOLE);  // ` again: TF2 closes (or opens) its console
+				FortCraft.LOG.info("FortCraft: console key -> toggle TF2 console");
 				return true;
 			}
 			FortLink.sendUiEvent(FortLink.UI_KEY_DOWN, event.input(), 0, 0);
@@ -210,6 +238,9 @@ public final class Tf2Menus {
 
 		@Override
 		public boolean charTyped(CharacterEvent event) {
+			if (System.nanoTime() - consoleToggledAt < 150_000_000L) {
+				return true;  // the console key's own character (`) must not land in the console
+			}
 			FortLink.sendUiEvent(FortLink.UI_CHAR, event.codepoint(), 0, 0);
 			return true;
 		}

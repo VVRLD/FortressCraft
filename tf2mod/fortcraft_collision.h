@@ -12,6 +12,9 @@
 // the TF2 map's own walls and floors are ignored for player movement.
 bool FortCraft_Active();
 
+// Creative always has unlimited ammunition. Survival follows the optional TF2 override.
+bool FortCraft_HostCreative();
+
 // The one non-solid, networked TF2 presentation entity for Minecraft's selected friendly
 // mob. The server creates/moves it; the client resolves its networked entity index.
 class CBaseEntity;

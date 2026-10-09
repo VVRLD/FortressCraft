@@ -10,7 +10,12 @@ import java.lang.foreign.MemorySegment;
 import java.lang.foreign.SymbolLookup;
 import java.lang.invoke.MethodHandle;
 import java.lang.invoke.VarHandle;
+import java.nio.ByteBuffer;
+import java.nio.channels.FileChannel;
 import java.nio.charset.StandardCharsets;
+import java.nio.file.Path;
+import java.nio.file.StandardOpenOption;
+import java.util.Locale;
 
 /**
  * The Minecraft end of the shared-memory link. Minecraft is the host, so it creates the
@@ -18,8 +23,10 @@ import java.nio.charset.StandardCharsets;
  */
 public final class FortLink {
 	public static final int MAGIC = 0x46524346;  // "FCRF"
-	public static final int VERSION = 38;
-	public static final String NAME = System.getenv().getOrDefault("FORTCRAFT_LINK", "Local\\FortCraft_v1");
+	public static final int VERSION = 42;
+	/** Windows: a named page-file mapping. Linux: a file in /dev/shm (RAM), which TF2 maps too. */
+	public static final boolean WINDOWS = System.getProperty("os.name", "").toLowerCase(Locale.ROOT).startsWith("windows");
+	public static final String NAME = System.getenv().getOrDefault("FORTCRAFT_LINK", WINDOWS ? "Local\\FortCraft_v1" : "/dev/shm/FortCraft_v1");
 	public static final int MAX_OVERLAY_W = 3840, MAX_OVERLAY_H = 2160;
 	private static final long OVERLAY_SLOT_BYTES = (long) MAX_OVERLAY_W * MAX_OVERLAY_H * 4;
 	private static final long O_PIXELS = 0x100000;
@@ -80,16 +87,22 @@ public final class FortLink {
 	private static final MethodHandle GET_TICK_COUNT64;
 
 	static {
-		Linker linker = Linker.nativeLinker();
-		SymbolLookup k32 = SymbolLookup.libraryLookup("kernel32", Arena.global());
-		CREATE_FILE_MAPPING = linker.downcallHandle(
-			k32.find("CreateFileMappingW").orElseThrow(),
-			FunctionDescriptor.of(ADDRESS, ADDRESS, ADDRESS, JAVA_INT, JAVA_INT, JAVA_INT, ADDRESS)
-		);
-		MAP_VIEW_OF_FILE = linker.downcallHandle(
-			k32.find("MapViewOfFile").orElseThrow(), FunctionDescriptor.of(ADDRESS, ADDRESS, JAVA_INT, JAVA_INT, JAVA_INT, JAVA_LONG)
-		);
-		GET_TICK_COUNT64 = linker.downcallHandle(k32.find("GetTickCount64").orElseThrow(), FunctionDescriptor.of(JAVA_LONG));
+		if (WINDOWS) {
+			Linker linker = Linker.nativeLinker();
+			SymbolLookup k32 = SymbolLookup.libraryLookup("kernel32", Arena.global());
+			CREATE_FILE_MAPPING = linker.downcallHandle(
+				k32.find("CreateFileMappingW").orElseThrow(),
+				FunctionDescriptor.of(ADDRESS, ADDRESS, ADDRESS, JAVA_INT, JAVA_INT, JAVA_INT, ADDRESS)
+			);
+			MAP_VIEW_OF_FILE = linker.downcallHandle(
+				k32.find("MapViewOfFile").orElseThrow(), FunctionDescriptor.of(ADDRESS, ADDRESS, JAVA_INT, JAVA_INT, JAVA_INT, JAVA_LONG)
+			);
+			GET_TICK_COUNT64 = linker.downcallHandle(k32.find("GetTickCount64").orElseThrow(), FunctionDescriptor.of(JAVA_LONG));
+		} else {
+			CREATE_FILE_MAPPING = null;
+			MAP_VIEW_OF_FILE = null;
+			GET_TICK_COUNT64 = null;
+		}
 	}
 
 	/** One reading of TF2's player state. */
@@ -103,6 +116,10 @@ public final class FortLink {
 
 	/** Create the mapping and write our half of the header. Call once at startup. */
 	public static void create() {
+		if (!WINDOWS) {
+			createLinux();
+			return;
+		}
 		try (Arena arena = Arena.ofConfined()) {
 			MemorySegment name = arena.allocateFrom(NAME, StandardCharsets.UTF_16LE);
 			MemorySegment invalidHandle = MemorySegment.ofAddress(-1L);  // INVALID_HANDLE_VALUE: backed by the page file
@@ -123,7 +140,32 @@ public final class FortLink {
 			FortCraft.LOG.error("FortCraft: shared memory setup failed", t);
 			return;
 		}
+		writeHostHeader();
+	}
+
+	/**
+	 * Linux: the link is a file in /dev/shm, which lives in RAM. A file left from an earlier run
+	 * keeps its old bytes (a fresh Windows mapping starts as zeros), so the message area is
+	 * cleared; overlay pixels are always rewritten before they are used.
+	 */
+	private static void createLinux() {
+		try (FileChannel ch = FileChannel.open(Path.of(NAME), StandardOpenOption.CREATE, StandardOpenOption.READ, StandardOpenOption.WRITE)) {
+			if (ch.size() < SIZE) {
+				ch.write(ByteBuffer.wrap(new byte[1]), SIZE - 1);  // grow the file to the full size
+			}
+			shm = ch.map(FileChannel.MapMode.READ_WRITE, 0, SIZE, Arena.global());
+		} catch (Throwable t) {
+			FortCraft.LOG.error("FortCraft: shared memory setup failed ({})", NAME, t);
+			shm = null;
+			return;
+		}
+		shm.asSlice(0, O_PIXELS).fill((byte) 0);
+		writeHostHeader();
+	}
+
+	private static void writeHostHeader() {
 		shm.asSlice(0, 0x400).fill((byte) 0);
+		shm.asSlice(0x58100, 4 + 32 * 4).fill((byte) 0);
 		shm.set(JAVA_INT, H_VERSION, VERSION);
 		shm.set(JAVA_INT, H_HOST_PID, (int) ProcessHandle.current().pid());
 		INT.setRelease(shm, H_MAGIC, MAGIC);  // last, so TF2 never sees a half-written header
@@ -557,6 +599,70 @@ public final class FortLink {
 		INT.setRelease(shm, 0x53100, shm.get(JAVA_INT, 0x53100) + 1);
 	}
 
+	// PackUse @0x58000: request, kind, result, ok. One outstanding use at a time.
+	public static int requestPackUse(int kind) {
+		if (shm == null) return 0;
+		shm.set(JAVA_INT, 0x58004, kind);
+		int request = shm.get(JAVA_INT, 0x58000) + 1;
+		INT.setRelease(shm, 0x58000, request);
+		return request;
+	}
+
+	// FarObjects @0x58300 (TF2 writes): seq, count, then {ent, x, y, z, radius}. FarHidden
+	// @0x58900 (we write): seq, count, entity indices we can't see.
+	public record FarObject(int ent, double x, double y, double z, double radius) {
+	}
+
+	/** TF2's far objects, or null mid-write. */
+	public static FarObject[] readFarObjects() {
+		if (shm == null) {
+			return null;
+		}
+		int seq = (int) INT.getAcquire(shm, 0x58300);
+		if ((seq & 1) != 0) {
+			return null;
+		}
+		int n = Math.min(Math.max(0, shm.get(JAVA_INT, 0x58304)), 64);
+		FarObject[] out = new FarObject[n];
+		for (int i = 0; i < n; i++) {
+			long o = 0x58308 + i * 20L;
+			out[i] = new FarObject(shm.get(JAVA_INT, o), shm.get(JAVA_FLOAT, o + 4), shm.get(JAVA_FLOAT, o + 8),
+				shm.get(JAVA_FLOAT, o + 12), shm.get(JAVA_FLOAT, o + 16));
+		}
+		VarHandle.acquireFence();
+		return (int) INT.getAcquire(shm, 0x58300) == seq ? out : null;
+	}
+
+	public static void writeFarHidden(int[] ents, int count) {
+		if (shm == null) {
+			return;
+		}
+		count = Math.min(count, 64);
+		int seq = shm.get(JAVA_INT, 0x58900);
+		INT.setRelease(shm, 0x58900, (seq + 1) | 1);  // odd: writing
+		shm.set(JAVA_INT, 0x58904, count);
+		for (int i = 0; i < count; i++) {
+			shm.set(JAVA_INT, 0x58908 + i * 4L, ents[i]);
+		}
+		INT.setRelease(shm, 0x58900, ((seq + 1) | 1) + 1);  // even: done
+	}
+
+	public static int packUseResult() {
+		return shm == null ? 0 : (int) INT.getAcquire(shm, 0x58008);
+	}
+
+	public static boolean packUseOk() {
+		return shm != null && shm.get(JAVA_INT, 0x5800C) != 0;
+	}
+
+	// FoodHeals @0x58100: count, then 32 nutrition values. Written only after eating finishes.
+	public static synchronized void writeFoodHeal(int nutrition) {
+		if (shm == null || nutrition <= 0) return;
+		int count = shm.get(JAVA_INT, 0x58100);
+		shm.set(JAVA_INT, 0x58104 + Integer.remainderUnsigned(count, 32) * 4L, nutrition);
+		INT.setRelease(shm, 0x58100, count + 1);
+	}
+
 	private static void putString(long offset, String s) {
 		putString(offset, s, 64);
 	}
@@ -595,8 +701,17 @@ public final class FortLink {
 
 	/** How old the overlay in slot 0/1 is, in ms (TF2 started rendering it then). */
 	public static long overlayAgeMs(int slot) {
-		long t = shm.get(JAVA_LONG, 0x240 + (slot & 1) * 32L + 8);
-		return t == 0 ? -1 : tickCount() - t;
+		long t = overlayTimeUs(slot);
+		return t == 0 ? -1 : (System.nanoTime() / 1000L - t) / 1000L;
+	}
+
+	/**
+	 * When TF2 started rendering the overlay in slot 0/1, in microseconds on System.nanoTime's
+	 * clock (TF2 reads the same clock: QueryPerformanceCounter on Windows, CLOCK_MONOTONIC on
+	 * Linux). 0 if not known.
+	 */
+	public static long overlayTimeUs(int slot) {
+		return shm.get(JAVA_LONG, 0x240 + (slot & 1) * 32L + 8);
 	}
 
 	/** The CPU path's newest slot (0 or 1). */
@@ -660,7 +775,11 @@ public final class FortLink {
 		return null;
 	}
 
+	/** Milliseconds on the clock both games use for heartbeats: GetTickCount64 on Windows, CLOCK_MONOTONIC on Linux. */
 	private static long tickCount() {
+		if (!WINDOWS) {
+			return System.nanoTime() / 1_000_000L;  // OpenJDK on Linux reads CLOCK_MONOTONIC, as TF2's side does
+		}
 		try {
 			return (long) GET_TICK_COUNT64.invokeExact();
 		} catch (Throwable t) {

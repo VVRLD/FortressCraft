@@ -13,7 +13,11 @@ set BUILDGAME=%~dp0..\tf2mod\maps\buildgame
 set SRC=%~dp0..\tf2mod\maps\fortcraft_flat.vmf
 set WORK=%ROOT%\logs\map
 rem The tools need the engine's own DLLs (tier0, vstdlib, filesystem) from Source SDK Base 2013.
-set PATH=C:\Program Files (x86)\Steam\steamapps\common\Source SDK Base 2013 Multiplayer\bin\x64;%PATH%
+rem Its folder comes from setup_windows.ps1 (tools\config.local.cmd) when present.
+set "SDKBASE=C:\Program Files (x86)\Steam\steamapps\common\Source SDK Base 2013 Multiplayer"
+if exist "%~dp0config.local.cmd" call "%~dp0config.local.cmd"
+if defined FORTCRAFT_SDK_BASE_DIR set "SDKBASE=%FORTCRAFT_SDK_BASE_DIR%"
+set "PATH=%SDKBASE%\bin\x64;%PATH%"
 if not exist "%WORK%" mkdir "%WORK%"
 copy /y "%SRC%" "%WORK%\fortcraft_flat.vmf" >nul || exit /b 1
 "%BIN%\vbsp.exe" -game "%BUILDGAME%" "%WORK%\fortcraft_flat" || exit /b 1

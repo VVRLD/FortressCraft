@@ -232,10 +232,10 @@ index 7b47d82..6651be6 100644
  
  
 diff --git a/src/game/client/client_tf.vpc b/src/game/client/client_tf.vpc
-index 1143ff2..40901f1 100644
+index 1143ff2..4b89ec3 100644
 --- a/src/game/client/client_tf.vpc
 +++ b/src/game/client/client_tf.vpc
-@@ -45,6 +45,22 @@ $Project "Client (TF)"
+@@ -45,6 +45,24 @@ $Project "Client (TF)"
  		$File	"$SRCDIR\game\client\abuse_report.h"
  		$File	"$SRCDIR\game\client\abuse_report_ui.cpp"
  		$File	"$SRCDIR\game\client\abuse_report_ui.h"
@@ -244,6 +244,8 @@ index 1143ff2..40901f1 100644
 +		$File	"..\..\..\..\my-passthrough\tf2mod\fortcraft_collision.cpp"
 +		$File	"..\..\..\..\my-passthrough\tf2mod\fortcraft_collision.h"
 +		$File	"..\..\..\..\my-passthrough\tf2mod\fortcraft_trace.cpp"
++		$File	"..\..\..\..\my-passthrough\tf2mod\fortcraft_platform.h"
++		$File	"..\..\..\..\my-passthrough\tf2mod\fortcraft_platform.cpp"
 +		$File	"..\..\..\..\my-passthrough\tf2mod\fortcraft_gpu.h"
 +		$File	"..\..\..\..\my-passthrough\tf2mod\fortcraft_gpu.cpp"
 +		{
@@ -259,7 +261,7 @@ index 1143ff2..40901f1 100644
  		$File	"tf\tf_abuse_report.h"
  		$File	"c_team_objectiveresource.cpp"
 diff --git a/src/game/client/econ/backpack_panel.cpp b/src/game/client/econ/backpack_panel.cpp
-index ae12623..002a80e 100644
+index ae12623..4d7a302 100644
 --- a/src/game/client/econ/backpack_panel.cpp
 +++ b/src/game/client/econ/backpack_panel.cpp
 @@ -46,6 +46,7 @@
@@ -327,7 +329,7 @@ index ae12623..002a80e 100644
 +			m_pContextMenu = new Menu( this, "ContextMenu" );
 +			m_pContextMenu->SetBorder( scheme()->GetIScheme( GetScheme() )->GetBorder( "NotificationDefault" ) );
 +			m_pContextMenu->SetFont( scheme()->GetIScheme( GetScheme() )->GetFont( "HudFontMediumSecondary", IsProportional() ) );
-+			m_pContextMenu->AddMenuItem( "Equip to hand", new KeyValues( "Context_FortCraftEquip" ), this );
++			m_pContextMenu->AddMenuItem( FortCraft_LocalItemMenuLabel( pSelected->GetItemID() ), new KeyValues( "Context_FortCraftEquip" ), this );  // "Use" for supply packs
 +			int nX, nY;
 +			g_pVGuiInput->GetCursorPosition( nX, nY );
 +			m_pContextMenu->SetPos( nX - 1, nY - 1 );
@@ -1051,16 +1053,18 @@ index 64889b3..7823fd8 100644
  		AddAllPlayers();
  	}
 diff --git a/src/game/server/server_tf.vpc b/src/game/server/server_tf.vpc
-index 427c93d..b6c3886 100644
+index 427c93d..d13774d 100644
 --- a/src/game/server/server_tf.vpc
 +++ b/src/game/server/server_tf.vpc
-@@ -121,6 +121,9 @@ $Project "Server (TF)"
+@@ -121,6 +121,11 @@ $Project "Server (TF)"
  			$File	"$SRCDIR\game\shared\tf\passtime_convars.h"
  			$File	"$SRCDIR\game\shared\tf\trigger_catapult_shared.cpp"
  			$File	"tf\countdown_announcer.h"
 +			$File	"..\..\..\..\my-passthrough\tf2mod\fortcraft_collision.cpp"
 +			$File	"..\..\..\..\my-passthrough\tf2mod\fortcraft_collision.h"
 +			$File	"..\..\..\..\my-passthrough\tf2mod\fortcraft_trace.cpp"
++			$File	"..\..\..\..\my-passthrough\tf2mod\fortcraft_platform.h"
++			$File	"..\..\..\..\my-passthrough\tf2mod\fortcraft_platform.cpp"
  			$File	"tf\entity_passtime_ball_spawn.cpp"
  			$File	"tf\entity_passtime_ball_spawn.h"
  			$File	"tf\func_passtime_goal.cpp"
@@ -1118,7 +1122,7 @@ index c7a9e93..8bdedb0 100644
  
  	// Only make a shadow if the object doesn't use vphysics
 diff --git a/src/game/server/tf/tf_obj_sentrygun.cpp b/src/game/server/tf/tf_obj_sentrygun.cpp
-index aa261cb..7be8dde 100644
+index aa261cb..3e606ed 100644
 --- a/src/game/server/tf/tf_obj_sentrygun.cpp
 +++ b/src/game/server/tf/tf_obj_sentrygun.cpp
 @@ -25,6 +25,7 @@
@@ -1150,9 +1154,9 @@ index aa261cb..7be8dde 100644
  		m_vecGoalAngles.x = 0;
  	}
  
-+	// FortCraft: unlimited sentry ammo while testing (see fortcraft_infinite_ammo in tf_player.cpp).
++	// FortCraft: Creative always refills sentries; Survival uses the optional ammo override.
 +	extern ConVar fortcraft_infinite_ammo;
-+	if ( fortcraft_infinite_ammo.GetBool() )
++	if ( fortcraft_infinite_ammo.GetBool() || FortCraft_HostCreative() )
 +	{
 +		m_iAmmoShells = m_iMaxAmmoShells;
 +		m_iAmmoRockets = m_iMaxAmmoRockets;
@@ -1293,7 +1297,7 @@ index 2c86d52..cc7b936 100644
  
  	int GetBaseTurnRate( void );
 diff --git a/src/game/server/tf/tf_player.cpp b/src/game/server/tf/tf_player.cpp
-index c030951..8c48e3c 100644
+index c030951..5202d86 100644
 --- a/src/game/server/tf/tf_player.cpp
 +++ b/src/game/server/tf/tf_player.cpp
 @@ -6,6 +6,8 @@
@@ -1317,13 +1321,13 @@ index c030951..8c48e3c 100644
  //-----------------------------------------------------------------------------
  // Purpose: 
  //-----------------------------------------------------------------------------
-+// FortCraft: unlimited ammo while testing (every weapon's clip and reserve, Engineer metal, and
-+// sentry shells and rockets). fortcraft_infinite_ammo 0 turns it off.
-+ConVar fortcraft_infinite_ammo( "fortcraft_infinite_ammo", "1", FCVAR_NONE, "FortCraft: unlimited ammo, metal and sentry ammo" );
++// FortCraft: Creative always has unlimited ammo. In Survival it is finite by default;
++// fortcraft_infinite_ammo 1 is an optional testing override.
++ConVar fortcraft_infinite_ammo( "fortcraft_infinite_ammo", "0", FCVAR_NONE, "FortCraft: optional unlimited ammo in Survival (Creative is always unlimited)" );
 +
 +static void FortCraft_RefillAmmo( CTFPlayer *pPlayer )
 +{
-+	if ( !fortcraft_infinite_ammo.GetBool() || !pPlayer->IsAlive() )
++	if ( ( !fortcraft_infinite_ammo.GetBool() && !FortCraft_HostCreative() ) || !pPlayer->IsAlive() )
 +		return;
 +	for ( int iAmmo = TF_AMMO_PRIMARY; iAmmo < TF_AMMO_COUNT; ++iAmmo )
 +	{
@@ -1670,6 +1674,51 @@ index 867c6f9..520c40c 100644
  	// Do we have a style set?
  	const char* pStyleImage = NULL;
  	if ( GetStaticData()->GetNumStyles() )
+diff --git a/src/game/shared/gamemovement.cpp b/src/game/shared/gamemovement.cpp
+index 4b79f72..9bc8cd0 100644
+--- a/src/game/shared/gamemovement.cpp
++++ b/src/game/shared/gamemovement.cpp
+@@ -1210,6 +1210,17 @@ void CGameMovement::FinishMove( void )
+ //-----------------------------------------------------------------------------
+ void CGameMovement::DecayPunchAngle( void )
+ {
++	// FortCraft: with sv_suppress_viewpunch on, clear any view punch that got set directly (not
++	// through ViewPunch/SetPunchAngle), so none can tilt TF2's view against Minecraft's.
++	extern ConVar sv_suppress_viewpunch;
++	if ( sv_suppress_viewpunch.GetBool() )
++	{
++		if ( player->m_Local.m_vecPunchAngle->LengthSqr() > 0.0f )
++			player->m_Local.m_vecPunchAngle = vec3_angle;
++		if ( player->m_Local.m_vecPunchAngleVel->LengthSqr() > 0.0f )
++			player->m_Local.m_vecPunchAngleVel = vec3_angle;
++		return;
++	}
+ 	if ( player->m_Local.m_vecPunchAngle->LengthSqr() > 0.001 || player->m_Local.m_vecPunchAngleVel->LengthSqr() > 0.001 )
+ 	{
+ 		player->m_Local.m_vecPunchAngle += player->m_Local.m_vecPunchAngleVel * gpGlobals->frametime;
+@@ -3997,12 +4008,18 @@ void CGameMovement::PlayerRoughLandingEffects( float fvol )
+ 
+ 		//
+ 		// Knock the screen around a little bit, temporary effect.
++		// FortCraft: not while sv_suppress_viewpunch is on. Minecraft's camera doesn't follow TF2's
++		// view punch, so this landing tilt only turned TF2's picture against Minecraft's world.
+ 		//
+-		player->m_Local.m_vecPunchAngle.Set( ROLL, player->m_Local.m_flFallVelocity * 0.013 );
+-
+-		if ( player->m_Local.m_vecPunchAngle[PITCH] > 8 )
++		extern ConVar sv_suppress_viewpunch;
++		if ( !sv_suppress_viewpunch.GetBool() )
+ 		{
+-			player->m_Local.m_vecPunchAngle.Set( PITCH, 8 );
++			player->m_Local.m_vecPunchAngle.Set( ROLL, player->m_Local.m_flFallVelocity * 0.013 );
++
++			if ( player->m_Local.m_vecPunchAngle[PITCH] > 8 )
++			{
++				player->m_Local.m_vecPunchAngle.Set( PITCH, 8 );
++			}
+ 		}
+ 
+ #if !defined( CLIENT_DLL )
 diff --git a/src/game/shared/tf/tf_flame.cpp b/src/game/shared/tf/tf_flame.cpp
 index 7e9ceed..cf5c53e 100644
 --- a/src/game/shared/tf/tf_flame.cpp

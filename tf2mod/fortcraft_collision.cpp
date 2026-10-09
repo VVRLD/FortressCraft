@@ -7,6 +7,7 @@
 #include "takedamageinfo.h"
 #include "tf_shareddefs.h"
 #include "../protocol/fortcraft_protocol.h"
+#include "fortcraft_platform.h"
 
 #ifdef CLIENT_DLL
 #include "c_world.h"
@@ -20,9 +21,6 @@
 // memdbgon must be the last include file in a .cpp file!!!
 #include "tier0/memdbgon.h"
 
-extern "C" __declspec( dllimport ) void *__stdcall OpenFileMappingW( unsigned long access, int inherit, const wchar_t *name );
-extern "C" __declspec( dllimport ) void *__stdcall MapViewOfFile( void *mapping, unsigned long access, unsigned long offHigh, unsigned long offLow, size_t bytes );
-extern "C" __declspec( dllimport ) unsigned long long __stdcall GetTickCount64();
 
 namespace proto = fortcraft::proto;
 
@@ -48,10 +46,7 @@ static void TryOpen()
 	if ( s_pShm || Plat_FloatTime() - s_flLastOpenTry < 1.0 )
 		return;
 	s_flLastOpenTry = Plat_FloatTime();
-	void *hMapping = OpenFileMappingW( 0xF001F /* FILE_MAP_ALL_ACCESS */, 0, proto::kMappingName );
-	if ( !hMapping )
-		return;
-	s_pShm = (unsigned char *)MapViewOfFile( hMapping, 0xF001F, 0, 0, (size_t)proto::kMappingBytes );
+	s_pShm = (unsigned char *)FortCraftPlat_OpenLink( (size_t)proto::kMappingBytes );
 }
 
 // Minecraft (x, y up, z south) box to TF2 (x, y north, z up), around the anchor.
@@ -244,13 +239,22 @@ bool FortCraft_Active()
 	return s_bActive;
 }
 
+bool FortCraft_HostCreative()
+{
+	Refresh();
+	if ( !s_bActive || !s_pShm )
+		return false;
+	const proto::HostDisplay &display = *(const proto::HostDisplay *)( s_pShm + proto::kOffHostDisplay );
+	return ( display.flags & proto::kHostCreative ) != 0;
+}
+
 static bool ReadMedicTarget( proto::MedicTarget &out )
 {
 	Refresh();
 	if ( !s_bActive || !s_pShm )
 		return false;
 	const proto::Header &header = *(const proto::Header *)( s_pShm + proto::kOffHeader );
-	if ( !header.hostHeartbeatMs || GetTickCount64() - header.hostHeartbeatMs > proto::kHeartbeatTimeoutMs )
+	if ( !header.hostHeartbeatMs || FortCraftPlat_NowMs() - header.hostHeartbeatMs > proto::kHeartbeatTimeoutMs )
 		return false;
 	const proto::MedicTarget &source = *(const proto::MedicTarget *)( s_pShm + proto::kOffMedicTarget );
 	const uint32_t seq = *(volatile const uint32_t *)&source.seq;
@@ -421,8 +425,12 @@ static bool ClipAgainst( const CUtlVector< FortCraftBox > &list, bool bIsMobs, c
 		if ( bMiss || enterAxis < 0 || tEnter > tExit || tEnter < 0.0f || tEnter > 1.0f || length <= 0.0f )
 			continue;
 
-		// Stop just short of the surface, like the engine does (DIST_EPSILON).
-		float fraction = MAX( 0.0f, ( tEnter * length - DIST_EPSILON ) / length );
+		// Stop DIST_EPSILON short of the surface measured straight out from it, as Valve's brush
+		// collision does ((d1 - DIST_EPSILON) / (d1 - d2) in CM_ClipBoxToBrush). Backing off along
+		// the movement instead (the old formula) left a player walking into a wall at a shallow
+		// angle only DIST_EPSILON * sin(angle) away: within float error of the face, so the next
+		// move could start "inside" the block, stick, and get pushed back out (wall jitter).
+		float fraction = MAX( 0.0f, tEnter - DIST_EPSILON / fabsf( delta[ enterAxis ] ) );
 		if ( fraction < pm.fraction )
 			SetHit( pm, start, delta, fraction, enterAxis, enterSign );
 	}
@@ -951,6 +959,44 @@ void FortCraft_EnsureClearSpawn( CBaseEntity *pPlayer )
 // Minecraft hits already applied (or dropped). Hits that arrive while the TF2 player is dead
 // are dropped: before, they all landed at once on the fresh player after respawn.
 static uint32_t s_nHurtsSeen = 0xFFFFFFFF;
+static uint32_t s_nFoodHealsSeen = 0;
+
+static void ApplySupplyPack( CTFPlayer *pPlayer )
+{
+	proto::PackUse &use = *(proto::PackUse *)( s_pShm + proto::kOffPackUse );
+	const uint32_t request = *(volatile const uint32_t *)&use.request;
+	static uint32_t s_nSeenRequest;
+	if ( request == 0 ) { s_nSeenRequest = 0; return; }
+	if ( request == s_nSeenRequest ) return;
+	if ( request < s_nSeenRequest ) s_nSeenRequest = 0; // fresh shared mapping
+	s_nSeenRequest = request;
+	bool ok = false;
+	if ( pPlayer->IsAlive() )
+	{
+		const bool large = use.kind == proto::kLargeHealth || use.kind == proto::kLargeAmmo;
+		const float share = large ? 1.0f : 0.2f;
+		if ( use.kind == proto::kSmallHealth || use.kind == proto::kLargeHealth )
+		{
+			if ( pPlayer->GetHealth() < pPlayer->GetMaxHealth() )
+				ok = pPlayer->TakeHealth( MAX( 1, (int)ceilf( pPlayer->GetMaxHealth() * share ) ), DMG_GENERIC ) > 0;
+		}
+		else if ( use.kind == proto::kSmallAmmo || use.kind == proto::kLargeAmmo )
+		{
+			for ( int type = TF_AMMO_PRIMARY; type < TF_AMMO_COUNT; ++type )
+			{
+				const int maximum = pPlayer->GetMaxAmmo( type );
+				if ( maximum > 0 && pPlayer->GetAmmoCount( type ) < maximum )
+					ok |= pPlayer->GiveAmmo( MAX( 1, (int)ceilf( maximum * share ) ), type, true ) > 0;
+			}
+		}
+	}
+	if ( ok )  // TF2's own pickup sounds
+		pPlayer->EmitSound( ( use.kind == proto::kSmallHealth || use.kind == proto::kLargeHealth ) ? "HealthKit.Touch" : "AmmoPack.Touch" );
+	use.ok = ok ? 1 : 0;
+	*(volatile uint32_t *)&use.result = request;
+	Msg( "FortCraft pack: request=%u kind=%u applied=%d health=%d/%d\n",
+		request, use.kind, ok ? 1 : 0, pPlayer->GetHealth(), pPlayer->GetMaxHealth() );
+}
 
 void FortCraft_ApplyMinecraftDamage( CBaseEntity *pPlayer )
 {
@@ -960,9 +1006,11 @@ void FortCraft_ApplyMinecraftDamage( CBaseEntity *pPlayer )
 	Vector anchor;
 	if ( !pPlayer || !AnchorTF2( anchor ) )
 		return;
+	ApplySupplyPack( static_cast< CTFPlayer * >( pPlayer ) );
 	if ( !pPlayer->IsAlive() )
 	{
 		s_nHurtsSeen = ( (const proto::Hurts *)( s_pShm + proto::kOffHurts ) )->count;
+		s_nFoodHealsSeen = ( (const proto::FoodHeals *)( s_pShm + proto::kOffFoodHeals ) )->count;
 		return;
 	}
 	static int s_nLastWaterLevel = -1;
@@ -988,6 +1036,21 @@ void FortCraft_ApplyMinecraftDamage( CBaseEntity *pPlayer )
 		else
 			pPlayer->RemoveFlag( FL_GODMODE );
 		Msg( "FortCraft: Minecraft %s mode: TF2 god mode %s\n", bCreative ? "creative" : "survival", bCreative ? "on" : "off" );
+	}
+
+	const proto::FoodHeals &food = *(const proto::FoodHeals *)( s_pShm + proto::kOffFoodHeals );
+	uint32_t foodCount = *(volatile const uint32_t *)&food.count;
+	if ( foodCount < s_nFoodHealsSeen || foodCount - s_nFoodHealsSeen > proto::kMaxFoodHeals )
+		s_nFoodHealsSeen = foodCount; // mapping restarted or old events; never replay them
+	for ( ; s_nFoodHealsSeen != foodCount; ++s_nFoodHealsSeen )
+	{
+		const int nutrition = food.nutrition[ s_nFoodHealsSeen % proto::kMaxFoodHeals ];
+		if ( nutrition <= 0 )
+			continue;
+		const int amount = MAX( 1, (int)ceilf( pPlayer->GetMaxHealth() * MIN( nutrition, 20 ) / 40.0f ) );
+		const int gained = pPlayer->TakeHealth( amount, DMG_GENERIC );
+		Msg( "FortCraft food: nutrition=%d TF2 healed=%d health=%d/%d\n",
+			nutrition, gained, pPlayer->GetHealth(), pPlayer->GetMaxHealth() );
 	}
 
 	const proto::Hurts &hurts = *(const proto::Hurts *)( s_pShm + proto::kOffHurts );

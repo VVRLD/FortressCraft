@@ -2,6 +2,10 @@
 //
 // Built without Source's headers (and without its precompiled header) so it can include the
 // Windows SDK's Direct3D 9 headers directly.
+// Linux: Direct3D sharing doesn't exist there (TF2 draws through a D3D9-to-Vulkan layer), so
+// the bottom of this file is a stand-in that always says "not available" and TF2 uses the
+// read-back overlay path. See docs/DESIGN.md, "Linux port".
+#ifdef _WIN32
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
 #include <d3d9.h>
@@ -769,3 +773,22 @@ static IDirect3DDevice9 *FindDeviceByTable( char *pszInfo, size_t infoSize )
 		nChecked, bestScore );
 	return pResult;
 }
+
+#else  // !_WIN32: no GPU sharing yet; fortcraft_link.cpp then uses the read-back path.
+#include "fortcraft_gpu.h"
+
+bool FortCraftGpu_Init( void * ) { return false; }
+void FortCraftGpu_Grab( int, int, int ) {}
+void FortCraftGpu_Combine() {}
+bool FortCraftGpu_TakeFinished( uint32_t * ) { return false; }
+void FortCraftGpu_GetShared( uint64_t *pHandle0, uint64_t *pHandle1, uint32_t *pWidth, uint32_t *pHeight, uint32_t *pGeneration )
+{
+	*pHandle0 = *pHandle1 = 0;
+	*pWidth = *pHeight = *pGeneration = 0;
+}
+const char *FortCraftGpu_Error() { return "not built on Linux (Direct3D sharing is Windows-only)"; }
+const char *FortCraftGpu_HookInfo() { return "nothing"; }
+void FortCraftGpu_GiveUp() {}
+bool FortCraftGpu_Broken() { return false; }
+void FortCraftGpu_Survey( void ( * )( const char * ) ) {}
+#endif

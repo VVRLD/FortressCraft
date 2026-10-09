@@ -29,7 +29,7 @@ public final class Taunts {
 
 	/** Once per Minecraft frame while TF2 is linked: G (not one of Minecraft's own keys). */
 	public static void tick(Minecraft minecraft) {
-		boolean gDown = minecraft.gui.screen() == null && InputConstants.isKeyDown(InputConstants.KEY_G);
+		boolean gDown = minecraft.gui.screen() == null && Tf2Keys.TAUNT.isDown();
 		if (gDown && !gWasDown) {
 			FortLink.sendUiCommand(TAUNT_KEY);
 			FortCraft.LOG.info("FortCraft: G -> TF2 taunt key");

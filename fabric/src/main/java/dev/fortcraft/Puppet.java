@@ -56,7 +56,14 @@ public final class Puppet {
 			minecraft.options.framerateLimit().set(TARGET_FPS);
 			FortCraft.LOG.info("FortCraft: Minecraft frame rate limit set to {}", TARGET_FPS);
 		}
-		int fpsLimit = minecraft.options.framerateLimit().get();
+		// While paced to TF2's frames (Overlay.pace), Minecraft's own frame limiter would add its
+		// own uneven waits on top, so it is switched off; TF2 still gets the 240 fps target.
+		int wantLimit = Overlay.pacing(minecraft) ? Options.UNLIMITED_FRAMERATE_CUTOFF : TARGET_FPS;
+		if (minecraft.options.framerateLimit().get() != wantLimit) {
+			minecraft.options.framerateLimit().set(wantLimit);
+			FortCraft.LOG.info("FortCraft: Minecraft frame limiter {}", wantLimit == TARGET_FPS ? "back at " + TARGET_FPS : "off (paced to TF2)");
+		}
+		int fpsLimit = TARGET_FPS;
 		boolean cursorFree = !minecraft.mouseHandler.isMouseGrabbed() || !minecraft.isWindowActive();
 		if (cursorFree != lastCursorFree) {
 			lastCursorFree = cursorFree;
@@ -98,10 +105,11 @@ public final class Puppet {
 			buttons |= o.keyShift.isDown() ? FortLink.IN_CROUCH : 0;
 			buttons |= o.keyAttack.isDown() ? FortLink.IN_ATTACK : 0;
 			buttons |= guestAlive && RightClick.tf2Attack2(minecraft) ? FortLink.IN_ATTACK2 : 0;
-			buttons |= InputConstants.isKeyDown(InputConstants.KEY_R) ? FortLink.IN_RELOAD : 0;
+			buttons |= Tf2Keys.RELOAD.isDown() ? FortLink.IN_RELOAD : 0;
 		}
 		FortLink.writeInput(frame, buttons, player.getYRot(), player.getXRot(), WeaponSelection.selectedSlot(minecraft, guestAlive));
 		BlockScanner.tick(minecraft.level, player.getX(), player.getY(), player.getZ());
+		Overlay.pace(minecraft, guestAlive);
 		Overlay.update(minecraft, guestAlive);
 		Combat.linked = guestAlive;
 		if (guestAlive) {
@@ -114,6 +122,7 @@ public final class Puppet {
 			Crafting.tick(minecraft);
 			Fire.tick(minecraft);
 			MobsVsBuildings.tick(minecraft);
+			FarOcclusion.tick(minecraft);
 		}
 
 		if (!guestAlive) {
@@ -168,8 +177,11 @@ public final class Puppet {
 
 		// What will actually be drawn this frame.
 		Vec3 drawn = player.getPosition(minecraft.getDeltaTracker().getGameTimeDeltaPartialTick(false));
-		writeLog(String.format("frame=%d sample=%d received=(%.4f,%.4f,%.4f) drawn=(%.4f,%.4f,%.4f) yaw=%.2f",
-			frame, s.sample(), s.x(), s.y(), s.z(), drawn.x, drawn.y, drawn.z, s.yaw()));
+		double[] cam = Overlay.lastCameraPosition();  // where the previous frame's camera really was, and when
+		writeLog(String.format("frame=%d sample=%d received=(%.4f,%.4f,%.4f) drawn=(%.4f,%.4f,%.4f) yaw=%.2f t=%d newOverlay=%d cam=(%.4f,%.4f,%.4f) camT=%d",
+			frame, s.sample(), s.x(), s.y(), s.z(), drawn.x, drawn.y, drawn.z, s.yaw(), System.nanoTime() / 1000L,
+			Overlay.newThisFrame() ? 1 : 0, cam != null ? cam[0] : drawn.x, cam != null ? cam[1] : drawn.y, cam != null ? cam[2] : drawn.z,
+			Overlay.lastCameraNanos() / 1000L));
 	}
 
 	/**

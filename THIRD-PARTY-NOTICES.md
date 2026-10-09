@@ -19,3 +19,8 @@ The Gradle wrapper JAR is a build tool, not a game file.
 
 FortCraft is an unofficial fan project. It is not affiliated with or endorsed
 by Valve, Mojang, or Microsoft. This preview is single-player/offline only.
+
+`prebuilt/fortcraft_flat.bsp` is FortCraft's own empty test map, compiled from
+`tf2mod/maps/fortcraft_flat.vmf` with Valve's map compiler so Linux players (who have no
+Windows map compiler) can use it. It contains only FortCraft's geometry and references to
+standard tool materials, no Valve assets.

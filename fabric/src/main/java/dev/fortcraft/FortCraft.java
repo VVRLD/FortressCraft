@@ -10,6 +10,7 @@ public final class FortCraft implements ModInitializer {
 	@Override
 	public void onInitialize() {
 		LOG.info("FortCraft plugin loaded");
+		// Supply packs are registered from ItemsMixin, before Minecraft freezes its item registry.
 		dev.fortcraft.link.FortLink.create();
 	}
 }
