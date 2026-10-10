@@ -7,12 +7,15 @@
 # git progress) into errors under 'Stop'. Failures are caught with exit codes instead (Run, Fail).
 $ErrorActionPreference = 'Continue'
 
-$project = (Resolve-Path -LiteralPath (Join-Path $PSScriptRoot '..')).Path
+# START-HERE.cmd runs this script's text (so PCs that block .ps1 files still work); it then
+# passes the tools folder in FORTCRAFT_TOOLS because $PSScriptRoot is empty in that case.
+$tools = if ($PSScriptRoot) { $PSScriptRoot } else { $env:FORTCRAFT_TOOLS }
+$project = (Resolve-Path -LiteralPath (Join-Path $tools '..')).Path
 $root = Split-Path -Parent $project
 $sdk = Join-Path $root 'source-sdk-2013'
 $baseCommit = 'b8cfb12c0e083a2ef5b2f9f9b50f3902fa034474'
 $patch = Join-Path $project 'tf2mod\sdk-changes.patch'
-$config = Join-Path $PSScriptRoot 'config.local.cmd'
+$config = Join-Path $tools 'config.local.cmd'
 
 function Step([string] $text) { Write-Host ''; Write-Host "== $text" -ForegroundColor Cyan }
 function Fail([string] $text) { Write-Host ''; Write-Host "SETUP STOPPED: $text" -ForegroundColor Red; exit 1 }
@@ -55,6 +58,20 @@ if (-not (Get-Command git.exe -ErrorAction SilentlyContinue)) {
     Fail 'Install Git for Windows (https://git-scm.com/download/win), then run setup again.'
 }
 Write-Host (git --version)
+
+# ---- Python 3 -----------------------------------------------------------------------------------
+# Valve's SDK build runs "python" to turn its VScript files into C++ (without it the server
+# build fails with error MSB8066 / exit code 9009 and "g_Script_... undeclared identifier").
+Step 'Checking Python 3 (Valve''s SDK build needs it)'
+function PythonOk { $v = (cmd /c "python -c ""import sys; print(sys.version_info[0])"" 2>nul"); return ($LASTEXITCODE -eq 0 -and "$v".Trim() -eq '3') }
+if (-not (PythonOk)) {
+    if ((Get-Command winget.exe -ErrorAction SilentlyContinue) -and (Ask 'Python 3 is missing. Install it now with winget?')) {
+        Run { winget install --id Python.Python.3.13 -e --accept-package-agreements --accept-source-agreements } 'Installing Python failed.'
+        Fail 'Python was installed. Close this window and run START-HERE.cmd again so Windows finds it.'
+    }
+    Fail 'Install Python 3 from python.org (tick "Add python.exe to PATH"), then run setup again. If "python" opens the Microsoft Store, turn off its App execution alias in Windows Settings.'
+}
+Write-Host (cmd /c 'python --version 2>&1')
 
 # ---- Java 25 -----------------------------------------------------------------------------------
 Step 'Looking for Java 25 (Minecraft''s build needs exactly 25)'

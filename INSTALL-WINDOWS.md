@@ -7,14 +7,16 @@
 - **Minecraft: Java Edition.**
 - **Visual Studio 2022 or newer** (Community is free) or **Build Tools for Visual Studio**,
   with the workload **"Desktop development with C++"**.
-- **Java 25** and **Git**: setup offers to install both for you (with winget) if they're missing.
+- **Java 25**, **Git** and **Python 3**: setup offers to install them for you (with winget) if
+  they're missing. (Valve's SDK build runs Python.)
 - About 6 GB of free disk space and an internet connection.
 
 ## 2. Set up (once)
 
 1. Unzip the Windows release somewhere you can write to, for example `Documents\FortCraft`.
    Keep the folders together.
-2. Double-click **`START-HERE.cmd`**.
+2. Double-click **`START-HERE.cmd`**. Don't run `setup_windows.ps1` directly: Windows often blocks
+   PowerShell scripts, and `START-HERE.cmd` works around that.
 
 Setup finds Java 25, Visual Studio and your Steam games, downloads Valve's Source SDK 2013 next
 to the `my-passthrough` folder, applies FortCraft's changes, builds the TF2 side, installs the
@@ -38,3 +40,7 @@ and TF2 starts hidden in the background. Close Minecraft to stop; TF2 closes by 
   console in `source-sdk-2013\game\mod_tf\console.log`.
 - "TF2 is still running": close Minecraft, wait a few seconds, try again.
 - Steam must be running and signed in.
+- `error MSB8066 ... exited with code 9009` or `g_Script_... undeclared identifier`: Python 3 is
+  missing (or `python` opens the Microsoft Store). Install Python 3 from python.org with "Add
+  python.exe to PATH", then run `START-HERE.cmd` again.
+- "running scripts is disabled on this system": start setup with `START-HERE.cmd`, not the .ps1 file.
