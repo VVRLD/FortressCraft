@@ -882,6 +882,19 @@ public final class Combat {
 		}
 	}
 
+	/**
+	 * Some mobs sometimes drop a TF2 small ammo pack (Alex, 2026-10-10): skeletons (and strays,
+	 * bogged) 20%, wither skeletons 30%, endermen in the End 15%.
+	 */
+	private static boolean dropsAmmo(LivingEntity mob, ServerLevel level) {
+		var type = mob.getType();
+		float chance = type == EntityTypes.SKELETON || type == EntityTypes.STRAY || type == EntityTypes.BOGGED ? 0.20f
+			: type == EntityTypes.WITHER_SKELETON ? 0.30f
+			: type == EntityTypes.ENDERMAN && level.dimension() == Level.END ? 0.15f
+			: 0.0f;
+		return chance > 0 && mob.getRandom().nextFloat() < chance;
+	}
+
 	private static boolean dragonDying(Entity entity) {
 		return entity instanceof EnderDragon dragon && dragon.getPhaseManager().getCurrentPhase().getPhase()
 			== net.minecraft.world.entity.boss.enderdragon.phases.EnderDragonPhase.DYING;
@@ -969,8 +982,9 @@ public final class Combat {
 					startDragonRain(money);  // its money comes down as rain instead
 					money = 0;
 				}
+				int ammo = killed && target instanceof LivingEntity dropper && dropsAmmo(dropper, level) ? 1 << 9 : 0;  // kMobHitDropAmmo
 				FortLink.writeMobHit(box.getCenter().x, box.maxY, box.getCenter().z, applied * scale, killed,
-					(effects & (CombatRules.SENTRY | CombatRules.CRIT | CombatRules.MINI)) | (money << 16));
+					(effects & (CombatRules.SENTRY | CombatRules.CRIT | CombatRules.MINI)) | ammo | (money << 16));
 				int bleed = CombatRules.bleedSeconds(effects);
 				if (bleed > 0 && !killed && target instanceof LivingEntity) {
 					Bleed.start(target.getId(), bleed);

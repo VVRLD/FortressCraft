@@ -14,7 +14,7 @@
 namespace fortcraft { namespace proto
 {
 	static constexpr std::uint32_t kMagic = 0x46524346;  // "FCRF"
-	static constexpr std::uint32_t kVersion = 56;
+	static constexpr std::uint32_t kVersion = 57;
 	static constexpr wchar_t       kMappingName[] = L"Local\\FortCraft_v1";
 	// Linux: a file in RAM that Minecraft creates and both sides map (same bytes as on Windows).
 	static constexpr char          kMappingPathPosix[] = "/dev/shm/FortCraft_v1";
@@ -894,6 +894,9 @@ namespace fortcraft { namespace proto
 	// v54: one raindrop bag (the ender dragon's money, scheduled by Minecraft): x, z and y = the
 	// ground there. TF2 drops it from 8 blocks up and leaves it on that ground.
 	static constexpr std::uint32_t kMobHitMoneyLand = 1u << 8;
+	// v57: the kill also drops a TF2 small ammo pack (skeletons, wither skeletons, End endermen,
+	// by chance; Minecraft rolls it).
+	static constexpr std::uint32_t kMobHitDropAmmo = 1u << 9;
 
 	// Minecraft damage = TF2 damage / kDamageScale (a rocket's 90 is 18 Minecraft health, nine
 	// hearts; a zombie has 20).

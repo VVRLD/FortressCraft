@@ -1048,7 +1048,7 @@ static void ApplySupplyPack( CTFPlayer *pPlayer )
 // named), and only moves again when it's pulled to the player.
 struct DroppedMoney
 {
-	CHandle< CCurrencyPack > hPack;
+	EHANDLE hPack;  // a cash bag, or a dropped ammo pack
 	bool bHasGround;      // the dragon's rain: land exactly here
 	Vector vecGround;
 	float flLandAt;
@@ -1111,7 +1111,7 @@ static void UpdateDroppedMoney()
 	for ( int i = s_DroppedMoney.Count() - 1; i >= 0; --i )
 	{
 		DroppedMoney &d = s_DroppedMoney[ i ];
-		CCurrencyPack *pPack = d.hPack.Get();
+		CBaseEntity *pPack = d.hPack.Get();
 		if ( !pPack )
 		{
 			s_DroppedMoney.Remove( i );
@@ -1119,7 +1119,8 @@ static void UpdateDroppedMoney()
 		}
 		if ( pPack->GetMoveType() == MOVETYPE_NONE )
 			continue;
-		if ( pPack->IsClaimed() )
+		CCurrencyPack *pCash = dynamic_cast< CCurrencyPack * >( pPack );
+		if ( pCash && pCash->IsClaimed() )
 			continue;  // being pulled to the player
 		if ( d.bHasGround && gpGlobals->curtime >= d.flLandAt )
 		{
@@ -1169,6 +1170,26 @@ static void ServerMobHits( CTFPlayer *pPlayer )
 				for ( int i = 0; i < nBags; ++i )
 					DropMoney( pos, nMoney / nBags + ( i == 0 ? nMoney % nBags : 0 ), flLifetime );
 				Msg( "FortCraft MvM: %s dropped $%d in %d bag(s)\n", ( hit.source & proto::kMobHitMoneyOnly ) ? "Minecraft XP" : "a kill", nMoney, nBags );
+			}
+		}
+		// A TF2 small ammo pack (Minecraft rolled the chance), dropped where the mob died.
+		if ( hit.killed == 1 && ( hit.source & proto::kMobHitDropAmmo ) && AnchorTF2( anchor ) )
+		{
+			const float s = (float)proto::kUnitsPerBlock;
+			const Vector pos( ( hit.x - 0.5f ) * s + anchor.x, -( hit.z - 0.5f ) * s + anchor.y, ( hit.y + 60.0f ) * s + anchor.z );
+			CTFPowerup *pAmmo = dynamic_cast< CTFPowerup * >( CBaseEntity::CreateNoSpawn( "item_ammopack_small", pos, vec3_angle, NULL ) );
+			if ( pAmmo )
+			{
+				DispatchSpawn( pAmmo );
+				Vector vecVelocity( RandomFloat( -60.0f, 60.0f ), RandomFloat( -60.0f, 60.0f ), 150.0f );
+				pAmmo->DropSingleInstance( vecVelocity, NULL, 0.0f, 0.0f );
+				DroppedMoney d;  // stays put once landed, like the cash
+				d.hPack = pAmmo;
+				d.bHasGround = false;
+				d.vecGround = vec3_origin;
+				d.flLandAt = 0.0f;
+				s_DroppedMoney.AddToTail( d );
+				Msg( "FortCraft: a mob dropped a small ammo pack\n" );
 			}
 		}
 		// The weapon's on-kill effects (Powerjack and other heal-on-kill, restore health on
