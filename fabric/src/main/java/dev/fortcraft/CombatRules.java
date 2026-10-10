@@ -32,24 +32,25 @@ public final class CombatRules {
 
 	/**
 	 * TF2's distance modifier for bullets and pellets: 150% point blank, 100% at 512 units (about
-	 * 11 blocks), 50% from 1024 units (21 blocks). Crits ignore distance; mini-crits keep the
+	 * 14 blocks), 50% from 1024 units (28 blocks). Crits ignore distance; mini-crits keep the
 	 * close-range bonus but never fall below 100%. Melee has none.
 	 */
 	public static float rangeModifier(double blocks, int flags, boolean headshot) {
 		if ((flags & MELEE) != 0 || (flags & CRIT) != 0 || headshot) {
 			return 1.0f;
 		}
-		double units = blocks * 48.0;
+		double units = blocks * 36.5;
 		float mod = (float) Math.max(0.5, Math.min(1.5, 1.5 - units / 1024.0));
 		return (flags & MINI) != 0 ? Math.max(1.0f, mod) : mod;
 	}
 
 	/**
 	 * Minecraft damage a backstab does: kills any normal mob, but a boss (dragon, wither, warden,
-	 * elder guardian) takes a fifth of its health per stab instead of dying to one.
+	 * elder guardian) takes the MvM giant-robot cap of 187.5 TF2 damage = 25.0 Minecraft HP
+	 * (12.5 hearts) per stab instead of dying to one.
 	 */
 	public static float backstabDamage(float normal, float health, float maxHealth, boolean boss) {
-		return boss ? Math.max(normal, maxHealth * 0.2f) : Math.max(normal, health * 6.0f);
+		return boss ? Math.max(normal, 25.0f) : Math.max(normal, health * 6.0f);
 	}
 
 	public static boolean backstab(double positionDot, double aimDot, double facingDot) {
