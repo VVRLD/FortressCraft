@@ -1158,11 +1158,30 @@ static void MatchHostDisplay()
 	if ( d.width <= 0 || d.height <= 0 )
 		return;
 	static int s_nCapH = CommandLine()->ParmValue( "-fortcraft_overlay_height", 1080 );
-	static const int kHeights[] = { 1080, 900, 720, 540 };
-	int h = 540;
-	for ( int i = 0; i < 4; ++i )
+	// No 540 rung: 960x540 is 16:9 but is not a mode TF2 offers, and asking for it made TF2
+	// snap all the way down to 640x480 (4:3) and stay there, so the overlay was a different
+	// shape from Minecraft and the weapon and HUD ended up projected off screen (look drift
+	// ran to 138 deg). 720 is the lowest rung TF2 honours here, so it is also the floor for
+	// -fortcraft_overlay_height. Note that with a Minecraft window shorter than 720, TF2 now
+	// stays at 720, so AlignHiddenWindowToMinecraft (which needs both client areas to be the
+	// same size) will not run and TF2's menu windows keep Minecraft's origin unaligned.
+	static const int kHeights[] = { 1080, 900, 720 };
+	static const int kMinHeight = kHeights[ ARRAYSIZE( kHeights ) - 1 ];
+	if ( s_nCapH < kMinHeight )
 	{
-		if ( kHeights[ i ] <= s_nCapH && kHeights[ i ] <= MAX( 540, (int)d.height ) )
+		static bool s_bWarnedCap;
+		if ( !s_bWarnedCap )
+		{
+			s_bWarnedCap = true;
+			Msg( "FortCraft: -fortcraft_overlay_height %d is below the %d TF2 honours; using %d\n",
+				s_nCapH, kMinHeight, kMinHeight );
+		}
+		s_nCapH = kMinHeight;
+	}
+	int h = kMinHeight;
+	for ( int i = 0; i < (int)ARRAYSIZE( kHeights ); ++i )
+	{
+		if ( kHeights[ i ] <= s_nCapH && kHeights[ i ] <= MAX( kMinHeight, (int)d.height ) )
 		{
 			h = kHeights[ i ];
 			break;

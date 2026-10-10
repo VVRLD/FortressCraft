@@ -506,7 +506,7 @@ entity
 {
 	"id" "51"
 	"classname" "info_player_teamspawn"
-	"origin" "0 0 0"
+	"origin" "-64 0 0"
 	"TeamNum" "2"
 	"StartDisabled" "0"
 	"angles" "0 0 0"
