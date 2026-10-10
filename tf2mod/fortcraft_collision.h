@@ -83,7 +83,7 @@ void FortCraft_ReportBlast( const Vector &src, float radius, float damage, int d
 void FortCraft_ReportFire( const Vector &pos, float flRadius, bool bFlame );
 
 // TF2 server, once per player think: the player's buildings to Minecraft, and hostile mobs'
-// hits on them back (TF2 damage = Minecraft health points x building max health / 20).
+// hits on them back (TF2 damage = Minecraft health points x 7.5).
 class CBaseEntity;
 void FortCraft_WriteBuildings( CBaseEntity **ppObjects, int nCount );
 
