@@ -26,6 +26,8 @@
 #include "ivieweffects.h"
 #include "shake.h"
 #include "backpack_panel.h"
+#include "particle_parse.h"
+#include "engine/IEngineSound.h"
 #include "../protocol/fortcraft_protocol.h"
 #include "fortcraft_platform.h"
 
@@ -1331,9 +1333,10 @@ static void AutoJoin( C_TFPlayer *pPlayer )
 		// sv_cheats 1, so that has to come first (it came last before, and TF2's map was drawn).
 		engine->ClientCmd_Unrestricted( "sv_cheats 1\n" );
 
-		// Graphics all the way down (Alex: as much fps as possible). Only the weapon, HUD and
-		// effects are ever seen, so TF2's map isn't drawn at all, and everything else is at its
-		// cheapest.
+		// TF2's map isn't drawn at all: only the weapon, HUD, players, buildings and effects are
+		// ever seen. Picture quality (textures, models, anti-aliasing...) is the player's own
+		// from their real TF2, copied by tools/tf2_graphics.py at launch (Alex, 2026-10-10:
+		// stop forcing the lowest settings); only what FortCraft needs a certain way is set here.
 		engine->ClientCmd_Unrestricted(
 			"r_drawworld 0; r_drawopaqueworld 0; r_drawtranslucentworld 0; r_drawdisp 0; r_drawbrushmodels 0; r_skybox 0;"
 			" r_drawstaticprops 0; r_3dsky 0; r_drawdetailprops 0; r_drawropes 0; r_drawsprites 0;"
@@ -1341,7 +1344,7 @@ static void AutoJoin( C_TFPlayer *pPlayer )
 			// We stand outside TF2's map, so that hid things like the rocket model itself.
 			" r_novis 1; r_occlusion 0;"
 			" r_shadows 0; r_flashlightdepthtexture 0; r_dynamic 0; r_decals 0; mp_decals 0; r_drawbatchdecals 0;"
-			" r_waterforceexpensive 0; r_waterforcereflectentities 0; r_lod 2; r_rootlod 2; mat_picmip 2;"
+			" r_waterforceexpensive 0; r_waterforcereflectentities 0;"
 			" mat_hdr_level 0; mat_disable_bloom 1; mat_motion_blur_enabled 0; mat_colorcorrection 0;"
 			// No full-screen TF2 effects over Minecraft (burning, Jarate, Bonk, Ubercharge tints;
 			// strafing view roll).
@@ -1352,8 +1355,7 @@ static void AutoJoin( C_TFPlayer *pPlayer )
 			// No rim light either: TF2 brightens model edges from the light around them, which
 			// left a white sheen along weapons (minigun barrel, 2026-10-10).
 			" r_rimlight 0;"
-			" mat_antialias 0; mat_forceaniso 0; mat_trilinear 0; mat_reducefillrate 1; cl_detaildist 0;"
-			" cl_ragdoll_physics_enable 0; cl_phys_props_enable 0; tf_particles_disable_weather 1\n" );
+			" mat_vsync 0; cl_ragdoll_physics_enable 0; cl_phys_props_enable 0; tf_particles_disable_weather 1\n" );
 
 		// The weapon was drawn pitch black: TF2 lights it from its map at the player's spot, and
 		// we roam far outside TF2's map, where there is no light. Models now get their own even
@@ -1950,6 +1952,15 @@ static void PollMobHits()
 			-( hit.z - 0.5f ) * UNITS_PER_BLOCK + s_vecOrigin.y,
 			( hit.y - (float)MC_FLOOR_Y ) * UNITS_PER_BLOCK + s_vecOrigin.z );
 		FortCraft_ShowMobHit( pos, (int)( hit.damage + 0.5f ), hit.killed == 1 );
+		// Crits, headshots and backstabs (FC_CRIT) and mini-crits on mobs: TF2's crit sound and
+		// the "CRITICAL HIT!!!" / "Mini crit!" text above the mob, as on a TF2 player.
+		if ( hit.source & ( FC_CRIT | FC_MINICRIT ) )
+		{
+			const bool bFull = ( hit.source & FC_CRIT ) != 0;
+			DispatchParticleEffect( bFull ? "crit_text" : "minicrit_text", pos + Vector( 0, 0, 16 ), vec3_angle );
+			CLocalPlayerFilter filter;
+			C_BaseEntity::EmitSound( filter, SOUND_FROM_LOCAL_PLAYER, bFull ? "TFPlayer.CritHit" : "TFPlayer.CritHitMini" );
+		}
 	}
 }
 

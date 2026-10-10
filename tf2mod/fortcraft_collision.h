@@ -57,10 +57,12 @@ bool FortCraft_NearestHostileMob( const Vector &from, float flRange, Vector &tar
 // ice); -1 when not linked or nothing special. Used by CGameMovement::CategorizeGroundSurface.
 float FortCraft_GroundFriction();
 
-#ifndef CLIENT_DLL
 // Bits 8-15: bleed seconds (Boston Basher, Tribalman's Shiv, ...), for Minecraft to apply to mobs.
+// Both modules: the client shows crit text for mob hits flagged FC_CRIT / FC_MINICRIT.
 enum FortCraftShotFlags { FC_MELEE = 1, FC_CRIT = 2, FC_MINICRIT = 4, FC_HEADSHOT = 8, FC_KNIFE = 16, FC_SENTRY = 32,
 	FC_BLEED_SHIFT = 8 };
+
+#ifndef CLIENT_DLL
 
 enum FortCraftTool { FC_GENERIC = 0, FC_SHOVEL = 1, FC_PICKAXE = 2, FC_AXE = 3, FC_BLADE = 4 };
 class CTFWeaponBase;

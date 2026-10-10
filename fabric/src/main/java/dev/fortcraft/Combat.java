@@ -49,10 +49,11 @@ import net.minecraft.world.phys.Vec3;
  * is cancelled and sent to TF2 (x5), where TF2's health takes it.
  */
 public final class Combat {
-	public static final float DAMAGE_SCALE = 5.0f;              // Minecraft damage = TF2 damage / 5 (TF2 hitting Minecraft mobs)
-	// Damage tuning, all in one place: Minecraft damage = TF2 damage / these.
-	private static final float BULLET_SCALE = 1.5f;             // bullets/pellets (Alex: shotgun still too weak at /3)
-	private static final float MELEE_SCALE = 3.0f;              // melee swings
+	// Minecraft damage = TF2 damage / 5 for everything (bullets, melee, blasts), with TF2's own
+	// range falloff, crits and headshots. A zombie (20 health) is then a 100-health TF2 target:
+	// about 5 close pistol shots, 2 shotgun blasts, 2 shovel hits, 1 crit (Alex, 2026-10-10:
+	// melee and pistols one-shot zombies at the old /3 and /1.5).
+	public static final float DAMAGE_SCALE = 5.0f;
 	private static final float MELEE_REACH = 3.0f;              // blocks; TF2's own swing reaches about 1 block (Alex: had to be really close)
 	private static final float MELEE_BOX_GROW = 0.6f;           // melee hits mobs within this much of the aim line
 	private static final float BLAST_RADIUS = 146.0f / 48.0f;  // a rocket's blast, in blocks
@@ -446,7 +447,18 @@ public final class Combat {
 		double bestDist = limit;
 		AABB area = new AABB(start, end).inflate(1.0);
 		for (Entity e : combatTargets(minecraft, area)) {
-			var hit = e.getBoundingBox().inflate(melee ? MELEE_BOX_GROW : 0.1).clip(start, end);
+			AABB box = e.getBoundingBox().inflate(melee ? MELEE_BOX_GROW : 0.1);
+			// Right up against a mob the shot starts inside its box, where clip() finds nothing:
+			// the shot went on to the block behind (melee mined it). Count it as a hit at once.
+			if (box.contains(start)) {
+				// Where the aim passes the mob's middle, for the headshot check.
+				double along = Math.max(0, box.getCenter().subtract(start).dot(dir));
+				bestDist = 0;
+				best = e;
+				bestHit = start.add(dir.scale(along));
+				continue;
+			}
+			var hit = box.clip(start, end);
 			if (hit.isPresent() && start.distanceTo(hit.get()) < bestDist) {
 				bestDist = start.distanceTo(hit.get());
 				best = e;
@@ -458,8 +470,15 @@ public final class Combat {
 				&& (shot.headshotRange() <= 0 || bestDist <= shot.headshotRange()) && headHit(best, bestHit);
 			boolean backstab = melee && (shot.flags() & CombatRules.KNIFE) != 0 && behind(best, start, dir);
 			float multiplier = CombatRules.multiplier(shot.flags(), head);
+			float falloff = CombatRules.rangeModifier(bestDist, shot.flags(), head);
 			int effects = shot.flags() & (CombatRules.SENTRY | (0xFF << CombatRules.BLEED_SHIFT));
-			shotDamage.merge(new ShotGroup(best, melee ? MELEE_SCALE : BULLET_SCALE, backstab, effects), shot.damage() * multiplier, Float::sum);
+			// For TF2's crit sound and text over the mob.
+			if (backstab || multiplier == 3.0f) {
+				effects |= CombatRules.CRIT;
+			} else if (multiplier > 1.0f) {
+				effects |= CombatRules.MINI;
+			}
+			shotDamage.merge(new ShotGroup(best, DAMAGE_SCALE, backstab, effects), shot.damage() * multiplier * falloff, Float::sum);
 			if (backstab || multiplier > 1) FortCraft.LOG.info("FortCraft: combat bonus={} weapon={} target={} multiplier={}",
 				backstab ? "backstab" : head ? "headshot" : multiplier == 3 ? "crit" : "mini", shot.weapon(), best.getName().getString(), multiplier);
 		} else if (melee && block.getType() == HitResult.Type.BLOCK) {
@@ -470,19 +489,46 @@ public final class Combat {
 	private static boolean headHit(Entity target, Vec3 hit) {
 		if (target instanceof EnderDragonPart part) return part.name.equals("head");
 		if (!(target instanceof LivingEntity living)) return false;
-		// These mobs have no distinct head. Other mobs use an eye-centred approximation.
+		AABB box = target.getBoundingBox();
+		// Mobs that are all head (slimes, ghasts, squid): the top third counts.
 		var type = target.getType();
 		if (type == EntityTypes.SLIME || type == EntityTypes.MAGMA_CUBE || type == EntityTypes.GHAST
-			|| type == EntityTypes.SQUID || type == EntityTypes.GLOW_SQUID) return false;
-		AABB box = target.getBoundingBox();
+			|| type == EntityTypes.SQUID || type == EntityTypes.GLOW_SQUID) {
+			return hit.y >= box.maxY - box.getYsize() / 3.0;
+		}
 		double radius = Math.max(0.12, Math.min(0.35, box.getYsize() * 0.18));
-		return Math.abs(hit.y - living.getEyeY()) <= radius;
+		if (Math.abs(hit.y - living.getEyeY()) > radius) return false;
+		// Long, low mobs (cows, spiders, wolves...) carry the head at the front: the back half
+		// at eye height is not the head.
+		if (box.getXsize() > box.getYsize() * 0.9) {
+			Vec3 forward = Vec3.directionFromRotation(0, living.yBodyRot);
+			Vec3 off = hit.subtract(box.getCenter()).multiply(1, 0, 1);
+			return off.dot(forward) > 0;
+		}
+		return true;
 	}
 
+	/** Every mob: the dragon by where its head is, the rest by the way their body faces. */
 	private static boolean behind(Entity target, Vec3 start, Vec3 aim) {
-		if (!(target instanceof LivingEntity living) || target instanceof EnderDragon) return false;
-		Vec3 to = target.position().subtract(start).multiply(1, 0, 1).normalize();
-		Vec3 forward = Vec3.directionFromRotation(0, living.yBodyRot);
+		Vec3 forward;
+		if (target instanceof EnderDragonPart part) {
+			EnderDragon dragon = part.parentMob;
+			EnderDragonPart headPart = null;
+			for (EnderDragonPart p : dragon.getSubEntities()) {
+				if (p.name.equals("head")) {
+					headPart = p;
+				}
+			}
+			if (headPart == null) return false;
+			forward = headPart.getBoundingBox().getCenter().subtract(dragon.getBoundingBox().getCenter());
+			target = dragon;
+		} else if (target instanceof LivingEntity living) {
+			forward = Vec3.directionFromRotation(0, living.yBodyRot);
+		} else {
+			return false;  // end crystals have no back
+		}
+		forward = forward.multiply(1, 0, 1).normalize();
+		Vec3 to = target.getBoundingBox().getCenter().subtract(start).multiply(1, 0, 1).normalize();
 		Vec3 facing = aim.multiply(1, 0, 1).normalize();
 		return CombatRules.backstab(to.dot(forward), to.dot(facing), forward.dot(facing));
 	}
@@ -597,7 +643,8 @@ public final class Combat {
 				Vec3 target = e.getBoundingBox().getCenter();
 				if (minecraft.level.clip(new ClipContext(centre, target, ClipContext.Block.COLLIDER,
 					ClipContext.Fluid.NONE, minecraft.player)).getType() != HitResult.Type.MISS) continue;
-				hurt(minecraft, e, baseDamage * CombatRules.multiplier(flags, false) * (float) (1.0 - 0.5 * d / radius), DAMAGE_SCALE, false);
+				hurt(minecraft, e, baseDamage * CombatRules.multiplier(flags, false) * (float) (1.0 - 0.5 * d / radius), DAMAGE_SCALE, false,
+					(flags & CombatRules.CRIT) != 0 ? CombatRules.CRIT : 0);
 			}
 		}
 		breakBlastTerrain(minecraft, centre, Math.min(reportedRadius, TERRAIN_BLAST_RADIUS));
@@ -691,13 +738,26 @@ public final class Combat {
 				|| (hit instanceof EndCrystal && hit.isRemoved())) {
 				return;
 			}
-			float applied = backstab && hit instanceof LivingEntity living ? Math.max(amount, living.getHealth() * 6.0f) : amount;
+			float applied = amount;
+			if (backstab && target instanceof LivingEntity living) {
+				boolean boss = target instanceof EnderDragon || target instanceof net.minecraft.world.entity.boss.wither.WitherBoss
+					|| target instanceof net.minecraft.world.entity.monster.warden.Warden
+					|| target.getType() == EntityTypes.ELDER_GUARDIAN;
+				applied = CombatRules.backstabDamage(amount, living.getHealth(), living.getMaxHealth(), boss);
+			}
+			// Every TF2 hit counts. Minecraft ignores hits during the half second after one
+			// (unless bigger), which swallowed pistol, minigun and flame hits.
+			if (hit instanceof LivingEntity living) {
+				living.setInvulnerableTime(0);
+			} else if (target instanceof LivingEntity living) {
+				living.setInvulnerableTime(0);  // a dragon part: its dragon
+			}
 			boolean damaged = hit.hurtServer(level, level.damageSources().playerAttack(attacker), applied);
 			if (damaged) {
 				var box = hit.getBoundingBox();
 				boolean killed = hit instanceof EndCrystal || (target instanceof LivingEntity living && !living.isAlive());
 				FortLink.writeMobHit(box.getCenter().x, box.maxY, box.getCenter().z, applied * scale, killed,
-					effects & CombatRules.SENTRY);
+					effects & (CombatRules.SENTRY | CombatRules.CRIT | CombatRules.MINI));
 				int bleed = CombatRules.bleedSeconds(effects);
 				if (bleed > 0 && !killed && target instanceof LivingEntity) {
 					Bleed.start(target.getId(), bleed);

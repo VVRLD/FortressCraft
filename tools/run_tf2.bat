@@ -20,4 +20,6 @@ if /i "%~1"=="visible" (
   set HIDE=
   set EXTRA=%2 %3 %4
 )
-start "" /D "%SDK%" "%SDK%\mod_tf_win64.exe" -novid -windowed -w 1280 -h 720 -insecure -condebug %HIDE% -fortcraft_logs "%LOGS%" %EXTRA% +sv_lan 1 +engine_no_focus_sleep 0 +snd_mute_losefocus 0 +mat_queue_mode 0 +fps_max 144 +mp_waitingforplayers_time 0 +mp_timelimit 0 +mp_winlimit 0 +mp_maxrounds 0 +map fortcraft_flat
+rem The player's own TF2 graphics settings (motion blur and vertical sync always off).
+python "%~dp0tf2_graphics.py" "%SDK%\mod_tf\cfg\fortcraft_graphics.cfg" || echo Couldn't copy your TF2 graphics settings; TF2 keeps its own.
+start "" /D "%SDK%" "%SDK%\mod_tf_win64.exe" -novid -windowed -w 1280 -h 720 -insecure -condebug %HIDE% -fortcraft_logs "%LOGS%" %EXTRA% +sv_lan 1 +engine_no_focus_sleep 0 +snd_mute_losefocus 0 +mat_queue_mode 0 +fps_max 144 +mp_waitingforplayers_time 0 +mp_timelimit 0 +mp_winlimit 0 +mp_maxrounds 0 +exec fortcraft_graphics +map fortcraft_flat

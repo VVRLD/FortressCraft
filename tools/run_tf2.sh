@@ -61,7 +61,11 @@ mp_waitingforplayers_time 0
 mp_timelimit 0
 mp_winlimit 0
 mp_maxrounds 0
+exec fortcraft_graphics
 CFG
+# The player's own TF2 graphics settings (motion blur and vertical sync always off).
+python3 "$HERE/tf2_graphics.py" "$GAME/mod_tf/cfg/fortcraft_graphics.cfg" \
+	|| echo "Couldn't copy your TF2 graphics settings; TF2 keeps its own."
 SHORTLOGS="/tmp/fortcraft-logs-$(id -u)"
 ln -sfn "$LOGS" "$SHORTLOGS"
 
