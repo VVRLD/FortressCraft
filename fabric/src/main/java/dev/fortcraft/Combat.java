@@ -42,27 +42,26 @@ import net.minecraft.world.phys.Vec3;
  *
  * TF2 reports every bullet, pellet and melee swing (start, direction, range, damage) and every
  * explosion. Each is traced through Minecraft's world: the nearest mob it reaches before a
- * block takes the damage, scaled down (TF2 damage / 5). Damage is applied on Minecraft's built-in
+ * block takes the damage, scaled down (TF2 damage / 7.5). Damage is applied on Minecraft's built-in
  * server as the player's attack, so mobs react and fight back.
  *
  * The other way round is ServerPlayerMixin: while TF2 is linked, damage to Minecraft's player
- * is cancelled and sent to TF2 (x5), where TF2's health takes it.
+ * is cancelled and sent to TF2 (x7.5), where TF2's health takes it.
  */
 public final class Combat {
-	// Minecraft damage = TF2 damage / 5 for everything (bullets, melee, blasts), with TF2's own
-	// range falloff, crits and headshots. A zombie (20 health) is then a 100-health TF2 target:
-	// about 5 close pistol shots, 2 shotgun blasts, 2 shovel hits, 1 crit (Alex, 2026-10-10:
-	// melee and pistols one-shot zombies at the old /3 and /1.5).
-	public static final float DAMAGE_SCALE = 5.0f;
+	// Minecraft damage = TF2 damage / 7.5 for everything (bullets, melee, blasts): 1 heart = 15
+	// TF2 HP, so a zombie (20 health) is a 150-health TF2 target: about 6 close pistol shots,
+	// 2 shotgun blasts, 3 shovel hits, 1 crit.
+	public static final float DAMAGE_SCALE = 7.5f;
 	private static final float MELEE_REACH = 3.0f;              // blocks; TF2's own swing reaches about 1 block (Alex: had to be really close)
 	private static final float MELEE_BOX_GROW = 0.6f;           // melee hits mobs within this much of the aim line
-	private static final float BLAST_RADIUS = 146.0f / 48.0f;  // a rocket's blast, in blocks
+	private static final float BLAST_RADIUS = 146.0f / 36.5f;  // a rocket's blast, in blocks
 	private static final float BLAST_DAMAGE = 90.0f;           // a rocket's TF2 damage at the centre
 	private static final double TERRAIN_BLAST_RADIUS = 2.0;     // conservative terrain crater
 	private static final int MAX_BLAST_BLOCKS = 24;
-	private static final double MEDIGUN_RANGE = 9.5;             // TF2's 450-unit reach at 48 units/block
+	private static final double MEDIGUN_RANGE = 450.0 / 36.5;     // TF2's 450-unit reach at 36.5 units/block
 	private static final long HEAL_INTERVAL_NANOS = 100_000_000L;
-	private static final float HEAL_PER_INTERVAL = 0.5f;         // five Minecraft HP/s, about TF2's 24 HP/s / 5
+	private static final float HEAL_PER_INTERVAL = 0.32f;        // ~3.2 Minecraft HP/s, TF2's 24 HP/s / 7.5
 
 	/** True while TF2 is linked; read by ServerPlayerMixin on the server thread. */
 	public static volatile boolean linked;

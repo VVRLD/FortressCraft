@@ -757,8 +757,8 @@ void FortCraft_ApplyBuildingHits()
 		CBaseEntity *pObj = UTIL_EntityByIndex( (int)hit.ent );
 		if ( !pObj || !pObj->IsBaseObject() || hit.amount <= 0.0f )
 			continue;
-		// Minecraft's player has 20 health: a mob's hit takes the same share of the building's.
-		const float damage = hit.amount * pObj->GetMaxHealth() / 20.0f;
+		// Universal scale: 1 Minecraft HP = 7.5 TF2 damage.
+		const float damage = hit.amount * 7.5f;
 		CTakeDamageInfo info( GetWorldEntity(), GetWorldEntity(), damage, DMG_CLUB );
 		info.SetDamagePosition( pObj->WorldSpaceCenter() );
 		pObj->TakeDamage( info );
@@ -1456,8 +1456,8 @@ void FortCraft_ApplyMinecraftDamage( CBaseEntity *pPlayer )
 		const proto::Hurt &hurt = hurts.ring[ s_nHurtsSeen % proto::kMaxHurts ];
 		if ( hurt.amount <= 0.0f )
 			continue;
-		// Minecraft's player has 20 health: a hit takes the same share of this class's health.
-		const float damage = hurt.amount * pPlayer->GetMaxHealth() / 20.0f;
+		// Universal scale: 1 heart = 15 TF2 HP, so 1 Minecraft HP = 7.5 TF2 damage.
+		const float damage = hurt.amount * 7.5f;
 		Vector from( ( hurt.fromX - 0.5f ) * s + anchor.x, -( hurt.fromZ - 0.5f ) * s + anchor.y, ( hurt.fromY + 60.0f ) * s + anchor.z );
 		CTakeDamageInfo info( GetWorldEntity(), GetWorldEntity(), damage, DMG_CLUB );
 		info.SetDamagePosition( from );

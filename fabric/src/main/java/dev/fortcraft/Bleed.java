@@ -48,7 +48,7 @@ public final class Bleed {
 			}
 			if (now >= b[1]) {
 				b[1] += TICK_NANOS;
-				Combat.hurt(minecraft, target, TF2_DAMAGE_PER_TICK, 5.0f, false, 0);
+				Combat.hurt(minecraft, target, TF2_DAMAGE_PER_TICK, Combat.DAMAGE_SCALE, false, 0);
 			}
 		}
 	}

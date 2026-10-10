@@ -29,8 +29,8 @@ public abstract class ServerPlayerMixin {
 
 	/**
 	 * While TF2 is linked, TF2's health is the real one: damage to Minecraft's player (mobs, lava,
-	 * drowning...) is sent to TF2 instead, in Minecraft damage points, and TF2 scales it so 20
-	 * Minecraft health is the class's full health. Cancelling Minecraft's damage also skipped
+	 * drowning...) is sent to TF2 instead, in Minecraft damage points, and TF2 scales it by 7.5x
+	 * (1 heart = 15 TF2 HP). Cancelling Minecraft's damage also skipped
 	 * Minecraft's hit cooldown, so a slime touching you hit every tick (20 times a second); the
 	 * cooldown is applied here instead, the way Minecraft does it. Falls are left to TF2's own
 	 * fall damage. In creative mode nothing is sent (TF2 also turns god mode on).

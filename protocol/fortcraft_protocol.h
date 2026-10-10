@@ -106,7 +106,8 @@ namespace fortcraft { namespace proto
 	// The TF2 position (TF2 units) that corresponds to Minecraft (0.5, -60, 0.5): where the TF2
 	// player first spawned. Written by the TF2 client; read by TF2's movement code (client and
 	// server) to place Minecraft's block boxes in TF2's world. Scale: kUnitsPerBlock.
-	static constexpr double kUnitsPerBlock = 48.0;
+	// 1 block = 36.5 Hammer Units (Heavy's 73 HU height = 2.00 blocks baseline).
+	static constexpr double kUnitsPerBlock = 36.5;
 
 	struct Anchor
 	{
