@@ -18,6 +18,9 @@
 #include "model_types.h"
 #include "ienginevgui.h"
 #include "vgui/IInputInternal.h"
+#include "vgui/IInput.h"
+#include "vgui/IPanel.h"
+#include "vgui_controls/Controls.h"
 #include "viewport_panel_names.h"
 #include "tf_item_inventory.h"
 #include "econ_item.h"
@@ -26,6 +29,8 @@
 #include "ivieweffects.h"
 #include "shake.h"
 #include "backpack_panel.h"
+#include "tf_hud_menu_eureka_teleport.h"
+#include "player_vs_environment/c_tf_upgrades.h"
 #include "particle_parse.h"
 #include "engine/IEngineSound.h"
 #include "../protocol/fortcraft_protocol.h"
@@ -35,6 +40,13 @@
 
 // memdbgon must be the last include file in a .cpp file!!!
 #include "tier0/memdbgon.h"
+
+// The Eureka Effect's "teleport to spawn or exit" menu is showing.
+static bool EurekaMenuOpen()
+{
+	CHudEurekaEffectTeleportMenu *pMenu = GET_HUDELEMENT( CHudEurekaEffectTeleportMenu );
+	return pMenu && pMenu->IsVisible();
+}
 
 namespace proto = fortcraft::proto;
 
@@ -277,8 +289,8 @@ bool FortCraft_ApplyInput( CUserCmd *pCmd )
 		// menu (sentry, dispenser, teleporter entrance, exit) instead of switching weapons.
 		C_TFWeaponBase *pActive = dynamic_cast< C_TFWeaponBase * >( pPlayer->GetActiveWeapon() );
 		const int nActiveId = pActive ? pActive->GetWeaponID() : TF_WEAPON_NONE;
-		if ( ( nActiveId == TF_WEAPON_PDA_ENGINEER_BUILD || nActiveId == TF_WEAPON_PDA_ENGINEER_DESTROY )
-			&& in.weaponSlot < 4 && !UiOpen() )
+		if ( ( ( nActiveId == TF_WEAPON_PDA_ENGINEER_BUILD || nActiveId == TF_WEAPON_PDA_ENGINEER_DESTROY )
+			&& in.weaponSlot < 4 && !UiOpen() ) || EurekaMenuOpen() )
 		{
 			// The held slot is not a new press. Building choice arrives as an explicit UI event below.
 			s_bSwitchPending = false;
@@ -338,7 +350,9 @@ static void WriteCamera( const Vector &origin, const QAngle &angles )
 		| ( bMedigun ? proto::kCameraMedigun : 0 )
 		// Cloaked as TF2's sentries count it: more than 75% invisible (bumping or firing shows you).
 		| ( pPlayer && pPlayer->IsAlive() && pPlayer->m_Shared.IsStealthed() && pPlayer->m_Shared.GetPercentInvisible() > 0.75f
-			? proto::kCameraCloaked : 0 );
+			? proto::kCameraCloaked : 0 )
+		| ( EurekaMenuOpen() ? proto::kCameraEurekaMenu : 0 )
+		| ( engine->Con_IsVisible() ? proto::kCameraConsole : 0 );
 	ToMinecraft( origin, cam.x, cam.y, cam.z );
 	cam.yaw = AngleNormalize( -angles.y - 90.0f );
 	cam.pitch = angles.x;
@@ -382,10 +396,17 @@ static bool ViewportMenuOpen()
 	return pPanel && pPanel->IsVisible() && V_strcmp( pPanel->GetName(), PANEL_SCOREBOARD ) != 0;
 }
 
+// TF2's MvM upgrade screen (opened by Minecraft's enchanting table).
+static CHudUpgradePanel *UpgradePanel()
+{
+	CHudUpgradePanel *pPanel = GET_HUDELEMENT( CHudUpgradePanel );
+	return pPanel && pPanel->IsVisible() ? pPanel : NULL;
+}
+
 // A TF2 menu that takes the mouse is open.
 static bool UiOpen()
 {
-	return ( enginevgui && enginevgui->IsGameUIVisible() ) || ( s_bUserMenu && ViewportMenuOpen() );
+	return ( enginevgui && enginevgui->IsGameUIVisible() ) || ( s_bUserMenu && ViewportMenuOpen() ) || UpgradePanel();
 }
 
 bool FortCraft_UiOpen()
@@ -505,6 +526,8 @@ static void CloseAllMenus()
 {
 	if ( enginevgui && enginevgui->IsGameUIVisible() )
 		engine->ClientCmd_Unrestricted( "gameui_hide\n" );
+	if ( CHudUpgradePanel *pUpgrades = UpgradePanel() )
+		pUpgrades->OnCommand( "close" );  // keeps what was bought, like its own close button
 	if ( gViewPortInterface )
 	{
 		IViewPortPanel *pPanel = gViewPortInterface->GetActivePanel();
@@ -522,9 +545,109 @@ static void RunMenuCommand( const char *pszCommand )
 }
 
 // Mouse and keys while a TF2 menu is open: straight into TF2's UI.
+// TF2's console text box ("ConsoleEntry" inside GameUI), found by name; 0 if not showing.
+static vgui::VPANEL FindPanelByName( vgui::VPANEL parent, const char *pszName, int depth )
+{
+	if ( !parent || depth > 12 )
+		return 0;
+	for ( int i = 0; i < vgui::ipanel()->GetChildCount( parent ); ++i )
+	{
+		vgui::VPANEL child = vgui::ipanel()->GetChild( parent, i );
+		if ( !child || !vgui::ipanel()->IsVisible( child ) )
+			continue;
+		if ( !V_strcmp( vgui::ipanel()->GetName( child ), pszName ) )
+			return child;
+		if ( vgui::VPANEL found = FindPanelByName( child, pszName, depth + 1 ) )
+			return found;
+	}
+	return 0;
+}
+
+static vgui::VPANEL ConsoleEntry()
+{
+	if ( !engine->Con_IsVisible() || !enginevgui )
+		return 0;
+	static vgui::VPANEL s_entry;
+	if ( s_entry && vgui::ipanel()->IsVisible( s_entry ) && !V_strcmp( vgui::ipanel()->GetName( s_entry ), "ConsoleEntry" ) )
+		return s_entry;
+	s_entry = FindPanelByName( enginevgui->GetPanel( PANEL_ROOT ), "ConsoleEntry", 0 );
+	return s_entry;
+}
+
+// Typing into the console. TF2's window is hidden and never has the keyboard, so TF2's console
+// box never got the letters (Alex, 2026-10-10: "people can't type in console"; sending them to
+// the box directly didn't help either). So while the console shows, FortCraft keeps the line
+// being typed itself: letters add to it, Backspace removes, Up brings back the last command,
+// Enter runs it as if typed in TF2's console. The console box shows the line as it's typed.
+static char s_szConsoleLine[ 256 ];
+static char s_szConsoleLast[ 256 ];
+
+static void ShowConsoleLine()
+{
+	if ( vgui::VPANEL entry = ConsoleEntry() )
+		vgui::ipanel()->SendMessage( entry, new KeyValues( "SetText", "text", s_szConsoleLine ), entry );
+}
+
+static bool ConsoleTyping( const proto::UiEvent &ev )
+{
+	if ( !engine->Con_IsVisible() )
+	{
+		s_szConsoleLine[ 0 ] = 0;
+		return false;
+	}
+	static int s_nLogged;
+	if ( s_nLogged < 3 )
+	{
+		++s_nLogged;
+		vgui::VPANEL focus = vgui::input()->GetFocus();
+		Msg( "FortCraft console: event %d code %d (console box %s, focus %s)\n", ev.type, ev.code,
+			ConsoleEntry() ? "found" : "not found", focus ? vgui::ipanel()->GetName( focus ) : "none" );
+	}
+	const int len = V_strlen( s_szConsoleLine );
+	if ( ev.type == proto::kUiEvChar )
+	{
+		if ( ev.code >= 32 && ev.code < 127 && len < (int)sizeof( s_szConsoleLine ) - 1 )
+		{
+			s_szConsoleLine[ len ] = (char)ev.code;
+			s_szConsoleLine[ len + 1 ] = 0;
+			ShowConsoleLine();
+		}
+		return true;
+	}
+	if ( ev.type == proto::kUiEvKeyDown )
+	{
+		ButtonCode_t key = KeyFromScancode( ev.code );
+		if ( key == KEY_ENTER || key == KEY_PAD_ENTER )
+		{
+			if ( s_szConsoleLine[ 0 ] )
+			{
+				Msg( "] %s\n", s_szConsoleLine );
+				engine->ClientCmd_Unrestricted( VarArgs( "%s\n", s_szConsoleLine ) );
+				V_strncpy( s_szConsoleLast, s_szConsoleLine, sizeof( s_szConsoleLast ) );
+				s_szConsoleLine[ 0 ] = 0;
+				ShowConsoleLine();
+			}
+		}
+		else if ( key == KEY_BACKSPACE && len > 0 )
+		{
+			s_szConsoleLine[ len - 1 ] = 0;
+			ShowConsoleLine();
+		}
+		else if ( key == KEY_UP && s_szConsoleLast[ 0 ] )
+		{
+			V_strncpy( s_szConsoleLine, s_szConsoleLast, sizeof( s_szConsoleLine ) );
+			ShowConsoleLine();
+		}
+		return true;
+	}
+	return ev.type == proto::kUiEvKeyUp;
+}
+
 static void UiInputEvent( const proto::UiEvent &ev )
 {
 	if ( !g_InputInternal )
+		return;
+	if ( ( ev.type == proto::kUiEvChar || ev.type == proto::kUiEvKeyDown || ev.type == proto::kUiEvKeyUp ) && ConsoleTyping( ev ) )
 		return;
 	switch ( ev.type )
 	{
@@ -692,6 +815,25 @@ static void UiCommand( C_TFPlayer *pPlayer, uint32_t cmd )
 		{
 			engine->ClientCmd_Unrestricted( "con_enable 1; showconsole\n" );
 			Msg( "FortCraft: opening TF2's console\n" );
+		}
+		return;
+	}
+
+	// Eureka Effect's teleport menu (opened with Reload): 1 = home (Minecraft's bed or spawn), 2 =
+	// teleporter exit, Q = cancel. Minecraft sends these as the taunt-menu keys while the menu is
+	// open (camera flag kCameraEurekaMenu); the menu's own key handling picks and closes it.
+	if ( EurekaMenuOpen() && ( cmd == proto::kUiSlot1 || cmd == proto::kUiSlot1 + 1 || cmd == proto::kUiCancel ) )
+	{
+		CHudEurekaEffectTeleportMenu *pMenu = GET_HUDELEMENT( CHudEurekaEffectTeleportMenu );
+		if ( cmd == proto::kUiSlot1 || cmd == proto::kUiSlot1 + 1 )
+		{
+			pMenu->HudElementKeyInput( 1, cmd == proto::kUiSlot1 ? KEY_1 : KEY_2, NULL );
+			Msg( "FortCraft: Eureka Effect teleport to %s\n", cmd == proto::kUiSlot1 ? "spawn" : "teleporter exit" );
+		}
+		else
+		{
+			pMenu->FortCraft_Cancel();
+			Msg( "FortCraft: Eureka Effect teleport cancelled\n" );
 		}
 		return;
 	}
@@ -1436,9 +1578,9 @@ static void ReadWaterLines()
 	const uint32_t seq = *(volatile const uint32_t *)&w.seq;
 	if ( seq & 1 )
 		return;  // mid-write: keep last frame's
-	int ents[ proto::kMaxFarObjects ];
-	float ys[ proto::kMaxFarObjects ];
-	const uint32_t n = MIN( w.count, proto::kMaxFarObjects );
+	int ents[ proto::kMaxWaterLines ];
+	float ys[ proto::kMaxWaterLines ];
+	const uint32_t n = MIN( w.count, proto::kMaxWaterLines );
 	for ( uint32_t i = 0; i < n; ++i )
 	{
 		ents[ i ] = w.list[ i ].ent;

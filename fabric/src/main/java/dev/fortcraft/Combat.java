@@ -95,7 +95,9 @@ public final class Combat {
 		}
 
 		sendMobBoxes(minecraft);
+		MvmSave.tick(minecraft);
 		healFriendlyMob(minecraft, buttons);
+		dripDragonRain(minecraft);
 		FortLink.Tf2Camera cam = FortLink.readCamera();
 		if (cam != null) {
 			FortLink.writeMobBackstab(!cam.thirdPerson() && !cam.uiOpen() && backstabReady(minecraft, cam));
@@ -242,6 +244,15 @@ public final class Combat {
 		AABB area = minecraft.player.getBoundingBox().inflate(
 			minecraft.level.dimension() == Level.END ? END_TARGET_RANGE : MOB_RANGE);
 		int n = 0;
+		sentryEyes.clear();
+		List<FortLink.Tf2Building> buildings = FortLink.readBuildings();
+		if (buildings != null) {
+			for (FortLink.Tf2Building b : buildings) {
+				if (b.sentry()) {
+					sentryEyes.add(new Vec3((b.minX() + b.maxX()) / 2, b.maxY() - 0.25, (b.minZ() + b.maxZ()) / 2));
+				}
+			}
+		}
 		for (Entity e : minecraft.level.getEntities(minecraft.player, area,
 			e -> e instanceof EndCrystal && !e.isRemoved())) {
 			if (n >= 128) {
@@ -270,6 +281,31 @@ public final class Combat {
 		FortLink.writeMobBoxes(mobBoxes, mobHostile, n);
 	}
 
+	/**
+	 * True if one of the player's sentries has a clear line to the mob's middle or eyes through
+	 * Minecraft's world. TF2 only knows the blocks near the player, so sentries shot mobs behind
+	 * houses further away (Alex, 2026-10-10).
+	 */
+	private static boolean sentrySees(Minecraft minecraft, Entity e) {
+		Vec3 centre = e.getBoundingBox().getCenter();
+		Vec3 eyes = e.getEyePosition();
+		for (Vec3 eye : sentryEyes) {
+			if (eye.distanceToSqr(centre) > SENTRY_RANGE * SENTRY_RANGE) {
+				continue;
+			}
+			for (Vec3 to : new Vec3[] { centre, eyes }) {
+				HitResult hit = minecraft.level.clip(new ClipContext(eye, to, ClipContext.Block.COLLIDER, ClipContext.Fluid.NONE, minecraft.player));
+				if (hit.getType() == HitResult.Type.MISS) {
+					return true;
+				}
+			}
+		}
+		return false;
+	}
+
+	private static final List<Vec3> sentryEyes = new ArrayList<>();
+	private static final double SENTRY_RANGE = 1100.0 / 48.0 + 1.0;  // TF2's 1100-unit sentry range
+
 	private static int addMobBox(Entity e, int n, boolean hostile) {
 		AABB b = e.getBoundingBox();
 		int o = n * 6;
@@ -279,7 +315,7 @@ public final class Combat {
 		mobBoxes[o + 3] = (float) b.maxX;
 		mobBoxes[o + 4] = (float) b.maxY;
 		mobBoxes[o + 5] = (float) b.maxZ;
-		mobHostile[n] = (byte) (hostile ? 1 : 0);
+		mobHostile[n] = (byte) ((hostile ? 1 : 0) | (hostile && sentrySees(Minecraft.getInstance(), e) ? 2 : 0));
 		return n + 1;
 	}
 
@@ -758,6 +794,114 @@ public final class Combat {
 		hurt(minecraft, clientTarget, tf2Damage, scale, backstab, 0);
 	}
 
+	/**
+	 * MvM money a kill earns, by how hard the mob is, like Minecraft's XP (Alex, 2026-10-10):
+	 * a pig $5-10, a zombie $10-20, a skeleton $20-30, up to the dragon's $20,000 (dropped as many
+	 * bags). Aim: an average player reaching the End can max out about their merc and three
+	 * weapons, not everything; ten minutes of zombies doesn't max a weapon. Unlisted hostile
+	 * mobs pay about their max health (slimes by size), unlisted animals $5-10.
+	 */
+	private static final Map<String, int[]> MONEY = Map.ofEntries(
+		// passive and neutral
+		Map.entry("wolf", new int[] { 10, 20 }), Map.entry("bee", new int[] { 10, 20 }),
+		Map.entry("llama", new int[] { 10, 20 }), Map.entry("trader_llama", new int[] { 10, 20 }),
+		Map.entry("polar_bear", new int[] { 20, 30 }), Map.entry("goat", new int[] { 10, 20 }),
+		Map.entry("panda", new int[] { 15, 25 }), Map.entry("dolphin", new int[] { 10, 20 }),
+		Map.entry("iron_golem", new int[] { 100, 150 }),
+		// overworld hostiles
+		Map.entry("zombie", new int[] { 10, 20 }), Map.entry("husk", new int[] { 10, 20 }),
+		Map.entry("drowned", new int[] { 15, 25 }), Map.entry("zombie_villager", new int[] { 10, 20 }),
+		Map.entry("silverfish", new int[] { 5, 10 }), Map.entry("endermite", new int[] { 5, 10 }),
+		Map.entry("skeleton", new int[] { 20, 30 }), Map.entry("stray", new int[] { 20, 30 }),
+		Map.entry("bogged", new int[] { 20, 30 }), Map.entry("spider", new int[] { 15, 25 }),
+		Map.entry("cave_spider", new int[] { 15, 25 }), Map.entry("creeper", new int[] { 25, 35 }),
+		Map.entry("witch", new int[] { 40, 60 }), Map.entry("phantom", new int[] { 30, 45 }),
+		Map.entry("pillager", new int[] { 30, 45 }), Map.entry("vindicator", new int[] { 40, 60 }),
+		Map.entry("vex", new int[] { 10, 20 }), Map.entry("evoker", new int[] { 150, 200 }),
+		Map.entry("ravager", new int[] { 150, 250 }), Map.entry("guardian", new int[] { 40, 60 }),
+		Map.entry("elder_guardian", new int[] { 600, 800 }), Map.entry("breeze", new int[] { 60, 90 }),
+		Map.entry("creaking", new int[] { 40, 60 }),
+		// nether
+		Map.entry("zombified_piglin", new int[] { 20, 30 }), Map.entry("piglin", new int[] { 25, 35 }),
+		Map.entry("piglin_brute", new int[] { 80, 120 }), Map.entry("hoglin", new int[] { 40, 60 }),
+		Map.entry("zoglin", new int[] { 40, 60 }), Map.entry("blaze", new int[] { 50, 75 }),
+		Map.entry("ghast", new int[] { 50, 75 }), Map.entry("wither_skeleton", new int[] { 60, 90 }),
+		// end
+		Map.entry("enderman", new int[] { 40, 60 }), Map.entry("shulker", new int[] { 50, 75 }),
+		// bosses
+		Map.entry("warden", new int[] { 1000, 1500 }), Map.entry("wither", new int[] { 2500, 3000 }),
+		Map.entry("ender_dragon", new int[] { 20000, 20000 }));
+
+	/**
+	 * The ender dragon's money (Alex, 2026-10-10): 300 bags drizzled down over 60 seconds like real
+	 * rain, scattered 6-20 blocks around the exit portal, each onto real ground (never into the
+	 * portal or the void). They last 5 minutes. Server thread starts it; the client frame drips it.
+	 */
+	private static final int RAIN_BAGS = 300;
+	private static final long RAIN_NANOS = 60_000_000_000L;
+	private static volatile int rainMoney;
+	private static int rainBagsLeft, rainPerBag, rainExtra;
+	private static long rainStart;
+
+	private static void startDragonRain(int money) {
+		rainMoney = money;
+		FortCraft.LOG.info("FortCraft: the dragon's ${} starts raining down as {} bags", money, RAIN_BAGS);
+	}
+
+	private static void dripDragonRain(Minecraft minecraft) {
+		int money = rainMoney;
+		if (money > 0) {
+			rainMoney = 0;
+			rainBagsLeft = RAIN_BAGS;
+			rainPerBag = money / RAIN_BAGS;
+			rainExtra = money % RAIN_BAGS;
+			rainStart = System.nanoTime();
+		}
+		if (rainBagsLeft <= 0 || minecraft.level == null) {
+			return;
+		}
+		// How many should have fallen by now, spread evenly over the 30 s.
+		long elapsed = System.nanoTime() - rainStart;
+		int due = (int) Math.min(RAIN_BAGS, (elapsed * RAIN_BAGS) / RAIN_NANOS + 1);
+		var random = minecraft.level.getRandom();
+		while (RAIN_BAGS - rainBagsLeft < due) {
+			rainBagsLeft--;
+			int amount = rainPerBag + rainExtra;
+			rainExtra = 0;
+			for (int attempt = 0; attempt < 12; attempt++) {
+				double angle = random.nextDouble() * Math.PI * 2;
+				double distance = 6 + random.nextDouble() * 14;
+				int x = (int) Math.floor(Math.cos(angle) * distance), z = (int) Math.floor(Math.sin(angle) * distance);
+				int top = minecraft.level.getHeight(Heightmap.Types.MOTION_BLOCKING, x, z);
+				if (top <= minecraft.level.getMinY() + 1) {
+					continue;  // void (or not loaded): try another spot
+				}
+				FortLink.writeMobHit(x + 0.5, top, z + 0.5, 0.0f, true, (1 << 7) | (1 << 8) | (amount << 16));  // money only, land
+				break;
+			}
+		}
+	}
+
+	private static boolean dragonDying(Entity entity) {
+		return entity instanceof EnderDragon dragon && dragon.getPhaseManager().getCurrentPhase().getPhase()
+			== net.minecraft.world.entity.boss.enderdragon.phases.EnderDragonPhase.DYING;
+	}
+
+	static int mvmMoney(LivingEntity mob) {
+		String id = net.minecraft.core.registries.BuiltInRegistries.ENTITY_TYPE.getKey(mob.getType()).getPath();
+		int[] range = MONEY.get(id);
+		if (range == null) {
+			if (mob instanceof Enemy) {
+				int health = Math.max(1, Math.round(mob.getMaxHealth()));
+				range = new int[] { health, health * 3 / 2 };
+			} else {
+				range = new int[] { 5, 10 };
+			}
+		}
+		int money = range[0] + mob.getRandom().nextInt(range[1] - range[0] + 1);
+		return Math.min(0xFFFF, money);
+	}
+
 	/** Also used by Bleed for its damage ticks. effects: SENTRY and bleed seconds from the shot. */
 	static void hurt(Minecraft minecraft, Entity clientTarget, float tf2Damage, float scale, boolean backstab, int effects) {
 		IntegratedServer server = minecraft.getSingleplayerServer();
@@ -811,12 +955,22 @@ public final class Combat {
 				living.setInvulnerableTime(0);
 				living.damageCooldownTime = 0;
 			}
+			boolean dragonWasDying = dragonDying(target);
 			boolean damaged = hit.hurtServer(level, level.damageSources().playerAttack(attacker), applied);
 			if (damaged) {
 				var box = hit.getBoundingBox();
-				boolean killed = hit instanceof EndCrystal || (target instanceof LivingEntity living && !living.isAlive());
+				// The dragon never "dies" on the hit: Minecraft keeps it at 1 health and starts its
+				// death animation, so its killing hit is the one that starts that (Alex, 2026-10-10:
+				// it dropped no money).
+				boolean killed = hit instanceof EndCrystal || (target instanceof LivingEntity living && !living.isAlive())
+					|| (!dragonWasDying && dragonDying(target));
+				int money = killed && target instanceof LivingEntity dead ? mvmMoney(dead) : 0;
+				if (killed && target instanceof EnderDragon) {
+					startDragonRain(money);  // its money comes down as rain instead
+					money = 0;
+				}
 				FortLink.writeMobHit(box.getCenter().x, box.maxY, box.getCenter().z, applied * scale, killed,
-					effects & (CombatRules.SENTRY | CombatRules.CRIT | CombatRules.MINI));
+					(effects & (CombatRules.SENTRY | CombatRules.CRIT | CombatRules.MINI)) | (money << 16));
 				int bleed = CombatRules.bleedSeconds(effects);
 				if (bleed > 0 && !killed && target instanceof LivingEntity) {
 					Bleed.start(target.getId(), bleed);

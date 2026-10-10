@@ -4,12 +4,14 @@ import dev.fortcraft.link.FortLink;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.UUID;
+import java.util.function.Predicate;
 import net.minecraft.core.Registry;
 import net.minecraft.core.registries.BuiltInRegistries;
 import net.minecraft.core.registries.Registries;
 import net.minecraft.resources.Identifier;
 import net.minecraft.resources.ResourceKey;
 import net.minecraft.server.level.ServerPlayer;
+import net.minecraft.tags.ItemTags;
 import net.minecraft.util.Prediction;
 import net.minecraft.world.InteractionHand;
 import net.minecraft.world.InteractionResult;
@@ -22,7 +24,11 @@ import net.minecraft.world.level.Level;
 
 /** Original FortCraft supply items. TF2, not Minecraft, owns the health/ammo they restore. */
 public final class PackItems {
-	private record Pack(String key, String name, Item ingredient, int cost, int kind, PackItem item) {
+	/** One ingredient: its name, which items count, how many, and an item id for the icon. */
+	private record Need(String name, Predicate<ItemStack> matches, int count, String iconId) {
+	}
+
+	private record Pack(String key, String name, List<Need> needs, int kind, PackItem item) {
 	}
 
 	private static final List<Pack> PACKS = new ArrayList<>();
@@ -33,19 +39,25 @@ public final class PackItems {
 	private PackItems() {
 	}
 
+	/**
+	 * Just TF2's two big pickups (Alex, 2026-10-10): the Health Kit (100-150 health) and the Ammo
+	 * Pack (full ammo). Food is the small healing now. The item ids stay the "large" ones, so packs
+	 * already in a world keep working; the small packs are gone.
+	 */
 	public static void register() {
-		add("small_health_pack", "Small Health Pack", Items.APPLE, 5, 1);
-		add("large_health_pack", "Large Health Pack", Items.APPLE, 9, 2);
-		add("small_ammo_pack", "Small Ammo Pack", Items.IRON_INGOT, 5, 3);
-		add("large_ammo_pack", "Large Ammo Pack", Items.IRON_INGOT, 9, 4);
+		add("large_health_pack", "Health Kit", List.of(
+			new Need("String", s -> s.is(Items.STRING), 2, "minecraft:string"),
+			new Need("Wool", s -> s.is(ItemTags.WOOL), 2, "minecraft:white_wool")), 2);
+		add("large_ammo_pack", "Ammo Pack", List.of(
+			new Need("Iron Ingot", s -> s.is(Items.IRON_INGOT), 9, "minecraft:iron_ingot")), 4);
 	}
 
-	private static void add(String path, String name, Item ingredient, int cost, int kind) {
+	private static void add(String path, String name, List<Need> needs, int kind) {
 		Identifier id = Identifier.fromNamespaceAndPath("fortcraft", path);
 		ResourceKey<Item> key = ResourceKey.create(Registries.ITEM, id);
 		PackItem item = Registry.register(BuiltInRegistries.ITEM, key,
 			new PackItem(kind, name, new Item.Properties().setId(key).stacksTo(16)));
-		PACKS.add(new Pack(id.toString(), name, ingredient, cost, kind, item));
+		PACKS.add(new Pack(id.toString(), name, needs, kind, item));
 	}
 
 	public static boolean isPackRecipe(String key) {
@@ -59,13 +71,15 @@ public final class PackItems {
 	public static List<FortLink.CraftRecipe> craftable(ServerPlayer player) {
 		List<FortLink.CraftRecipe> result = new ArrayList<>();
 		for (Pack pack : PACKS) {
-			int have = count(player.getInventory(), pack.ingredient());
-			String ingredientId = BuiltInRegistries.ITEM.getKey(pack.ingredient()).toString();
-			result.add(new FortLink.CraftRecipe(pack.key(), pack.name() + " x1",
-				pack.ingredient().getName(new ItemStack(pack.ingredient())).getString() + " x" + pack.cost()
-					+ (have >= pack.cost() ? "" : " (you have " + have + ")"),
-				pack.key(), Backpack.icon(net.minecraft.client.Minecraft.getInstance(), pack.key()),
-				List.of(ingredientId)));
+			List<String> parts = new ArrayList<>();
+			List<String> icons = new ArrayList<>();
+			for (Need need : pack.needs()) {
+				int have = count(player.getInventory(), need.matches());
+				parts.add(need.name() + " x" + need.count() + (have >= need.count() ? "" : " (you have " + have + ")"));
+				icons.add(need.iconId());
+			}
+			result.add(new FortLink.CraftRecipe(pack.key(), pack.name() + " x1", String.join(", ", parts),
+				pack.key(), Backpack.icon(net.minecraft.client.Minecraft.getInstance(), pack.key()), icons));
 		}
 		return result;
 	}
@@ -73,32 +87,37 @@ public final class PackItems {
 	/** Runs on Minecraft's integrated server, rechecking ingredients before removing any. */
 	public static boolean craft(ServerPlayer player, String key) {
 		Pack pack = PACKS.stream().filter(p -> p.key().equals(key)).findFirst().orElse(null);
-		if (pack == null || count(player.getInventory(), pack.ingredient()) < pack.cost()) return false;
+		if (pack == null) return false;
 		Inventory inv = player.getInventory();
-		int left = pack.cost();
-		for (int slot = 0; slot < 36 && left > 0; slot++) {
-			ItemStack stack = inv.getItem(slot);
-			if (!stack.is(pack.ingredient())) continue;
-			int take = Math.min(left, stack.getCount());
-			inv.removeItem(slot, take);
-			left -= take;
+		for (Need need : pack.needs()) {
+			if (count(inv, need.matches()) < need.count()) return false;
+		}
+		for (Need need : pack.needs()) {
+			int left = need.count();
+			for (int slot = 0; slot < 36 && left > 0; slot++) {
+				ItemStack stack = inv.getItem(slot);
+				if (!need.matches().test(stack)) continue;
+				int take = Math.min(left, stack.getCount());
+				inv.removeItem(slot, take);
+				left -= take;
+			}
 		}
 		inv.placeItemBackInInventory(new ItemStack(pack.item()), Prediction.SERVER_ONLY);
 		inv.setChanged();
-		FortCraft.LOG.info("FortCraft: crafted {} using {} x{}", pack.name(), pack.ingredient(), pack.cost());
+		FortCraft.LOG.info("FortCraft: crafted {}", pack.name());
 		return true;
 	}
 
-	private static int count(Inventory inv, Item item) {
+	private static int count(Inventory inv, Predicate<ItemStack> matches) {
 		int total = 0;
 		for (int slot = 0; slot < 36; slot++) {
 			ItemStack stack = inv.getItem(slot);
-			if (stack.is(item)) total += stack.getCount();
+			if (!stack.isEmpty() && matches.test(stack)) total += stack.getCount();
 		}
 		return total;
 	}
 
-	/** True for a supply pack's item id ("fortcraft:small_health_pack" ...). */
+	/** True for a supply pack's item id ("fortcraft:large_health_pack" ...). */
 	public static boolean isPackId(String id) {
 		return PACKS.stream().anyMatch(pack -> pack.key().equals(id));
 	}

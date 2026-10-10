@@ -24,7 +24,7 @@ import net.minecraft.world.phys.shapes.CollisionContext;
  */
 public final class FarOcclusion {
 	private static long frame;
-	private static final int[] hidden = new int[64];
+	private static final int[] hidden = new int[512];
 	private static final int[] wetEnts = new int[64];
 	private static final float[] wetSurface = new float[64];
 	private static final double DEPTH_LAYER_BLOCKS = 10.0;
@@ -57,7 +57,10 @@ public final class FarOcclusion {
 				continue;
 			}
 			double r = Math.min(o.radius(), 3.0) * 0.8;
-			Vec3[] points = { centre, centre.add(0, r, 0), centre.add(0, -r * 0.6, 0), centre.add(side.scale(r)), centre.add(side.scale(-r)) };
+			// Small things (cash bags) need only their middle and top; up to 512 are checked.
+			Vec3[] points = r < 0.5
+				? new Vec3[] { centre, centre.add(0, r, 0) }
+				: new Vec3[] { centre, centre.add(0, r, 0), centre.add(0, -r * 0.6, 0), centre.add(side.scale(r)), centre.add(side.scale(-r)) };
 			boolean seen = false;
 			for (Vec3 p : points) {
 				if (visible(minecraft, eye, p, Math.max(0.3, r))) {

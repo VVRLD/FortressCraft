@@ -17,6 +17,10 @@
 #include "tf_weapon_sniperrifle.h"
 #include "tf_player.h"
 #include "tf_obj.h"
+#include "tf_gamerules.h"
+#include "player_vs_environment/tf_upgrades.h"
+#include "tf_upgrades_shared.h"
+#include "entity_currencypack.h"
 #endif
 
 // memdbgon must be the last include file in a .cpp file!!!
@@ -36,7 +40,7 @@ static uint32_t s_nSeenWaterSeq = 0xFFFFFFFF;
 static Vector s_vecSeenWaterAnchor;
 static CUtlVector< FortCraftBox > s_VisualBoxes;
 static CUtlVector< FortCraftBox > s_Mobs;  // Minecraft mobs' hitboxes, TF2 units
-static CUtlVector< bool > s_MobHostile;    // same order: hostile mob (zombie, slime...)?
+static CUtlVector< unsigned char > s_MobHostile;  // same order: proto::kMobHostile / kMobSentrySees
 static uint32_t s_nSeenMobSeq = 0xFFFFFFFF;
 static Vector s_vecSeenMobAnchor;
 static uint32_t s_nSeenVisualSeq = 0xFFFFFFFF;
@@ -66,13 +70,13 @@ static void ReadMobs( const Vector &anchor )
 	if ( ( seq & 1 ) || ( seq == s_nSeenMobSeq && anchor == s_vecSeenMobAnchor ) )
 		return;
 	CUtlVector< FortCraftBox > mobs;
-	CUtlVector< bool > hostile;
+	CUtlVector< unsigned char > hostile;
 	const unsigned char *pHostile = s_pShm + proto::kOffMobHostile;
 	uint32_t count = MIN( src.count, proto::kMaxMobBoxes );
 	for ( uint32_t i = 0; i < count; ++i )
 	{
 		ToTF2( src.boxes[ i ], anchor, mobs[ mobs.AddToTail() ] );
-		hostile.AddToTail( pHostile[ i ] != 0 );
+		hostile.AddToTail( pHostile[ i ] );
 	}
 	if ( *(volatile const uint32_t *)&src.seq != seq )
 		return;
@@ -510,7 +514,9 @@ bool FortCraft_NearestHostileMob( const Vector &from, float flRange, Vector &tar
 	bool bFound = false;
 	for ( int i = 0; i < s_Mobs.Count() && i < s_MobHostile.Count(); ++i )
 	{
-		if ( !s_MobHostile[ i ] )
+		// Hostile, and seen by a sentry through Minecraft's whole world (not just the blocks TF2
+		// knows near the player).
+		if ( ( s_MobHostile[ i ] & ( proto::kMobHostile | proto::kMobSentrySees ) ) != ( proto::kMobHostile | proto::kMobSentrySees ) )
 			continue;
 		const Vector centre = ( s_Mobs[ i ].mins + s_Mobs[ i ].maxs ) * 0.5f;
 		const float flDist = ( centre - from ).Length();
@@ -624,6 +630,11 @@ void FortCraft_ReportWeaponShot( CTFWeaponBase *weapon, const Vector &src, const
 		CALL_ATTRIB_HOOK_FLOAT_ON_OTHER( weapon, flBleed, bleeding_duration );
 		if ( flBleed > 0.0f )
 			flags |= (unsigned int)MIN( 255, (int)ceilf( flBleed ) ) << FC_BLEED_SHIFT;
+		// Market Gardener and friends: crits while airborne from an explosion (rocket jump).
+		int iCritWhileAirborne = 0;
+		CALL_ATTRIB_HOOK_INT_ON_OTHER( weapon, iCritWhileAirborne, crit_while_airborne );
+		if ( iCritWhileAirborne && owner && owner->InAirDueToExplosion() )
+			flags |= FC_CRIT;
 		if ( melee )
 		{
 			const int item = weapon->GetAttributeContainer()->GetItem()->GetItemDefIndex();
@@ -718,6 +729,7 @@ void FortCraft_WriteBuildings( CBaseEntity **ppObjects, int nCount )
 		const Vector maxs = pObj->GetAbsOrigin() + pObj->WorldAlignMaxs();
 		proto::Building &b = out.list[ n++ ];
 		b.ent = pObj->entindex();
+		b.type = ( pObj->IsBaseObject() && static_cast< CBaseObject * >( pObj )->GetType() == OBJ_SENTRYGUN ) ? 1 : 0;
 		b.minX = ( mins.x - anchor.x ) / s + 0.5f;
 		b.maxX = ( maxs.x - anchor.x ) / s + 0.5f;
 		b.minY = ( mins.z - anchor.z ) / s - 60.0f;
@@ -798,7 +810,8 @@ void FortCraft_MaybeRecentre( CBaseEntity *pPlayer, CBaseEntity **ppObjects, int
 			ppObjects[ i ]->Teleport( &p, NULL, NULL );
 		}
 	}
-	const int nProjectiles = ShiftByClassname( "tf_projectile", delta );
+	// Cash lying around stays where it is in Minecraft's world too.
+	const int nProjectiles = ShiftByClassname( "tf_projectile", delta ) + ShiftByClassname( "item_currencypack", delta );
 	r.serverX += delta.x;
 	r.serverY += delta.y;
 	Msg( "FortCraft: re-centred TF2 by %.0f %.0f units (%d buildings, %d projectiles); nothing moves in Minecraft" "\n",
@@ -874,7 +887,7 @@ static void PlaceAtMinecraft( CBaseEntity *pPlayer, const Vector &anchor, float 
 	{
 		const Vector delta( floorf( pos.x / s + 0.5f ) * s, floorf( pos.y / s + 0.5f ) * s, 0.0f );
 		const int nObjects = ShiftByClassname( "obj_", delta );
-		const int nProjectiles = ShiftByClassname( "tf_projectile", delta );
+		const int nProjectiles = ShiftByClassname( "tf_projectile", delta ) + ShiftByClassname( "item_currencypack", delta );
 		proto::Recentre &r = *(proto::Recentre *)( s_pShm + proto::kOffRecentre );
 		r.serverX += delta.x;
 		r.serverY += delta.y;
@@ -1003,8 +1016,9 @@ static void ApplySupplyPack( CTFPlayer *pPlayer )
 		const float share = large ? 1.0f : 0.2f;
 		if ( use.kind == proto::kSmallHealth || use.kind == proto::kLargeHealth )
 		{
+			// The Health Kit (Alex, 2026-10-10): 100-150 health, no overheal, like a TF2 kit.
 			if ( pPlayer->GetHealth() < pPlayer->GetMaxHealth() )
-				ok = pPlayer->TakeHealth( MAX( 1, (int)ceilf( pPlayer->GetMaxHealth() * share ) ), DMG_GENERIC ) > 0;
+				ok = pPlayer->TakeHealth( large ? RandomInt( 100, 150 ) : MAX( 1, (int)ceilf( pPlayer->GetMaxHealth() * share ) ), DMG_GENERIC ) > 0;
 		}
 		else if ( use.kind == proto::kSmallAmmo || use.kind == proto::kLargeAmmo )
 		{
@@ -1028,6 +1042,98 @@ static void ApplySupplyPack( CTFPlayer *pPlayer )
 // Minecraft's confirmed hits on mobs, on TF2's server: what TF2 normally does when you damage or
 // kill something. Mobs aren't TF2 entities, so TF2 never saw these: sentry kill counts (and with
 // them Frontier Justice's revenge crits), Baby Face's Blaster boost, Soda Popper hype.
+// Cash lying in the world. TF2 only knows Minecraft's blocks near the player, so a bag resting on
+// the ground fell through it once the player walked off and vanished (Alex, 2026-10-10). So a bag
+// stops moving once it lands (or, for the dragon's rain, once it reaches the ground Minecraft
+// named), and only moves again when it's pulled to the player.
+struct DroppedMoney
+{
+	CHandle< CCurrencyPack > hPack;
+	bool bHasGround;      // the dragon's rain: land exactly here
+	Vector vecGround;
+	float flLandAt;
+};
+static CUtlVector< DroppedMoney > s_DroppedMoney;
+
+// Drops MvM money as a TF2 cash pack you have to walk over (Alex, 2026-10-10), lasting
+// flLifetime seconds before it blinks out.
+static void DropMoney( const Vector &pos, int nAmount, float flLifetime )
+{
+	if ( nAmount <= 0 )
+		return;
+	QAngle angles( 0.0f, RandomFloat( -180.0f, 180.0f ), 0.0f );
+	CCurrencyPack *pPack = dynamic_cast< CCurrencyPack * >( CBaseEntity::CreateNoSpawn( "item_currencypack_custom", pos, angles, NULL ) );
+	if ( !pPack )
+		return;
+	pPack->SetAmount( nAmount );
+	pPack->m_flFortCraftLifetime = flLifetime;
+	Vector vecVelocity = RandomVector( -1.0f, 1.0f );
+	vecVelocity.z = 1.0f;
+	VectorNormalize( vecVelocity );
+	vecVelocity *= 150.0f;
+	DispatchSpawn( pPack );
+	pPack->DropSingleInstance( vecVelocity, NULL, 0.0f, 0.0f );
+	DroppedMoney d;
+	d.hPack = pPack;
+	d.bHasGround = false;
+	d.vecGround = vec3_origin;
+	d.flLandAt = 0.0f;
+	s_DroppedMoney.AddToTail( d );
+}
+
+static void UpdateDroppedMoney();
+
+// One bag of the dragon's rain: falls from 8 blocks above the ground Minecraft picked, lands there.
+static void DropMoneyOnGround( const Vector &ground, int nAmount )
+{
+	const float s = (float)proto::kUnitsPerBlock;
+	QAngle angles( 0.0f, RandomFloat( -180.0f, 180.0f ), 0.0f );
+	CCurrencyPack *pPack = dynamic_cast< CCurrencyPack * >( CBaseEntity::CreateNoSpawn( "item_currencypack_custom", ground + Vector( 0, 0, 8.0f * s ), angles, NULL ) );
+	if ( !pPack )
+		return;
+	pPack->SetAmount( nAmount );
+	pPack->m_flFortCraftLifetime = 300.0f;
+	DispatchSpawn( pPack );
+	Vector vecDown( 0.0f, 0.0f, -8.0f * s );  // 8 blocks a second: lands after 1 s
+	pPack->DropSingleInstance( vecDown, NULL, 0.0f, 0.0f );
+	pPack->SetMoveType( MOVETYPE_FLY );  // no gravity, no bounce: straight down
+	pPack->SetAbsVelocity( vecDown );
+	DroppedMoney d;
+	d.hPack = pPack;
+	d.bHasGround = true;
+	d.vecGround = ground + Vector( 0, 0, 10.0f );
+	d.flLandAt = gpGlobals->curtime + 1.0f;
+	s_DroppedMoney.AddToTail( d );
+}
+
+static void UpdateDroppedMoney()
+{
+	for ( int i = s_DroppedMoney.Count() - 1; i >= 0; --i )
+	{
+		DroppedMoney &d = s_DroppedMoney[ i ];
+		CCurrencyPack *pPack = d.hPack.Get();
+		if ( !pPack )
+		{
+			s_DroppedMoney.Remove( i );
+			continue;
+		}
+		if ( pPack->GetMoveType() == MOVETYPE_NONE )
+			continue;
+		if ( pPack->IsClaimed() )
+			continue;  // being pulled to the player
+		if ( d.bHasGround && gpGlobals->curtime >= d.flLandAt )
+		{
+			pPack->SetAbsOrigin( d.vecGround );
+			pPack->SetAbsVelocity( vec3_origin );
+			pPack->SetMoveType( MOVETYPE_NONE );
+		}
+		else if ( !d.bHasGround && ( pPack->GetFlags() & FL_ONGROUND ) && pPack->GetAbsVelocity().LengthSqr() < 1.0f )
+		{
+			pPack->SetMoveType( MOVETYPE_NONE );
+		}
+	}
+}
+
 static uint32_t s_nServerMobHitsSeen = 0xFFFFFFFF;
 static void ServerMobHits( CTFPlayer *pPlayer )
 {
@@ -1038,6 +1144,40 @@ static void ServerMobHits( CTFPlayer *pPlayer )
 	for ( ; s_nServerMobHitsSeen != count; ++s_nServerMobHitsSeen )
 	{
 		const proto::MobHit &hit = hits.ring[ s_nServerMobHitsSeen % proto::kMaxMobHits ];
+		// MvM money for the kill (Minecraft works it out: hostile mobs only, by their health).
+		const int nMoney = (int)( hit.source >> proto::kMobHitMoneyShift );
+		Vector anchor;
+		if ( hit.killed == 1 && nMoney > 0 && AnchorTF2( anchor ) )
+		{
+			// Dropped at the mob (the hit's x, z and the top of its box), not paid straight away:
+			// one bag per $100 (at most 50), so the dragon's $5,000 rains down as a pile. Big
+			// rewards last 5 minutes, ordinary ones a minute.
+			const float s = (float)proto::kUnitsPerBlock;
+			const Vector pos( ( hit.x - 0.5f ) * s + anchor.x, -( hit.z - 0.5f ) * s + anchor.y, ( hit.y + 60.0f ) * s + anchor.z );
+			if ( hit.source & proto::kMobHitMoneyLand )
+			{
+				// One bag of the dragon's rain, onto the ground Minecraft picked (y = that ground).
+				const Vector ground( ( hit.x - 0.5f ) * s + anchor.x, -( hit.z - 0.5f ) * s + anchor.y, ( hit.y + 60.0f ) * s + anchor.z );
+				DropMoneyOnGround( ground, nMoney );
+			}
+			else
+			{
+				// Lots of small bags feel better to pick up (Alex, 2026-10-10): about one per $5,
+				// at least 2 and at most 40.
+				const int nBags = nMoney < 2 ? 1 : clamp( nMoney / 5, 2, 40 );
+				const float flLifetime = nMoney >= 1000 ? 300.0f : 60.0f;
+				for ( int i = 0; i < nBags; ++i )
+					DropMoney( pos, nMoney / nBags + ( i == 0 ? nMoney % nBags : 0 ), flLifetime );
+				Msg( "FortCraft MvM: %s dropped $%d in %d bag(s)\n", ( hit.source & proto::kMobHitMoneyOnly ) ? "Minecraft XP" : "a kill", nMoney, nBags );
+			}
+		}
+		// The weapon's on-kill effects (Powerjack and other heal-on-kill, restore health on
+		// kill, speed boost, cloak on kill), as killing a player does. Not for sentry kills.
+		if ( hit.killed == 1 && !( hit.source & ( FC_SENTRY | proto::kMobHitMoneyOnly ) ) && pPlayer->IsAlive() && pPlayer->GetActiveTFWeapon() )
+		{
+			CTakeDamageInfo killInfo( pPlayer, pPlayer, pPlayer->GetActiveTFWeapon(), 1.0f, DMG_GENERIC );
+			pPlayer->OnKilledOther_Effects( NULL, killInfo );
+		}
 		if ( hit.source & FC_SENTRY )
 		{
 			if ( hit.killed != 1 )
@@ -1093,6 +1233,156 @@ static void ServerMobHits( CTFPlayer *pPlayer )
 }
 #endif
 
+#ifndef CLIENT_DLL
+// MvM upgrades at Minecraft's enchanting table (Alex, 2026-10-10). TF2's own Bounty Mode path:
+// upgrades forced on, one upgrade station entity to buy through, and the player put in the
+// "upgrade zone" (which opens TF2's upgrade screen) when Minecraft says the table was used.
+static int s_nUpgradeBookshelves;
+static void UpgradeStation( CTFPlayer *pPlayer, const Vector &anchor )
+{
+	if ( TFGameRules() && !TFGameRules()->GameModeUsesUpgrades() )
+	{
+		TFGameRules()->ForceEnableUpgrades( 2 );
+		Msg( "FortCraft MvM: upgrades on\n" );
+	}
+	if ( !g_hUpgradeEntity )
+	{
+		// Never spawned as a trigger: it only has to exist for TF2's purchase code.
+		CUpgrades *pStation = dynamic_cast< CUpgrades * >( CreateEntityByName( "func_upgradestation" ) );
+		if ( pStation )
+		{
+			g_hUpgradeEntity = pStation;
+			Msg( "FortCraft MvM: upgrade station created\n" );
+		}
+	}
+	static uint32_t s_nSeen = 0xFFFFFFFF;
+	static Vector s_vecTable;
+	static bool s_bOpenedByTable;
+	const proto::UpgradeStation &st = *(const proto::UpgradeStation *)( s_pShm + proto::kOffUpgradeStation );
+	const uint32_t seq = *(volatile const uint32_t *)&st.seq;
+	if ( s_nSeen == 0xFFFFFFFF || seq < s_nSeen )
+		s_nSeen = seq;  // first look, or Minecraft restarted
+	if ( seq != s_nSeen )
+	{
+		s_nSeen = seq;
+		if ( pPlayer->IsAlive() && g_hUpgradeEntity )
+		{
+			const float s = (float)proto::kUnitsPerBlock;
+			s_vecTable.Init( ( st.x - 0.5f ) * s + anchor.x, -( st.z - 0.5f ) * s + anchor.y, ( st.y + 60.0f ) * s + anchor.z );
+			s_nUpgradeBookshelves = st.bookshelves;
+			pPlayer->m_Shared.SetInUpgradeZone( true );
+			s_bOpenedByTable = true;
+			Msg( "FortCraft MvM: enchanting table used (%d bookshelves, $%d)\n", st.bookshelves, pPlayer->GetCurrency() );
+		}
+	}
+	if ( s_bOpenedByTable && pPlayer->m_Shared.IsInUpgradeZone()
+		&& ( !pPlayer->IsAlive() || ( pPlayer->GetAbsOrigin() - s_vecTable ).Length2D() > 6.0f * proto::kUnitsPerBlock ) )
+	{
+		pPlayer->m_Shared.SetInUpgradeZone( false );
+		Msg( "FortCraft MvM: left the enchanting table\n" );
+	}
+	if ( !pPlayer->m_Shared.IsInUpgradeZone() )
+		s_bOpenedByTable = false;
+
+	// Dying loses all the money you carry (upgrades stay); half of it is left where you died
+	// for 5 minutes (Alex, 2026-10-10).
+	static bool s_bWasAlive;
+	const bool bAlive = pPlayer->IsAlive();
+	if ( s_bWasAlive && !bAlive && pPlayer->GetCurrency() > 0 )
+	{
+		const int nLost = pPlayer->GetCurrency();
+		pPlayer->RemoveCurrency( nLost );
+		DropMoney( pPlayer->GetAbsOrigin() + Vector( 0.0f, 0.0f, 32.0f ), nLost / 2, 300.0f );
+		Msg( "FortCraft MvM: died with $%d; $%d left where you died for 5 minutes\n", nLost, nLost / 2 );
+	}
+	s_bWasAlive = bAlive;
+}
+#endif
+
+#ifndef CLIENT_DLL
+// MvM money and upgrades saved with the Minecraft world (Alex, 2026-10-10). Minecraft sends the
+// save when the world opens; once applied, TF2 reports the current money and upgrade history
+// every half second and Minecraft writes it back to the world folder when it changes.
+static uint32_t s_nMvmRestoreApplied;
+static void MvmSaveAndRestore( CTFPlayer *pPlayer )
+{
+	CUtlVector< CUpgradeInfo > *pHistory = pPlayer->FortCraft_UpgradeHistory();
+	if ( !pHistory || !g_hUpgradeEntity )
+		return;
+	const proto::MvmRestore &in = *(const proto::MvmRestore *)( s_pShm + proto::kOffMvmRestore );
+	const uint32_t seq = *(volatile const uint32_t *)&in.seq;
+	if ( seq != 0 && seq != s_nMvmRestoreApplied && pPlayer->IsAlive() )
+	{
+		const int nCurrency = in.currency;
+		const uint32_t n = MIN( in.count, proto::kMaxMvmUpgrades );
+		CUtlVector< CUpgradeInfo > list;
+		for ( uint32_t i = 0; i < n; ++i )
+		{
+			CUpgradeInfo info;
+			info.m_iPlayerClass = in.list[ i ].playerClass;
+			info.m_itemDefIndex = (item_definition_index_t)in.list[ i ].itemDef;
+			info.m_upgrade = in.list[ i ].upgrade;
+			info.m_nCost = in.list[ i ].cost;
+			if ( info.m_upgrade >= 0 && info.m_upgrade < g_MannVsMachineUpgrades.m_Upgrades.Count() )
+				list.AddToTail( info );
+		}
+		if ( *(volatile const uint32_t *)&in.seq != seq )
+			return;  // Minecraft was mid-write: next tick
+		pPlayer->SetCurrency( nCurrency );
+		pHistory->RemoveAll();
+		pPlayer->GetRefundableUpgrades()->RemoveAll();
+		for ( int i = 0; i < list.Count(); ++i )
+		{
+			pHistory->AddToTail( list[ i ] );
+			pPlayer->GetRefundableUpgrades()->AddToTail( list[ i ] );  // + and - work on them any time
+		}
+		// Re-apply: the player's own upgrades, then each weapon's and wearable's.
+		pPlayer->ReapplyPlayerUpgrades();
+		for ( int i = 0; i < MAX_WEAPONS; ++i )
+		{
+			CTFWeaponBase *pWeapon = dynamic_cast< CTFWeaponBase * >( pPlayer->GetWeapon( i ) );
+			if ( pWeapon && pWeapon->GetAttributeContainer() )
+			{
+				pPlayer->ReapplyItemUpgrades( pWeapon->GetAttributeContainer()->GetItem() );
+				pWeapon->OnUpgraded();
+			}
+		}
+		for ( int i = 0; i < pPlayer->GetNumWearables(); ++i )
+		{
+			CEconWearable *pWearable = pPlayer->GetWearable( i );
+			if ( pWearable && pWearable->GetAttributeContainer() )
+				pPlayer->ReapplyItemUpgrades( pWearable->GetAttributeContainer()->GetItem() );
+		}
+		s_nMvmRestoreApplied = seq;
+		Msg( "FortCraft MvM: restored $%d and %d upgrades from the Minecraft world\n", nCurrency, list.Count() );
+	}
+	if ( s_nMvmRestoreApplied == 0 )
+		return;  // nothing restored yet: don't let Minecraft save an empty state over the world's
+
+	static float s_flNextReport;
+	if ( gpGlobals->curtime < s_flNextReport )
+		return;
+	s_flNextReport = gpGlobals->curtime + 0.5f;
+	proto::MvmState &out = *(proto::MvmState *)( s_pShm + proto::kOffMvmState );
+	const uint32_t outSeq = out.seq;
+	*(volatile uint32_t *)&out.seq = ( outSeq + 1 ) | 1;  // odd: writing
+	out.restoreApplied = s_nMvmRestoreApplied;
+	out.currency = pPlayer->GetCurrency();
+	uint32_t n = 0;
+	for ( int i = 0; i < pHistory->Count() && n < proto::kMaxMvmUpgrades; ++i )
+	{
+		const CUpgradeInfo &info = pHistory->Element( i );
+		proto::MvmUpgrade &u = out.list[ n++ ];
+		u.playerClass = info.m_iPlayerClass;
+		u.itemDef = info.m_itemDefIndex;
+		u.upgrade = info.m_upgrade;
+		u.cost = info.m_nCost;
+	}
+	out.count = n;
+	*(volatile uint32_t *)&out.seq = ( ( outSeq + 1 ) | 1 ) + 1;  // even: done
+}
+#endif
+
 void FortCraft_ApplyMinecraftDamage( CBaseEntity *pPlayer )
 {
 	// This existing server tick also retires the Medic presentation proxy when
@@ -1104,6 +1394,9 @@ void FortCraft_ApplyMinecraftDamage( CBaseEntity *pPlayer )
 	ApplySupplyPack( static_cast< CTFPlayer * >( pPlayer ) );
 #ifndef CLIENT_DLL
 	ServerMobHits( static_cast< CTFPlayer * >( pPlayer ) );
+	UpdateDroppedMoney();
+	UpgradeStation( static_cast< CTFPlayer * >( pPlayer ), anchor );
+	MvmSaveAndRestore( static_cast< CTFPlayer * >( pPlayer ) );
 #endif
 	if ( !pPlayer->IsAlive() )
 	{
@@ -1145,9 +1438,11 @@ void FortCraft_ApplyMinecraftDamage( CBaseEntity *pPlayer )
 		const int nutrition = food.nutrition[ s_nFoodHealsSeen % proto::kMaxFoodHeals ];
 		if ( nutrition <= 0 )
 			continue;
-		const int amount = MAX( 1, (int)ceilf( pPlayer->GetMaxHealth() * MIN( nutrition, 20 ) / 40.0f ) );
-		const int gained = pPlayer->TakeHealth( amount, DMG_GENERIC );
-		Msg( "FortCraft food: nutrition=%d TF2 healed=%d health=%d/%d\n",
+		// Since v48 Minecraft sends the TF2 health itself (raw food 5-15, cooked 15-50). Food can
+		// overheal up to TF2's buffed maximum, like a Medic; the overheal wears off as usual.
+		const int amount = MIN( nutrition, static_cast< CTFPlayer * >( pPlayer )->m_Shared.GetMaxBuffedHealth() - pPlayer->GetHealth() );
+		const int gained = amount > 0 ? pPlayer->TakeHealth( amount, DMG_IGNORE_MAXHEALTH ) : 0;
+		Msg( "FortCraft food: heal=%d TF2 healed=%d health=%d/%d\n",
 			nutrition, gained, pPlayer->GetHealth(), pPlayer->GetMaxHealth() );
 	}
 

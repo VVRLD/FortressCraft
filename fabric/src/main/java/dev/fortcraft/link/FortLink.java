@@ -23,7 +23,7 @@ import java.util.Locale;
  */
 public final class FortLink {
 	public static final int MAGIC = 0x46524346;  // "FCRF"
-	public static final int VERSION = 46;
+	public static final int VERSION = 56;
 	/** Windows: a named page-file mapping. Linux: a file in /dev/shm (RAM), which TF2 maps too. */
 	public static final boolean WINDOWS = System.getProperty("os.name", "").toLowerCase(Locale.ROOT).startsWith("windows");
 	public static final String NAME = System.getenv().getOrDefault("FORTCRAFT_LINK", WINDOWS ? "Local\\FortCraft_v1" : "/dev/shm/FortCraft_v1");
@@ -300,7 +300,7 @@ public final class FortLink {
 	}
 
 	/** One Engineer building: TF2 entity index and box, Minecraft coordinates. */
-	public record Tf2Building(int ent, double minX, double minY, double minZ, double maxX, double maxY, double maxZ) {
+	public record Tf2Building(int ent, double minX, double minY, double minZ, double maxX, double maxY, double maxZ, boolean sentry) {
 	}
 
 	// Buildings @0x54000 (TF2 -> Minecraft): seq, count, then up to 16 x (ent, pad, 6 floats). Null if mid-write.
@@ -317,7 +317,8 @@ public final class FortLink {
 		for (int i = 0; i < count; i++) {
 			long o = 0x54008 + i * 32L;
 			list.add(new Tf2Building(shm.get(JAVA_INT, o), shm.get(JAVA_FLOAT, o + 8), shm.get(JAVA_FLOAT, o + 12),
-				shm.get(JAVA_FLOAT, o + 16), shm.get(JAVA_FLOAT, o + 20), shm.get(JAVA_FLOAT, o + 24), shm.get(JAVA_FLOAT, o + 28)));
+				shm.get(JAVA_FLOAT, o + 16), shm.get(JAVA_FLOAT, o + 20), shm.get(JAVA_FLOAT, o + 24), shm.get(JAVA_FLOAT, o + 28),
+				shm.get(JAVA_INT, o + 4) == 1));
 		}
 		VarHandle.acquireFence();
 		return (int) INT.getAcquire(shm, 0x54000) == before ? list : null;
@@ -404,7 +405,7 @@ public final class FortLink {
 	}
 
 	/** TF2's render camera this frame (Camera @0x1D0), Minecraft coordinates and degrees. */
-	public record Tf2Camera(boolean thirdPerson, boolean tauntMenu, boolean taunting, boolean uiOpen, boolean medigun, double x, double y, double z, float yaw, float pitch, float zoom, boolean cloaked) {
+	public record Tf2Camera(boolean thirdPerson, boolean tauntMenu, boolean taunting, boolean uiOpen, boolean medigun, double x, double y, double z, float yaw, float pitch, float zoom, boolean cloaked, boolean eurekaMenu, boolean console) {
 	}
 
 	public static Tf2Camera readCamera() {
@@ -418,7 +419,7 @@ public final class FortLink {
 		int flags = shm.get(JAVA_INT, 0x1D4);
 		Tf2Camera c = new Tf2Camera((flags & 1) != 0, (flags & 2) != 0, (flags & 4) != 0, (flags & 8) != 0, (flags & 16) != 0,
 			shm.get(JAVA_FLOAT, 0x1D8), shm.get(JAVA_FLOAT, 0x1DC), shm.get(JAVA_FLOAT, 0x1E0),
-			shm.get(JAVA_FLOAT, 0x1E4), shm.get(JAVA_FLOAT, 0x1E8), shm.get(JAVA_FLOAT, 0x1EC), (flags & 32) != 0);
+			shm.get(JAVA_FLOAT, 0x1E4), shm.get(JAVA_FLOAT, 0x1E8), shm.get(JAVA_FLOAT, 0x1EC), (flags & 32) != 0, (flags & 64) != 0, (flags & 128) != 0);
 		VarHandle.acquireFence();
 		return (int) INT.getAcquire(shm, 0x1D0) == before ? c : null;
 	}
@@ -614,8 +615,8 @@ public final class FortLink {
 		return request;
 	}
 
-	// FarObjects @0x58300 (TF2 writes): seq, count, then {ent, x, y, z, radius}. FarHidden
-	// @0x58900 (we write): seq, count, entity indices we can't see.
+	// FarObjects @0x5B300 (v56, TF2 writes): seq, count, then up to 512 {ent, x, y, z, radius}.
+	// FarHidden @0x5DC00 (we write): seq, count, entity indices we can't see.
 	public record FarObject(int ent, double x, double y, double z, double radius) {
 	}
 
@@ -624,33 +625,97 @@ public final class FortLink {
 		if (shm == null) {
 			return null;
 		}
-		int seq = (int) INT.getAcquire(shm, 0x58300);
+		int seq = (int) INT.getAcquire(shm, 0x5B300);
 		if ((seq & 1) != 0) {
 			return null;
 		}
-		int n = Math.min(Math.max(0, shm.get(JAVA_INT, 0x58304)), 64);
+		int n = Math.min(Math.max(0, shm.get(JAVA_INT, 0x5B304)), 512);
 		FarObject[] out = new FarObject[n];
 		for (int i = 0; i < n; i++) {
-			long o = 0x58308 + i * 20L;
+			long o = 0x5B308 + i * 20L;
 			out[i] = new FarObject(shm.get(JAVA_INT, o), shm.get(JAVA_FLOAT, o + 4), shm.get(JAVA_FLOAT, o + 8),
 				shm.get(JAVA_FLOAT, o + 12), shm.get(JAVA_FLOAT, o + 16));
 		}
 		VarHandle.acquireFence();
-		return (int) INT.getAcquire(shm, 0x58300) == seq ? out : null;
+		return (int) INT.getAcquire(shm, 0x5B300) == seq ? out : null;
 	}
 
 	public static void writeFarHidden(int[] ents, int count) {
 		if (shm == null) {
 			return;
 		}
-		count = Math.min(count, 64);
-		int seq = shm.get(JAVA_INT, 0x58900);
-		INT.setRelease(shm, 0x58900, (seq + 1) | 1);  // odd: writing
-		shm.set(JAVA_INT, 0x58904, count);
+		count = Math.min(count, 512);
+		int seq = shm.get(JAVA_INT, 0x5DC00);
+		INT.setRelease(shm, 0x5DC00, (seq + 1) | 1);  // odd: writing
+		shm.set(JAVA_INT, 0x5DC04, count);
 		for (int i = 0; i < count; i++) {
-			shm.set(JAVA_INT, 0x58908 + i * 4L, ents[i]);
+			shm.set(JAVA_INT, 0x5DC08 + i * 4L, ents[i]);
 		}
-		INT.setRelease(shm, 0x58900, ((seq + 1) | 1) + 1);  // even: done
+		INT.setRelease(shm, 0x5DC00, ((seq + 1) | 1) + 1);  // even: done
+	}
+
+	/** One saved MvM upgrade: TF2 class, item definition (65535 = the player), upgrade index, cost. */
+	public record MvmUpgrade(int playerClass, int itemDef, int upgrade, int cost) {
+	}
+
+	/** MvmState @0x59100 (v55, TF2 -> Minecraft): money and upgrades now, and the restore applied. */
+	public record MvmState(int restoreApplied, int currency, java.util.List<MvmUpgrade> upgrades) {
+	}
+
+	public static MvmState readMvmState() {
+		if (shm == null) {
+			return null;
+		}
+		int seq = (int) INT.getAcquire(shm, 0x59100);
+		if ((seq & 1) != 0 || seq == 0) {
+			return null;
+		}
+		int applied = shm.get(JAVA_INT, 0x59104);
+		int currency = shm.get(JAVA_INT, 0x59108);
+		int count = Math.min(Math.max(0, shm.get(JAVA_INT, 0x5910C)), 256);
+		var list = new java.util.ArrayList<MvmUpgrade>(count);
+		for (int i = 0; i < count; i++) {
+			long o = 0x59110 + i * 16L;
+			list.add(new MvmUpgrade(shm.get(JAVA_INT, o), shm.get(JAVA_INT, o + 4), shm.get(JAVA_INT, o + 8), shm.get(JAVA_INT, o + 12)));
+		}
+		VarHandle.acquireFence();
+		return (int) INT.getAcquire(shm, 0x59100) == seq ? new MvmState(applied, currency, list) : null;
+	}
+
+	/** MvmRestore @0x5A200 (v55, Minecraft -> TF2): the world's saved money and upgrades. Returns its seq. */
+	public static int writeMvmRestore(int currency, java.util.List<MvmUpgrade> upgrades) {
+		if (shm == null) {
+			return 0;
+		}
+		int count = Math.min(upgrades.size(), 256);
+		shm.set(JAVA_INT, 0x5A204, currency);
+		shm.set(JAVA_INT, 0x5A208, count);
+		for (int i = 0; i < count; i++) {
+			long o = 0x5A210 + i * 16L;
+			MvmUpgrade u = upgrades.get(i);
+			shm.set(JAVA_INT, o, u.playerClass());
+			shm.set(JAVA_INT, o + 4, u.itemDef());
+			shm.set(JAVA_INT, o + 8, u.upgrade());
+			shm.set(JAVA_INT, o + 12, u.cost());
+		}
+		int seq = shm.get(JAVA_INT, 0x5A200) + 1;
+		if (seq == 0) {
+			seq = 1;
+		}
+		INT.setRelease(shm, 0x5A200, seq);
+		return seq;
+	}
+
+	/** UpgradeStation @0x59000 (v50): the player used an enchanting table (TF2's MvM upgrades). */
+	public static void writeUpgradeStation(int bookshelves, double x, double y, double z) {
+		if (shm == null) {
+			return;
+		}
+		shm.set(JAVA_INT, 0x59004, bookshelves);
+		shm.set(JAVA_FLOAT, 0x59008, (float) x);
+		shm.set(JAVA_FLOAT, 0x5900C, (float) y);
+		shm.set(JAVA_FLOAT, 0x59010, (float) z);
+		INT.setRelease(shm, 0x59000, shm.get(JAVA_INT, 0x59000) + 1);
 	}
 
 	/** MobBackstab @0x58F00 (v46): 1 while a mob's back is in knife reach of TF2's aim. */

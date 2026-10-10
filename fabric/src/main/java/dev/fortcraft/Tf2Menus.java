@@ -165,6 +165,29 @@ public final class Tf2Menus {
 			super(Component.literal("TF2"));
 		}
 
+		/**
+		 * Minecraft 26 (SDL3) only sends typed characters while "text input" is started, which its
+		 * own text boxes do when focused. Without it, TF2's console never got a single letter
+		 * (Alex, 2026-10-10: only the Ctrl and V key presses arrived).
+		 */
+		@Override
+		public void added() {
+			super.added();
+			Minecraft.getInstance().textInputManager().startTextInput(this);
+		}
+
+		@Override
+		public void removed() {
+			Minecraft.getInstance().textInputManager().stopTextInput(this);
+			super.removed();
+		}
+
+		/** True while TF2's console shows: then every key types (P, E... don't toggle menus). */
+		private static boolean consoleShowing() {
+			FortLink.Tf2Camera cam = FortLink.readCamera();
+			return cam != null && cam.console();
+		}
+
 		@Override
 		public boolean isPauseScreen() {
 			return false;  // TF2 keeps running; so does Minecraft
@@ -235,11 +258,18 @@ public final class Tf2Menus {
 				onClose();
 				return true;
 			}
-			if (Tf2Keys.MAIN_MENU.matches(event)) {
+			boolean typing = consoleShowing();
+			if (typing && event.isPaste()) {
+				// Ctrl+V: paste Minecraft's clipboard into TF2's console.
+				String clip = Minecraft.getInstance().keyboardHandler.getClipboard();
+				clip.codePoints().filter(c -> c >= 32).forEach(c -> FortLink.sendUiEvent(FortLink.UI_CHAR, c, 0, 0));
+				return true;
+			}
+			if (!typing && Tf2Keys.MAIN_MENU.matches(event)) {
 				FortLink.sendUiCommand(MAIN_MENU);  // P again: TF2 closes (or opens) its main menu
 				return true;
 			}
-			if (Tf2Keys.BACKPACK.matches(event)) {
+			if (!typing && Tf2Keys.BACKPACK.matches(event)) {
 				onClose();  // E again: close the backpack, like Minecraft's inventory
 				return true;
 			}

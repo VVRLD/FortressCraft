@@ -31,9 +31,9 @@ public abstract class OptionsMixin {
 	/**
 	 * Alex (2026-10-10): E opens TF2's backpack, F opens Minecraft's inventory, and TF2 reloads by
 	 * itself (cl_autoreload). So while Minecraft's inventory and the backpack are both still on E,
-	 * move the inventory to F (Minecraft's swap-offhand key, which then gets no key) and unbind
-	 * TF2's manual reload. Both can be bound again in Controls. Once moved, players' own choices
-	 * are left alone.
+	 * move the inventory to F (Minecraft's swap-offhand key, which then gets no key). TF2's manual
+	 * Reload stays on R (the Eureka Effect's teleport menu needs it). Once moved, players' own
+	 * choices are left alone.
 	 */
 	@Inject(method = "<init>", at = @At("TAIL"))
 	private void fortcraft$inventoryOnR(CallbackInfo ci) {
@@ -42,11 +42,14 @@ public abstract class OptionsMixin {
 		InputConstants.Key r = InputConstants.Type.KEYBOARD.getOrCreate(InputConstants.KEY_R);
 		// R too: the version from earlier on 2026-10-10 put the inventory on R, and Minecraft may
 		// have saved that already.
+		InputConstants.Key f = InputConstants.Type.KEYBOARD.getOrCreate(InputConstants.KEY_F);
+		// TF2's Reload back on R (2026-10-10): with the inventory on F, R is free again, and the
+		// Eureka Effect opens its teleport menu with Reload. An earlier version unbound it.
+		if (self.keyInventory.matches(f) && Tf2Keys.RELOAD.isUnbound()) {
+			Tf2Keys.RELOAD.setKey(r);
+			KeyMapping.resetMapping();
+		}
 		if ((self.keyInventory.matches(e) || self.keyInventory.matches(r)) && Tf2Keys.BACKPACK.matches(e)) {
-			InputConstants.Key f = InputConstants.Type.KEYBOARD.getOrCreate(InputConstants.KEY_F);
-			if (Tf2Keys.RELOAD.matches(r)) {
-				Tf2Keys.RELOAD.setKey(InputConstants.UNKNOWN);
-			}
 			if (self.keySwapOffhand.matches(f)) {
 				self.keySwapOffhand.setKey(InputConstants.UNKNOWN);
 			}

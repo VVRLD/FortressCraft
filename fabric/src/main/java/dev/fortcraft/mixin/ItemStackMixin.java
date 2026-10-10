@@ -28,15 +28,22 @@ import org.spongepowered.asm.mixin.injection.callback.CallbackInfoReturnable;
  */
 @Mixin(ItemStack.class)
 public abstract class ItemStackMixin {
-	/** Vanilla keeps the hunger gain; completed eating also heals the linked TF2 player. */
+	/**
+	 * Eating heals the linked TF2 player (Minecraft's hunger is off while linked, see
+	 * FoodDataMixin): raw food 5-15 health, cooked food 15-50, picked at random, and it can
+	 * overheal. Food is the small healing; the Health Kit is the big one (Alex, 2026-10-10).
+	 */
 	@Inject(method = "finishUsingItem", at = @At("HEAD"))
 	private void fortcraft$foodHealsTf2(Level level, LivingEntity consumer, CallbackInfoReturnable<ItemStack> cir) {
 		ItemStack stack = (ItemStack) (Object) this;
 		FoodProperties food = stack.get(DataComponents.FOOD);
 		if (!level.isClientSide() && consumer instanceof ServerPlayer && Combat.linked &&
-			Hand.allows(stack) && food != null && food.nutrition() > 0) {
-			FortLink.writeFoodHeal(food.nutrition());
-			FortCraft.LOG.info("FortCraft: completed food use; Minecraft hunger +{}, TF2 heal queued", food.nutrition());
+			Hand.allows(stack) && food != null) {
+			boolean cooked = dev.fortcraft.FoodHealing.isCooked(stack);
+			int heal = cooked ? 15 + level.getRandom().nextInt(36) : 5 + level.getRandom().nextInt(11);
+			FortLink.writeFoodHeal(heal);
+			FortCraft.LOG.info("FortCraft: ate {} ({}); TF2 heal {} queued", stack.getHoverName().getString(),
+				cooked ? "cooked" : "raw", heal);
 		}
 	}
 

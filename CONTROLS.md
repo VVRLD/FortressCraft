@@ -13,7 +13,8 @@ weapons, menus and HUD. Every key marked *rebindable* can be changed in Minecraf
 | Shift | Crouch |
 | Left mouse | Fire your TF2 weapon (melee also breaks the block you aim at) |
 | Right mouse | Use the block or mob you aim at (doors, chests, villagers, animals); otherwise your weapon's secondary fire (scope, airblast, detonate stickies, cloak, charge) |
-| F | Minecraft's inventory *(rebindable)*. TF2 weapons reload by themselves; a manual reload key can be set in Controls. Minecraft's swap-offhand key (normally F) is unbound; set one in Controls if you need it |
+| F | Minecraft's inventory *(rebindable)*. Minecraft's swap-offhand key (normally F) is unbound; set one in Controls if you need it |
+| R | TF2 reload *(rebindable)*. Weapons also reload by themselves. With the Eureka Effect out, R opens its teleport menu: 1 = your bed or spawn point, 2 = your teleporter exit, Q = cancel |
 | 1-9, mouse wheel | Switch TF2 weapons |
 | G | Taunt menu; G again does your weapon's taunt; Q or G stops a taunt *(rebindable)* |
 | Z / X / C | TF2 voice menus 1 / 2 / 3; then a number key picks a line, 0 closes *(rebindable)* |
@@ -40,8 +41,10 @@ Everything in your Minecraft inventory shows on the backpack's last page (E take
 
 - **Blocks and items:** right-click > **Equip to hand** (or double-click) to hold it. Left-click
   then mines, right-click places or uses it. A weapon key or the wheel puts it away.
-- **Health and ammo packs:** right-click > **Use** (or double-click). Small packs restore about a
-  fifth of your health or ammo, large packs fill it. A pack is given back if you are already full.
+- **Health Kit and Ammo Pack:** right-click > **Use** (or double-click). The Health Kit restores
+  100-150 health, the Ammo Pack fills your ammo. A kit is given back if you are already full.
+- **Food:** there is no hunger. Eat any food (Equip to hand, hold right-click) to heal: raw food
+  5-15 health, cooked food 15-50, and it can overheal you.
 
 ## Crafting
 
@@ -50,10 +53,8 @@ plus FortCraft's supply packs, which are always listed:
 
 | Pack | Recipe |
 |---|---|
-| Small Health Pack | 5 apples |
-| Large Health Pack | 9 apples |
-| Small Ammo Pack | 5 iron ingots |
-| Large Ammo Pack | 9 iron ingots |
+| Health Kit | 2 string, 2 wool (any colour) |
+| Ammo Pack | 9 iron ingots |
 
 Pick a recipe and press **Craft**. If you don't have enough ingredients, the recipe says how many
 you have and nothing is taken.

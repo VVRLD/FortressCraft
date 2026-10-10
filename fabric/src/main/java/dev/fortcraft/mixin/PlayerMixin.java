@@ -15,6 +15,14 @@ import org.spongepowered.asm.mixin.injection.callback.CallbackInfoReturnable;
  */
 @Mixin(Player.class)
 public abstract class PlayerMixin {
+	/** No hunger while linked (FoodDataMixin keeps the bar full), so any food can always be eaten. */
+	@Inject(method = "canEat", at = @At("HEAD"), cancellable = true)
+	private void fortcraft$alwaysEat(boolean canAlwaysEat, CallbackInfoReturnable<Boolean> cir) {
+		if (Combat.linked) {
+			cir.setReturnValue(true);
+		}
+	}
+
 	@Inject(method = "canBeSeenAsEnemy", at = @At("HEAD"), cancellable = true)
 	private void fortcraft$cloaked(CallbackInfoReturnable<Boolean> cir) {
 		if (Combat.linked && Combat.cloaked && (Object) this instanceof ServerPlayer) {

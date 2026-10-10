@@ -1,8 +1,6 @@
 {
-  "item.fortcraft.small_health_pack": "Small Health Pack",
-  "item.fortcraft.large_health_pack": "Large Health Pack",
-  "item.fortcraft.small_ammo_pack": "Small Ammo Pack",
-  "item.fortcraft.large_ammo_pack": "Large Ammo Pack",
+  "item.fortcraft.large_health_pack": "Health Kit",
+  "item.fortcraft.large_ammo_pack": "Ammo Pack",
   "key.category.fortcraft.tf2": "FortCraft (TF2)",
   "key.fortcraft.reload": "Reload",
   "key.fortcraft.taunt": "Taunt menu",

@@ -635,6 +635,18 @@ index 20070cf..e97cd3d 100644
  //-----------------------------------------------------------------------------
  // Purpose: 
  //-----------------------------------------------------------------------------
+diff --git a/src/game/client/tf/tf_hud_menu_eureka_teleport.h b/src/game/client/tf/tf_hud_menu_eureka_teleport.h
+index c02f10a..777465b 100644
+--- a/src/game/client/tf/tf_hud_menu_eureka_teleport.h
++++ b/src/game/client/tf/tf_hud_menu_eureka_teleport.h
+@@ -34,6 +34,7 @@ public:
+ 	int				HudElementKeyInput( int down, ButtonCode_t keynum, const char *pszCurrentBinding );
+ 	virtual int		GetRenderGroupPriority() OVERRIDE { return 51; }
+ 	void			WantsToTeleport( void );
++	void			FortCraft_Cancel( void ) { m_bWantsToTeleport = false; }  // FortCraft: Q closes the menu
+ 
+ 	virtual GameActionSet_t GetPreferredActionSet() { return IsActive() ? GAME_ACTION_SET_IN_GAME_HUD : GAME_ACTION_SET_NONE; }
+ 
 diff --git a/src/game/client/tf/tf_hud_target_id.cpp b/src/game/client/tf/tf_hud_target_id.cpp
 index 9f9a2db..61777d0 100644
 --- a/src/game/client/tf/tf_hud_target_id.cpp
@@ -1141,6 +1153,61 @@ index 427c93d..d13774d 100644
  			$File	"tf\entity_passtime_ball_spawn.cpp"
  			$File	"tf\entity_passtime_ball_spawn.h"
  			$File	"tf\func_passtime_goal.cpp"
+diff --git a/src/game/server/tf/entity_currencypack.cpp b/src/game/server/tf/entity_currencypack.cpp
+index b2beed4..8012180 100644
+--- a/src/game/server/tf/entity_currencypack.cpp
++++ b/src/game/server/tf/entity_currencypack.cpp
+@@ -19,6 +19,7 @@
+ #include "collisionutils.h"
+ #include "func_respawnroom.h"
+ #include "tf_objective_resource.h"
++#include "../../../../../my-passthrough/tf2mod/fortcraft_collision.h"
+ 
+ //=============================================================================
+ //
+@@ -62,6 +63,7 @@ CCurrencyPack::CCurrencyPack()
+ 	m_bTouched = false;
+ 	m_bClaimed = false;
+ 	m_bDistributed = false;
++	m_flFortCraftLifetime = 0.0f;
+ }
+ 
+ //-----------------------------------------------------------------------------
+@@ -184,7 +186,8 @@ void CCurrencyPack::ComeToRest( void )
+ 		return;
+ 
+ 	// if we've come to rest in an area with no nav, just grant the money to the player
+-	if ( TheNavMesh->GetNavArea( GetAbsOrigin() ) == NULL )
++	// FortCraft: Minecraft's world has no TF2 nav mesh; the pack stays where it lands.
++	if ( !FortCraft_Active() && TheNavMesh->GetNavArea( GetAbsOrigin() ) == NULL )
+ 	{
+ 		TFGameRules()->DistributeCurrencyAmount( m_nAmount );
+ 		m_bTouched = true;
+@@ -329,7 +332,8 @@ bool CCurrencyPack::MyTouch( CBasePlayer *pPlayer )
+ 		
+ 		if ( !m_bDistributed )
+ 		{
+-			TFGameRules()->DistributeCurrencyAmount( m_nAmount, pTFTouchPlayer );
++			// FortCraft: to whoever picks it up (TF2 shares it only with MvM's defending team).
++			TFGameRules()->DistributeCurrencyAmount( m_nAmount, pTFTouchPlayer, !FortCraft_Active() );
+ 			CTF_GameStats.Event_PlayerCollectedCurrency( pTFTouchPlayer, m_nAmount );
+ 		}
+ 
+diff --git a/src/game/server/tf/entity_currencypack.h b/src/game/server/tf/entity_currencypack.h
+index 565bc79..c48ade2 100644
+--- a/src/game/server/tf/entity_currencypack.h
++++ b/src/game/server/tf/entity_currencypack.h
+@@ -47,6 +47,10 @@ public:
+ 	virtual CurrencyRewards_t	GetPackSize( void ) { return TF_CURRENCY_PACK_LARGE; }
+ 	virtual const char *GetDefaultPowerupModel( void ) { return "models/items/currencypack_large.mdl"; }
+ 
++	// FortCraft: how long a dropped pack stays (mob money, the death drop); 0 = TF2's 30 s.
++	float	m_flFortCraftLifetime;
++	virtual float GetLifeTime() OVERRIDE { return m_flFortCraftLifetime > 0.0f ? m_flFortCraftLifetime : BaseClass::GetLifeTime(); }
++
+ protected:
+ 	virtual void ComeToRest( void );
+ 
 diff --git a/src/game/server/tf/tf_obj.cpp b/src/game/server/tf/tf_obj.cpp
 index c7a9e93..8bdedb0 100644
 --- a/src/game/server/tf/tf_obj.cpp
@@ -1370,7 +1437,7 @@ index 2c86d52..cc7b936 100644
  
  	int GetBaseTurnRate( void );
 diff --git a/src/game/server/tf/tf_player.cpp b/src/game/server/tf/tf_player.cpp
-index c030951..5202d86 100644
+index c030951..fa9bc76 100644
 --- a/src/game/server/tf/tf_player.cpp
 +++ b/src/game/server/tf/tf_player.cpp
 @@ -6,6 +6,8 @@
@@ -1390,7 +1457,19 @@ index c030951..5202d86 100644
  
  // memdbgon must be the last include file in a .cpp file!!!
  #include "tier0/memdbgon.h"
-@@ -2238,8 +2241,45 @@ bool CTFPlayer::ProcessSceneEvent( CSceneEventInfo *info, CChoreoScene *scene, C
+@@ -1612,6 +1615,11 @@ void CTFPlayer::TFPlayerThink()
+ 			{
+ 				pTeleExit->RecieveTeleportingPlayer( this );
+ 			}
++			else if ( FortCraft_Active() )
++			{
++				// FortCraft: "home" is Minecraft's bed or spawn point, as when respawning.
++				FortCraft_OnPlayerSpawn( this );
++			}
+ 			else
+ 			{
+ 				// Default to the spawn
+@@ -2238,8 +2246,45 @@ bool CTFPlayer::ProcessSceneEvent( CSceneEventInfo *info, CChoreoScene *scene, C
  //-----------------------------------------------------------------------------
  // Purpose: 
  //-----------------------------------------------------------------------------
@@ -1436,7 +1515,7 @@ index c030951..5202d86 100644
  	// Update timers.
  	UpdateTimers();
  
-@@ -3944,6 +3984,10 @@ void CTFPlayer::Spawn()
+@@ -3944,6 +3989,10 @@ void CTFPlayer::Spawn()
  	}
  
  	SetContextThink( &CTFPlayer::PostSpawnThink, gpGlobals->curtime + 0.1f, "PostSpawnThink" );
@@ -1447,7 +1526,7 @@ index c030951..5202d86 100644
  }
  
  //-----------------------------------------------------------------------------
-@@ -6976,6 +7020,18 @@ void CTFPlayer::HandleCommand_JoinClass( const char *pClassName, bool bAllowSpaw
+@@ -6976,6 +7025,18 @@ void CTFPlayer::HandleCommand_JoinClass( const char *pClassName, bool bAllowSpaw
  		return;
  	}
  
@@ -1466,7 +1545,7 @@ index c030951..5202d86 100644
  	// We can respawn instantly if:
  	//	- We're dead, and we're past the required post-death time
  	//	- We're inside a respawn room of our own team
-@@ -7518,6 +7574,27 @@ bool CTFPlayer::ClientCommand( const CCommand &args )
+@@ -7518,6 +7579,27 @@ bool CTFPlayer::ClientCommand( const CCommand &args )
  		}
  		return true;
  	}
@@ -1494,7 +1573,7 @@ index c030951..5202d86 100644
  	else if ( FStrEq( pcmd, "stop_taunt" ) )
  	{
  		if( m_Shared.GetTauntIndex() == TAUNT_LONG && !m_Shared.InCond( TF_COND_HALLOWEEN_KART ) )
-@@ -8662,7 +8739,7 @@ CTFPlayer *CTFPlayer::TeamFortress_GetDisguiseTarget( int nTeam, int nClass )
+@@ -8662,7 +8744,7 @@ CTFPlayer *CTFPlayer::TeamFortress_GetDisguiseTarget( int nTeam, int nClass )
  //-----------------------------------------------------------------------------
  float DamageForce( const Vector &size, float damage, float scale )
  { 
@@ -1503,7 +1582,7 @@ index c030951..5202d86 100644
  	
  	if ( force > 1000.0 )
  	{
-@@ -8813,7 +8890,18 @@ int CTFPlayer::OnTakeDamage( const CTakeDamageInfo &inputInfo )
+@@ -8813,7 +8895,18 @@ int CTFPlayer::OnTakeDamage( const CTakeDamageInfo &inputInfo )
  	CTFWeaponBase *pWeapon = dynamic_cast< CTFWeaponBase * >( inputInfo.GetWeapon() );
  
  	if ( GetFlags() & FL_GODMODE )
@@ -1522,6 +1601,68 @@ index c030951..5202d86 100644
  
  	if ( IsInCommentaryMode() )
  		return 0;
+@@ -8980,6 +9073,24 @@ int CTFPlayer::OnTakeDamage( const CTakeDamageInfo &inputInfo )
+ 				bHitEnemy = true;
+ 			}
+ 		}
++		// FortCraft: Mantreads (any stomp boots, or the Thermal Thruster) stomp a Minecraft mob
++		// landed on. Mobs aren't TF2 entities, so check Minecraft's mob boxes under the feet and
++		// hand Minecraft the hit (TF2's stomp damage: 10 + 3x the fall damage).
++		else if ( FortCraft_Active() && m_Shared.CanFallStomp() )
++		{
++			const Vector feet = GetAbsOrigin();
++			if ( FortCraft_MobBeforeBlocks( feet + Vector( 0, 0, 8 ), feet - Vector( 0, 0, 24 ), Vector( -16, -16, 0 ), Vector( 16, 16, 4 ) ) )
++			{
++				const float flStompDamage = 10.0f + info.GetDamage() * 3.f;
++				FortCraft_ReportShot( feet + Vector( 0, 0, 8 ), Vector( 0, 0, -1 ), 48.0f, flStompDamage, FC_MELEE );
++				m_Local.m_flFallVelocity = 0;
++				info.SetDamage( 0.0f );
++				EmitSound( "Weapon_Mantreads.Impact" );
++				EmitSound( "Player.FallDamageDealt" );
++				bHitEnemy = true;
++				Msg( "FortCraft: stomped a Minecraft mob for %.0f\n", flStompDamage );
++			}
++		}
+ 
+ /*
+ 		// no fall damage in space
+@@ -21998,17 +22109,20 @@ CON_COMMAND_F( currency_give, "Have some in-game money.", FCVAR_CHEAT )
+ //-----------------------------------------------------------------------------
+ void CTFPlayer::AddCurrency( int nAmount )
+ {
+-	if ( nAmount + m_nCurrency > 30000 )
++	// FortCraft: no $30,000 cap while linked to Minecraft (Alex, 2026-10-10); just never overflow.
++	const int64 nCap = FortCraft_Active() ? 2000000000LL : 30000LL;
++	const int64 nNew = (int64)m_nCurrency + nAmount;
++	if ( nNew > nCap )
+ 	{
+-		m_nCurrency = 30000;
++		m_nCurrency = (int)nCap;
+ 	}
+-	else if ( nAmount + m_nCurrency < 0 )
++	else if ( nNew < 0 )
+ 	{
+ 		m_nCurrency = 0;
+ 	}
+ 	else
+ 	{
+-		m_nCurrency += nAmount;
++		m_nCurrency = (int)nNew;
+ 	}	
+ }
+ 
+diff --git a/src/game/server/tf/tf_player.h b/src/game/server/tf/tf_player.h
+index d2affa2..b38a5c6 100644
+--- a/src/game/server/tf/tf_player.h
++++ b/src/game/server/tf/tf_player.h
+@@ -1055,6 +1055,7 @@ public:
+ 	void				ReapplyPlayerUpgrades ( void );
+ 	void				SetWaveSpawnPopulator( CWaveSpawnPopulator *pWave ){ m_pWaveSpawnPopulator = pWave; }
+ 	CUtlVector< CUpgradeInfo >* GetRefundableUpgrades( void ) { return &m_RefundableUpgrades; }
++	CUtlVector< CUpgradeInfo >* FortCraft_UpgradeHistory( void ) { return GetPlayerUpgradeHistory(); }  // FortCraft: saved with the world
+ 	void				ResetRefundableUpgrades( void ) { m_RefundableUpgrades.RemoveAll(); }
+ 	void				BeginPurchasableUpgrades( void );
+ 	void				EndPurchasableUpgrades( void );
 diff --git a/src/game/server/tf/tf_projectile_arrow.cpp b/src/game/server/tf/tf_projectile_arrow.cpp
 index b6c14eb..01ed277 100644
 --- a/src/game/server/tf/tf_projectile_arrow.cpp
@@ -1841,7 +1982,7 @@ index 7e9ceed..cf5c53e 100644
  
  	Vector vecNewDirVelocity = vecNewVelocity - DotProduct( tr.plane.normal, vecNewVelocity ) * tr.plane.normal;
 diff --git a/src/game/shared/tf/tf_gamemovement.cpp b/src/game/shared/tf/tf_gamemovement.cpp
-index 4766016..942fe8b 100644
+index 4766016..b15e85f 100644
 --- a/src/game/shared/tf/tf_gamemovement.cpp
 +++ b/src/game/shared/tf/tf_gamemovement.cpp
 @@ -22,6 +22,7 @@
@@ -1874,32 +2015,26 @@ index 4766016..942fe8b 100644
  	return true;
  }
  
-@@ -2299,7 +2315,12 @@ CBaseHandle CTFGameMovement::TestPlayerPosition( const Vector& pos, int collisio
+@@ -2299,7 +2315,11 @@ CBaseHandle CTFGameMovement::TestPlayerPosition( const Vector& pos, int collisio
  	ray.Init( pos, pos, GetPlayerMins(), GetPlayerMaxs() );
  	
  	CTraceFilterObject traceFilter( mv->m_nPlayerHandle.Get(), collisionGroup );
--	enginetrace->TraceRay( ray, PlayerSolidMask(), &traceFilter, &pm );
-+	// FortCraft: while linked to Minecraft, only Minecraft's blocks are solid; the TF2 map is ignored.
-+	if ( FortCraft_Active() )
-+		FortCraft_ClearTrace( pos, pos, pm );
-+	else
-+		enginetrace->TraceRay( ray, PlayerSolidMask(), &traceFilter, &pm );
++	// FortCraft: while linked, enginetrace is FortCraft's wrapper (fortcraft_trace.cpp): TF2's map
++	// is skipped but entities count, so the player bumps into buildings and stands on teleporters
++	// (Alex, 2026-10-10: walked through them, so teleporters never saw him).
+ 	enginetrace->TraceRay( ray, PlayerSolidMask(), &traceFilter, &pm );
 +	FortCraft_ClipHullTrace( pos, pos, GetPlayerMins(), GetPlayerMaxs(), pm );
  
  	if ( (pm.contents & PlayerSolidMask()) && pm.m_pEnt )
  	{
-@@ -2316,15 +2337,28 @@ CBaseHandle CTFGameMovement::TestPlayerPosition( const Vector& pos, int collisio
+@@ -2316,15 +2336,25 @@ CBaseHandle CTFGameMovement::TestPlayerPosition( const Vector& pos, int collisio
  //-----------------------------------------------------------------------------
  void CTFGameMovement::TracePlayerBBox( const Vector& start, const Vector& end, unsigned int fMask, int collisionGroup, trace_t& pm )
  {
--	if( tf_solidobjects.GetBool() == false )
++	// FortCraft: while linked, enginetrace is FortCraft's wrapper: TF2's map is skipped, entities
++	// (buildings, other players) still count, and Minecraft's blocks are added below.
+ 	if( tf_solidobjects.GetBool() == false )
 -		return BaseClass::TracePlayerBBox( start, end, fMask, collisionGroup, pm );
-+	// FortCraft: while linked to Minecraft, only Minecraft's blocks are solid; the TF2 map is ignored.
-+	if ( FortCraft_Active() )
-+	{
-+		FortCraft_ClearTrace( start, end, pm );
-+	}
-+	else if( tf_solidobjects.GetBool() == false )
 +	{
 +		BaseClass::TracePlayerBBox( start, end, fMask, collisionGroup, pm );
 +	}
@@ -1925,7 +2060,7 @@ index 4766016..942fe8b 100644
  
  //-----------------------------------------------------------------------------
 diff --git a/src/game/shared/tf/tf_gamerules.cpp b/src/game/shared/tf/tf_gamerules.cpp
-index b14837f..f554dc8 100644
+index b14837f..2c23525 100644
 --- a/src/game/shared/tf/tf_gamerules.cpp
 +++ b/src/game/shared/tf/tf_gamerules.cpp
 @@ -5,6 +5,9 @@
@@ -1967,11 +2102,30 @@ index b14837f..f554dc8 100644
  	float flRadSqr = (info.flRadius * info.flRadius);
  
  	int iDamageEnemies = 0;
+@@ -15312,6 +15321,10 @@ void CTFGameRules::ClientCommandKeyValues( edict_t *pEntity, KeyValues *pKeyValu
+ 		{
+ 			pTFPlayer->EndPurchasableUpgrades();
+ 
++			// FortCraft: the enchanting table's upgrade screen was closed; leave its "zone".
++			if ( FortCraft_Active() )
++				pTFPlayer->m_Shared.SetInUpgradeZone( false );
++
+ 			if ( IsMannVsMachineMode() && pKeyValues->GetInt( "num_upgrades", 0 ) > 0 )
+ 			{
+ 				pTFPlayer->SpeakConceptIfAllowed( MP_CONCEPT_MVM_UPGRADE_COMPLETE );
 diff --git a/src/game/shared/tf/tf_player_shared.cpp b/src/game/shared/tf/tf_player_shared.cpp
-index 97be022..d16abce 100644
+index 97be022..f145932 100644
 --- a/src/game/shared/tf/tf_player_shared.cpp
 +++ b/src/game/shared/tf/tf_player_shared.cpp
-@@ -102,6 +102,7 @@
+@@ -6,6 +6,7 @@
+ #include "cbase.h"
+ #include "tf_gamerules.h"
+ #include "tf_player_shared.h"
++#include "../../../../../my-passthrough/tf2mod/fortcraft_collision.h"  // FortCraft
+ #include "takedamageinfo.h"
+ #include "tf_weaponbase.h"
+ #include "effect_dispatch_data.h"
+@@ -102,6 +103,7 @@
  
  #include "tf_wearable_weapons.h"
  #include "tf_weapon_bonesaw.h"
@@ -1979,7 +2133,59 @@ index 97be022..d16abce 100644
  
  static ConVar tf_demoman_charge_frametime_scaling( "tf_demoman_charge_frametime_scaling", "1", FCVAR_REPLICATED | FCVAR_CHEAT, "When enabled, scale yaw limiting based on client performance (frametime)." );
  static const float YAW_CAP_SCALE_MIN = 0.2f;
-@@ -9573,6 +9574,13 @@ void CTFPlayerShared::UpdateCritMult( void )
+@@ -3069,7 +3071,8 @@ void CTFPlayerShared::ConditionGameRulesThink( void )
+ 		m_flSpyTranqBuffDuration = 0;
+ 	}
+ 
+-	if ( TFGameRules()->IsMannVsMachineMode() || TFGameRules()->IsPlayingRobotDestructionMode() )
++	// FortCraft: Minecraft mobs drop MvM cash too; pull it in like MvM does.
++	if ( TFGameRules()->IsMannVsMachineMode() || TFGameRules()->IsPlayingRobotDestructionMode() || FortCraft_Active() )
+ 	{
+ 		RadiusCurrencyCollectionCheck();
+ 	}
+@@ -9139,7 +9142,12 @@ void CTFPlayerShared::RadiusCurrencyCollectionCheck( void )
+ 		return;
+ 	
+ 	bool bScout = m_pOuter->GetPlayerClass()->GetClassIndex() == TF_CLASS_SCOUT;
+-	const int nRadiusSqr = bScout ? 288 * 288 : 72 * 72;
++	// FortCraft: every class (Scouts too) pulls cash in from 2 blocks, and it flies to you the
++	// way it does for MvM Scouts (Alex, 2026-10-10; 3.5 blocks was too far).
++	const bool bFortCraft = FortCraft_Active();
++	const int nRadius = bFortCraft ? 96 : ( bScout ? 288 : 72 );
++	const int nRadiusSqr = nRadius * nRadius;
++	const bool bPull = bScout || bFortCraft;
+ 	Vector vecPos = m_pOuter->GetAbsOrigin();
+ 
+ 	// NDebugOverlay::Sphere( vecPos, nRadius, 0, 255, 0, 40, 5 );
+@@ -9166,7 +9174,7 @@ void CTFPlayerShared::RadiusCurrencyCollectionCheck( void )
+ 			continue;
+ 
+ 		// Currencypack's seek classes with a large collection radius
+-		if ( bScout )
++		if ( bPull )
+ 		{
+ 			bool bFound = false;
+ 			FOR_EACH_VEC( m_CurrencyPacks, i )
+@@ -9214,6 +9222,9 @@ void CTFPlayerShared::RadiusCurrencyCollectionCheck( void )
+ 
+ 				Vector vPush = flForce * vToPlayer;
+ 
++				// FortCraft: bags lying on Minecraft's ground are frozen in place; let it fly.
++				if ( m_CurrencyPacks[i].hPack->GetMoveType() == MOVETYPE_NONE )
++					m_CurrencyPacks[i].hPack->SetMoveType( MOVETYPE_FLYGRAVITY, MOVECOLLIDE_FLY_BOUNCE );
+ 				m_CurrencyPacks[i].hPack->RemoveFlag( FL_ONGROUND );
+ 				m_CurrencyPacks[i].hPack->ApplyAbsVelocityImpulse( vPush );
+ 			}
+@@ -9225,7 +9236,7 @@ void CTFPlayerShared::RadiusCurrencyCollectionCheck( void )
+ 		}
+ 	}
+ 
+-	m_flRadiusCurrencyCollectionTime = bScout ? gpGlobals->curtime + 0.15f : gpGlobals->curtime + 0.25f;
++	m_flRadiusCurrencyCollectionTime = bPull ? gpGlobals->curtime + 0.15f : gpGlobals->curtime + 0.25f;
+ }
+ 
+ //-----------------------------------------------------------------------------
+@@ -9573,6 +9584,13 @@ void CTFPlayerShared::UpdateCritMult( void )
  //-----------------------------------------------------------------------------
  // Purpose: 
  //-----------------------------------------------------------------------------
@@ -1993,7 +2199,7 @@ index 97be022..d16abce 100644
  void CTFPlayerShared::RecordDamageEvent( const CTakeDamageInfo &info, bool bKill, int nVictimPrevHealth  )
  {
  	if ( m_DamageEvents.Count() >= MAX_DAMAGE_EVENTS )
-@@ -10277,6 +10285,12 @@ static void UTIL_PlayerBulletTrace( const Vector& vecStart, const Vector& vecEnd
+@@ -10277,6 +10295,12 @@ static void UTIL_PlayerBulletTrace( const Vector& vecStart, const Vector& vecEnd
  //-----------------------------------------------------------------------------
  void CTFPlayer::FireBullet( CTFWeaponBase *pWpn, const FireBulletsInfo_t &info, bool bDoEffects, int nDamageType, int nCustomDamageType /*= TF_DMG_CUSTOM_NONE*/ )
  {
@@ -2006,7 +2212,7 @@ index 97be022..d16abce 100644
  	// Fire a bullet (ignoring the shooter).
  	Vector vecStart = info.m_vecSrc;
  	Vector vecEnd = vecStart + info.m_vecDirShooting * info.m_flDistance;
-@@ -14793,4 +14807,3 @@ bool CTFPlayer::IsHelpmeButtonPressed() const
+@@ -14793,4 +14817,3 @@ bool CTFPlayer::IsHelpmeButtonPressed() const
  {
  	return m_flHelpmeButtonPressTime != 0.f;
  }

@@ -11,7 +11,7 @@ import sys
 import time
 
 MAGIC = 0x46524346  # "FCRF"
-VERSION = 43
+VERSION = 56
 OFF_WATER_BOXES = 0x56000
 MAX_WATER_BOXES = 256
 OFF_PACK_USE = 0x58000  # request, kind, result, ok (four uint32 values)

@@ -4,6 +4,9 @@
   "compatibilityLevel": "JAVA_25",
   "client": [
     "CameraMixin",
+    "EnchantingTableMixin",
+    "ExperienceOrbMixin",
+    "FoodDataMixin",
     "ClientLanguageMixin",
     "GameRendererMixin",
     "GuiGraphicsAccessor",
@@ -11,6 +14,7 @@
     "HudMixin",
     "ItemStackMixin",
     "ItemsMixin",
+    "LivingEntityMixin",
     "MinecraftMixin",
     "MouseHandlerMixin",
     "OptionsMixin",

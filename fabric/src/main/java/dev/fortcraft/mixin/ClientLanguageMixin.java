@@ -12,7 +12,7 @@ public abstract class ClientLanguageMixin {
 	/**
 	 * FortCraft's own names (supply packs, the "FortCraft (TF2)" keys in Controls). This mod runs
 	 * without Fabric API, so Minecraft never loads its assets/fortcraft/lang file and showed raw
-	 * keys such as "item.fortcraft.small_health_pack". FortCraftText reads that file itself.
+	 * keys such as "item.fortcraft.large_health_pack". FortCraftText reads that file itself.
 	 */
 	@Inject(method = "getOrDefault", at = @At("HEAD"), cancellable = true)
 	private void fortcraft$text(String key, String fallback, CallbackInfoReturnable<String> cir) {

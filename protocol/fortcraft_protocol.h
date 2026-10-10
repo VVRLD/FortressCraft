@@ -14,7 +14,7 @@
 namespace fortcraft { namespace proto
 {
 	static constexpr std::uint32_t kMagic = 0x46524346;  // "FCRF"
-	static constexpr std::uint32_t kVersion = 46;
+	static constexpr std::uint32_t kVersion = 56;
 	static constexpr wchar_t       kMappingName[] = L"Local\\FortCraft_v1";
 	// Linux: a file in RAM that Minecraft creates and both sides map (same bytes as on Windows).
 	static constexpr char          kMappingPathPosix[] = "/dev/shm/FortCraft_v1";
@@ -172,6 +172,8 @@ namespace fortcraft { namespace proto
 		kCameraUiOpen = 1u << 3,     // a TF2 menu that takes the mouse is open (class/team menu, main menu, loadout)
 		kCameraMedigun = 1u << 4,   // living Medic has a Medigun equipped; Minecraft may heal passive mobs on attack
 		kCameraCloaked = 1u << 5,   // v46: Spy cloaked (mostly invisible); Minecraft's mobs ignore the player
+		kCameraEurekaMenu = 1u << 6, // v49: the Eureka Effect's teleport menu is open (1, 2 and Q go to it)
+		kCameraConsole = 1u << 7,   // v53: TF2's console is showing (every key types, menu keys included)
 	};
 
 	struct Camera
@@ -399,8 +401,12 @@ namespace fortcraft { namespace proto
 	};
 	static_assert(kOffMobBoxes + sizeof(MobBoxes) <= kOffOverlayPixels, "FortCraft protocol layout");
 
-	// Written with MobBoxes under the same seq: 1 if mob i is hostile (Minecraft's Enemy, e.g.
-	// zombies and slimes), 0 for animals and villagers. Engineer sentries shoot hostile mobs.
+	// Written with MobBoxes under the same seq, flags for mob i: kMobHostile if it is hostile
+	// (Minecraft's Enemy, e.g. zombies and slimes; not animals or villagers), and since v47
+	// kMobSentrySees if one of the player's sentries has a clear line to it through Minecraft's
+	// world (TF2 only knows the blocks near the player, so sentries shot mobs behind far houses).
+	// Engineer sentries shoot mobs with both.
+	static constexpr std::uint8_t kMobHostile = 1, kMobSentrySees = 2;
 	static constexpr std::uint64_t kOffMobHostile = 0x42E00;
 	static_assert(kOffMobHostile >= kOffMobBoxes + sizeof(MobBoxes), "FortCraft protocol layout");
 	static_assert(kOffMobHostile + kMaxMobBoxes <= 0x43000, "FortCraft protocol layout");
@@ -605,7 +611,8 @@ namespace fortcraft { namespace proto
 		float         x, y, z;  // Minecraft coordinates
 		float         damage;   // TF2 damage points
 		std::uint32_t killed;   // 1 if this hit killed it
-		std::uint32_t source;   // the Shot flags that caused it (FC_SENTRY: the player's sentry; v43)
+		std::uint32_t source;   // the Shot flags that caused it (FC_SENTRY: the player's sentry; v43);
+		                        // bits 16-31 (v50): MvM money the kill earns (kMobHitMoneyShift)
 	};
 	static_assert(sizeof(MobHit) == 24, "FortCraft protocol layout");
 
@@ -627,7 +634,7 @@ namespace fortcraft { namespace proto
 	struct Building
 	{
 		std::uint32_t ent;   // TF2 entity index
-		std::uint32_t pad;
+		std::uint32_t type;  // v47: 1 = sentry gun, 0 = another building
 		float         minX, minY, minZ, maxX, maxY, maxZ;
 	};
 	static_assert(sizeof(Building) == 32, "FortCraft protocol layout");
@@ -741,7 +748,7 @@ namespace fortcraft { namespace proto
 	struct FoodHeals
 	{
 		std::uint32_t count;
-		std::int32_t nutrition[kMaxFoodHeals];
+		std::int32_t nutrition[kMaxFoodHeals];  // v48: TF2 health to add (overheal allowed), picked by Minecraft
 	};
 	static_assert(kOffFoodHeals >= kOffPackUse + sizeof(PackUse), "FortCraft protocol layout");
 	static_assert(kOffFoodHeals + sizeof(FoodHeals) <= kOffOverlayPixels, "FortCraft protocol layout");
@@ -752,8 +759,12 @@ namespace fortcraft { namespace proto
 	// sticky, building or rocket further away showed through Minecraft's houses and hills. TF2
 	// lists the drawn objects beyond that range (seqlocked); Minecraft checks its own line of sight
 	// to each from the camera and lists the ones fully blocked; TF2 doesn't draw those.
-	static constexpr std::uint64_t kOffFarObjects = 0x58300;
-	static constexpr std::uint32_t kMaxFarObjects = 64;
+	// v56: moved to 0x5B300/0x5DC00 and raised from 64 to 512 objects, so every cash bag (the
+	// dragon drops 300) is checked; past the first 64 they showed through blocks. The old
+	// 0x58300-0x58A08 is unused.
+	static constexpr std::uint64_t kOffFarObjects = 0x5B300;
+	static constexpr std::uint32_t kMaxFarObjects = 512;
+	static constexpr std::uint32_t kMaxWaterLines = 64;
 	struct FarObject
 	{
 		std::int32_t ent;          // TF2 client entity index
@@ -769,7 +780,7 @@ namespace fortcraft { namespace proto
 	static_assert(sizeof(FarObject) == 20, "FortCraft protocol layout");
 	static_assert(kOffFarObjects >= kOffFoodHeals + sizeof(FoodHeals), "FortCraft protocol layout");
 
-	static constexpr std::uint64_t kOffFarHidden = 0x58900;
+	static constexpr std::uint64_t kOffFarHidden = 0x5DC00;
 	struct FarHidden
 	{
 		std::uint32_t seq;
@@ -790,7 +801,7 @@ namespace fortcraft { namespace proto
 		float friction;
 		std::uint32_t pad;
 	};
-	static_assert(kOffGround >= kOffFarHidden + sizeof(FarHidden), "FortCraft protocol layout");
+	static_assert(kOffGround >= 0x58A08, "FortCraft protocol layout");  // after the old FarHidden
 	static_assert(kOffGround + sizeof(Ground) <= kOffOverlayPixels, "FortCraft protocol layout");
 
 	// ---- Minecraft -> TF2: water surfaces at TF2 objects (v45) ------------------------------
@@ -807,7 +818,7 @@ namespace fortcraft { namespace proto
 	{
 		std::uint32_t seq;
 		std::uint32_t count;
-		WaterLine     list[kMaxFarObjects];
+		WaterLine     list[kMaxWaterLines];
 	};
 	static_assert(kOffWaterLines >= kOffGround + sizeof(Ground), "FortCraft protocol layout");
 	static_assert(kOffWaterLines + sizeof(WaterLines) <= kOffOverlayPixels, "FortCraft protocol layout");
@@ -823,6 +834,66 @@ namespace fortcraft { namespace proto
 	};
 	static_assert(kOffMobBackstab >= kOffWaterLines + sizeof(WaterLines), "FortCraft protocol layout");
 	static_assert(kOffMobBackstab + sizeof(MobBackstab) <= kOffOverlayPixels, "FortCraft protocol layout");
+
+	// ---- Minecraft -> TF2: an enchanting table is TF2's MvM upgrade station (v50) -------------
+	// Minecraft bumps seq when the player right-clicks an enchanting table (written after the
+	// rest): bookshelves around it (0-15, for upgrade tiers) and the table's centre (Minecraft
+	// coordinates). TF2 opens its upgrade screen; walking 6 blocks away closes it.
+	static constexpr std::uint64_t kOffUpgradeStation = 0x59000;
+	struct UpgradeStation
+	{
+		std::uint32_t seq;
+		std::int32_t  bookshelves;
+		float         x, y, z;
+		std::uint32_t pad;
+	};
+	static_assert(kOffUpgradeStation >= kOffMobBackstab + sizeof(MobBackstab), "FortCraft protocol layout");
+	static_assert(kOffUpgradeStation + sizeof(UpgradeStation) <= kOffOverlayPixels, "FortCraft protocol layout");
+	static constexpr std::uint32_t kMobHitMoneyShift = 16;
+
+	// ---- MvM money and upgrades, saved with the Minecraft world (v55) -------------------------
+	// MvmRestore (Minecraft -> TF2): what the world's save file holds, sent when the world opens
+	// (seq bumped last, never 0). TF2 sets the player's money and upgrade history from it and
+	// re-applies the upgrades. MvmState (TF2 -> Minecraft, seqlocked): the money and upgrade
+	// history now, plus which restore TF2 has applied. Minecraft only saves a state whose
+	// restoreApplied matches its last restore, so a fresh TF2 can't overwrite a save with nothing.
+	static constexpr std::uint32_t kMaxMvmUpgrades = 256;
+	struct MvmUpgrade
+	{
+		std::int32_t playerClass;  // TF2 class index
+		std::int32_t itemDef;      // item definition upgraded, or 65535 for the player itself
+		std::int32_t upgrade;      // index in TF2's MvM upgrades list
+		std::int32_t cost;         // what was paid (refunds give this back)
+	};
+	static constexpr std::uint64_t kOffMvmState = 0x59100;
+	struct MvmState
+	{
+		std::uint32_t seq;
+		std::uint32_t restoreApplied;
+		std::int32_t  currency;
+		std::uint32_t count;
+		MvmUpgrade    list[kMaxMvmUpgrades];
+	};
+	static constexpr std::uint64_t kOffMvmRestore = 0x5A200;
+	struct MvmRestore
+	{
+		std::uint32_t seq;
+		std::int32_t  currency;
+		std::uint32_t count;
+		std::uint32_t pad;
+		MvmUpgrade    list[kMaxMvmUpgrades];
+	};
+	static_assert(sizeof(MvmUpgrade) == 16, "FortCraft protocol layout");
+	static_assert(kOffMvmState >= kOffUpgradeStation + sizeof(UpgradeStation), "FortCraft protocol layout");
+	static_assert(kOffMvmRestore >= kOffMvmState + sizeof(MvmState), "FortCraft protocol layout");
+	static_assert(kOffMvmRestore + sizeof(MvmRestore) <= kOffOverlayPixels, "FortCraft protocol layout");
+	static_assert(kOffFarObjects >= kOffMvmRestore + sizeof(MvmRestore), "FortCraft protocol layout");
+	// v51: MobHit source bit for money that isn't a kill (Minecraft's other XP: ores, furnaces,
+	// breeding, fishing...). Only the cash drop happens: no hit number, no on-kill effects.
+	static constexpr std::uint32_t kMobHitMoneyOnly = 1u << 7;
+	// v54: one raindrop bag (the ender dragon's money, scheduled by Minecraft): x, z and y = the
+	// ground there. TF2 drops it from 8 blocks up and leaves it on that ground.
+	static constexpr std::uint32_t kMobHitMoneyLand = 1u << 8;
 
 	// Minecraft damage = TF2 damage / kDamageScale (a rocket's 90 is 18 Minecraft health, nine
 	// hearts; a zombie has 20).

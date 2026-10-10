@@ -21,10 +21,13 @@ public final class Taunts {
 	private Taunts() {
 	}
 
-	/** True while TF2's taunt menu is open or the player is taunting. */
+	/**
+	 * True while TF2's taunt menu or the Eureka Effect's teleport menu is open, or the player is
+	 * taunting: the number keys and Q go to TF2 (Q also doesn't drop the held item then).
+	 */
 	private static boolean tf2HasKeys() {
 		FortLink.Tf2Camera cam = Overlay.active() ? FortLink.readCamera() : null;
-		return cam != null && (cam.tauntMenu() || cam.taunting());
+		return cam != null && (cam.tauntMenu() || cam.taunting() || cam.eurekaMenu());
 	}
 
 	/** Once per Minecraft frame while TF2 is linked: G (not one of Minecraft's own keys). */
