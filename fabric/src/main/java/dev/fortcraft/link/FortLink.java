@@ -499,8 +499,8 @@ public final class FortLink {
 		shm.set(JAVA_FLOAT, 0x55008, x);
 		shm.set(JAVA_FLOAT, 0x5500C, y);
 		shm.set(JAVA_FLOAT, 0x55010, z);
-		shm.set(JAVA_FLOAT, 0x55014, health * 5.0f);
-		shm.set(JAVA_FLOAT, 0x55018, maxHealth * 5.0f);
+		shm.set(JAVA_FLOAT, 0x55014, health * 7.5f);
+		shm.set(JAVA_FLOAT, 0x55018, maxHealth * 7.5f);
 		putString(0x5501C, name == null ? "" : name);
 		INT.setRelease(shm, 0x55000, ((seq + 1) | 1) + 1);
 	}
