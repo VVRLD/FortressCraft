@@ -53,8 +53,15 @@ bool FortCraft_MobBeforeBlocks( const Vector &start, const Vector &end, const Ve
 // hides from `from` (TF2 units). Used by Engineer sentries.
 bool FortCraft_NearestHostileMob( const Vector &from, float flRange, Vector &target );
 
+// Minecraft's friction for the block under the player, as TF2 surface friction (1 normal, lower on
+// ice); -1 when not linked or nothing special. Used by CGameMovement::CategorizeGroundSurface.
+float FortCraft_GroundFriction();
+
 #ifndef CLIENT_DLL
-enum FortCraftShotFlags { FC_MELEE = 1, FC_CRIT = 2, FC_MINICRIT = 4, FC_HEADSHOT = 8, FC_KNIFE = 16 };
+// Bits 8-15: bleed seconds (Boston Basher, Tribalman's Shiv, ...), for Minecraft to apply to mobs.
+enum FortCraftShotFlags { FC_MELEE = 1, FC_CRIT = 2, FC_MINICRIT = 4, FC_HEADSHOT = 8, FC_KNIFE = 16, FC_SENTRY = 32,
+	FC_BLEED_SHIFT = 8 };
+
 enum FortCraftTool { FC_GENERIC = 0, FC_SHOVEL = 1, FC_PICKAXE = 2, FC_AXE = 3, FC_BLADE = 4 };
 class CTFWeaponBase;
 // TF2 server: report a bullet / melee swing to Minecraft (TF2 units and damage).

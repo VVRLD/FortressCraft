@@ -72,16 +72,18 @@ index f1ee425..153aa65 100644
  		"zpos"				"6"
  		"wide"				"60"
 diff --git a/src/game/client/c_baseanimating.cpp b/src/game/client/c_baseanimating.cpp
-index d365dc1..c5b2bf7 100644
+index d365dc1..5628aaf 100644
 --- a/src/game/client/c_baseanimating.cpp
 +++ b/src/game/client/c_baseanimating.cpp
-@@ -3385,9 +3385,47 @@ private:
+@@ -3385,9 +3385,77 @@ private:
  // Purpose: Draws the object
  // Input  : flags - 
  //-----------------------------------------------------------------------------
 +#ifdef TF_CLIENT_DLL
 +bool FortCraft_IsLinked();     // fortcraft_link.cpp
 +float FortCraft_WorldLight();
++bool FortCraft_WaterLine( C_BaseEntity *pEnt, float &flSurfaceZ );
++bool FortCraft_PointInWater( const Vector &pos );  // fortcraft_collision.cpp
 +
 +// FortCraft: TF2's map light doesn't reach Minecraft's world, so while linked every model is lit
 +// by an even ambient light as bright as Minecraft's world at the player (bright by day, dark at
@@ -89,28 +91,56 @@ index d365dc1..c5b2bf7 100644
 +class CFortCraftModelLighting
 +{
 +public:
-+	CFortCraftModelLighting()
++	CFortCraftModelLighting( C_BaseEntity *pEnt )
 +	{
 +		m_bActive = FortCraft_IsLinked() && g_pStudioRender && modelrender;
 +		if ( !m_bActive )
 +			return;
-+		const float l = FortCraft_WorldLight();
++		m_flLight = FortCraft_WorldLight();
++		m_flOldBlend = render->GetBlend();
++		m_bWater = FortCraft_WaterLine( pEnt, m_flWaterZ );
++		modelrender->SuppressEngineLighting( true );
++		Apply( false, false );
++	}
++	// Under Minecraft water: dimmer and blue, as Minecraft draws things under water. Seen through
++	// the water's surface (from the other side of it): half see-through too. TF2's picture is
++	// laid over Minecraft's, so Minecraft's water surface was drawn under the object, not over it;
++	// half transparent in TF2's picture, the water texture behind it shows through (Alex,
++	// 2026-10-10). With the camera under water there is no surface in between, so things under
++	// water stay solid (they were ghostly), and things above the surface go see-through instead.
++	void Apply( bool bUnderwater, bool bThroughSurface )
++	{
++		const float l = m_flLight;
++		const Vector tint = bUnderwater ? Vector( 0.35f, 0.55f, 0.95f ) : Vector( 1.0f, 1.0f, 1.0f );
++		render->SetBlend( bThroughSurface ? m_flOldBlend * 0.5f : m_flOldBlend );
 +		Vector cube[ 6 ];  // +x -x +y -y +z(top) -z(bottom)
 +		for ( int i = 0; i < 4; ++i )
-+			cube[ i ].Init( 0.85f * l, 0.85f * l, 0.85f * l );
-+		cube[ 4 ].Init( l, l, l );
-+		cube[ 5 ].Init( 0.6f * l, 0.6f * l, 0.6f * l );
-+		modelrender->SuppressEngineLighting( true );
++			cube[ i ] = tint * ( 0.85f * l );
++		cube[ 4 ] = tint * l;
++		cube[ 5 ] = tint * ( 0.6f * l );
 +		g_pStudioRender->SetAmbientLightColors( cube );
 +		g_pStudioRender->SetLocalLights( 0, NULL );
++	}
++	// True if the model reaches into Minecraft water; flZ is the surface's TF2 height.
++	bool InWater( float &flZ ) const
++	{
++		flZ = m_flWaterZ;
++		return m_bActive && m_bWater;
 +	}
 +	~CFortCraftModelLighting()
 +	{
 +		if ( m_bActive )
++		{
 +			modelrender->SuppressEngineLighting( false );
++			render->SetBlend( m_flOldBlend );
++		}
 +	}
 +private:
 +	bool m_bActive;
++	bool m_bWater;
++	float m_flLight;
++	float m_flOldBlend;
++	float m_flWaterZ;
 +};
 +#endif
 +
@@ -118,11 +148,54 @@ index d365dc1..c5b2bf7 100644
  {
  	VPROF( "C_BaseAnimating::InternalDrawModel" );
 +#ifdef TF_CLIENT_DLL
-+	CFortCraftModelLighting fortcraftLighting;
++	CFortCraftModelLighting fortcraftLighting( this );
 +#endif
  
  #ifdef TF_CLIENT_DLL
  	MaterialOverrideRestore overrideRestore;
+@@ -3509,6 +3577,42 @@ int C_BaseAnimating::InternalDrawModel( int flags )
+ 		}
+ 	}
+ 
++#ifdef TF_CLIENT_DLL
++	// Partly in Minecraft water: draw it twice, cut at the water surface, the part above as
++	// normal and the part below underwater-looking (see CFortCraftModelLighting::Apply).
++	float flWaterZ;
++	if ( bMarkAsDrawn && ( pInfo->flags & STUDIO_RENDER ) && fortcraftLighting.InWater( flWaterZ ) )
++	{
++		// Camera in water (Minecraft's swimming water boxes) and below this surface.
++		const bool bCameraUnder = CurrentViewOrigin().z < flWaterZ && FortCraft_PointInWater( CurrentViewOrigin() );
++		CMatRenderContextPtr pRenderContext( materials );
++		float above[ 4 ] = { 0.0f, 0.0f, 1.0f, flWaterZ };
++		float below[ 4 ] = { 0.0f, 0.0f, -1.0f, -flWaterZ };
++		for ( int part = 0; part < 2; ++part )
++		{
++			const bool bUnder = part == 1;
++			const bool bSeeThrough = bUnder != bCameraUnder;
++			pRenderContext->PushCustomClipPlane( bUnder ? below : above );
++			if ( bSeeThrough )
++			{
++				// Depth first, no colour: then the see-through pass only colours the nearest
++				// surface. Without it the model's far side and inner parts showed through it
++				// (Alex's wading Soldier, 2026-10-10).
++				fortcraftLighting.Apply( bUnder, false );
++				pRenderContext->OverrideColorWriteEnable( true, false );
++				pRenderContext->OverrideAlphaWriteEnable( true, false );
++				DoInternalDrawModel( pInfo, &state, pBoneToWorld );
++				pRenderContext->OverrideColorWriteEnable( false, true );
++				pRenderContext->OverrideAlphaWriteEnable( false, true );
++			}
++			fortcraftLighting.Apply( bUnder, bSeeThrough );
++			DoInternalDrawModel( pInfo, &state, pBoneToWorld );
++			pRenderContext->PopCustomClipPlane();
++		}
++		fortcraftLighting.Apply( false, false );
++	}
++	else
++#endif
+ 	DoInternalDrawModel( pInfo, ( bMarkAsDrawn && ( pInfo->flags & STUDIO_RENDER ) ) ? &state : NULL, pBoneToWorld );
+ 
+ 	OnPostInternalDrawModel( pInfo );
 diff --git a/src/game/client/c_baseentity.cpp b/src/game/client/c_baseentity.cpp
 index adbd391..8e86c5c 100644
 --- a/src/game/client/c_baseentity.cpp
@@ -1122,7 +1195,7 @@ index c7a9e93..8bdedb0 100644
  
  	// Only make a shadow if the object doesn't use vphysics
 diff --git a/src/game/server/tf/tf_obj_sentrygun.cpp b/src/game/server/tf/tf_obj_sentrygun.cpp
-index aa261cb..3e606ed 100644
+index aa261cb..b20f4a6 100644
 --- a/src/game/server/tf/tf_obj_sentrygun.cpp
 +++ b/src/game/server/tf/tf_obj_sentrygun.cpp
 @@ -25,6 +25,7 @@
@@ -1264,7 +1337,7 @@ index aa261cb..3e606ed 100644
 +	CALL_ATTRIB_HOOK_FLOAT_ON_OTHER( GetOwner(), info.m_flDamage, mult_engy_sentry_damage );
 +	FireBullets( info );
 +	// At least 4 blocks: shorter shots count as melee swings in Minecraft's shot reader.
-+	FortCraft_ReportShot( vecSrc, vecAimDir, MAX( flDist + 100.0f, 200.0f ), info.m_flDamage );
++	FortCraft_ReportShot( vecSrc, vecAimDir, MAX( flDist + 100.0f, 200.0f ), info.m_flDamage, FC_SENTRY );  // FortCraft: its mob kills count
 +
 +	CEffectData data;
 +	data.m_nEntIndex = entindex();
@@ -1675,10 +1748,34 @@ index 867c6f9..520c40c 100644
  	const char* pStyleImage = NULL;
  	if ( GetStaticData()->GetNumStyles() )
 diff --git a/src/game/shared/gamemovement.cpp b/src/game/shared/gamemovement.cpp
-index 4b79f72..9bc8cd0 100644
+index 4b79f72..eb610d3 100644
 --- a/src/game/shared/gamemovement.cpp
 +++ b/src/game/shared/gamemovement.cpp
-@@ -1210,6 +1210,17 @@ void CGameMovement::FinishMove( void )
+@@ -22,6 +22,9 @@
+ 	#include "hl_movedata.h"
+ #endif
+ 
++#if defined( TF_DLL ) || defined( TF_CLIENT_DLL )  // FortCraft (TF2 only; HL2MP shares this file)
++#include "../../../../my-passthrough/tf2mod/fortcraft_collision.h"  // FortCraft
++#endif
+ // memdbgon must be the last include file in a .cpp file!!!
+ #include "tier0/memdbgon.h"
+ 
+@@ -929,6 +932,13 @@ void CGameMovement::CategorizeGroundSurface( trace_t &pm )
+ 	if ( player->m_surfaceFriction > 1.0f )
+ 		player->m_surfaceFriction = 1.0f;
+ 
++#if defined( TF_DLL ) || defined( TF_CLIENT_DLL )
++	// FortCraft: Minecraft's ice (and slime) under the player is slippery here too.
++	const float flMinecraft = FortCraft_GroundFriction();
++	if ( flMinecraft >= 0.0f )
++		player->m_surfaceFriction = flMinecraft;
++#endif
++
+ 	player->m_chTextureType = player->m_pSurfaceData->game.material;
+ }
+ 
+@@ -1210,6 +1220,17 @@ void CGameMovement::FinishMove( void )
  //-----------------------------------------------------------------------------
  void CGameMovement::DecayPunchAngle( void )
  {
@@ -1696,7 +1793,7 @@ index 4b79f72..9bc8cd0 100644
  	if ( player->m_Local.m_vecPunchAngle->LengthSqr() > 0.001 || player->m_Local.m_vecPunchAngleVel->LengthSqr() > 0.001 )
  	{
  		player->m_Local.m_vecPunchAngle += player->m_Local.m_vecPunchAngleVel * gpGlobals->frametime;
-@@ -3997,12 +4008,18 @@ void CGameMovement::PlayerRoughLandingEffects( float fvol )
+@@ -3997,12 +4018,18 @@ void CGameMovement::PlayerRoughLandingEffects( float fvol )
  
  		//
  		// Knock the screen around a little bit, temporary effect.

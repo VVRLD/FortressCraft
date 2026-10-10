@@ -14,7 +14,7 @@
 namespace fortcraft { namespace proto
 {
 	static constexpr std::uint32_t kMagic = 0x46524346;  // "FCRF"
-	static constexpr std::uint32_t kVersion = 42;
+	static constexpr std::uint32_t kVersion = 45;
 	static constexpr wchar_t       kMappingName[] = L"Local\\FortCraft_v1";
 	// Linux: a file in RAM that Minecraft creates and both sides map (same bytes as on Windows).
 	static constexpr char          kMappingPathPosix[] = "/dev/shm/FortCraft_v1";
@@ -604,7 +604,7 @@ namespace fortcraft { namespace proto
 		float         x, y, z;  // Minecraft coordinates
 		float         damage;   // TF2 damage points
 		std::uint32_t killed;   // 1 if this hit killed it
-		std::uint32_t pad;
+		std::uint32_t source;   // the Shot flags that caused it (FC_SENTRY: the player's sentry; v43)
 	};
 	static_assert(sizeof(MobHit) == 24, "FortCraft protocol layout");
 
@@ -773,10 +773,43 @@ namespace fortcraft { namespace proto
 	{
 		std::uint32_t seq;
 		std::uint32_t count;
-		std::int32_t  ent[kMaxFarObjects];  // entity indices Minecraft can't see from its camera
+		// Entity indices Minecraft can't see from its camera. Since v44 TF2 lists near objects
+		// and its own player too, but only objects more than 10 blocks away are ever hidden.
+		std::int32_t  ent[kMaxFarObjects];
 	};
 	static_assert(kOffFarHidden >= kOffFarObjects + sizeof(FarObjects), "FortCraft protocol layout");
 	static_assert(kOffFarHidden + sizeof(FarHidden) <= kOffOverlayPixels, "FortCraft protocol layout");
+
+	// ---- Minecraft -> TF2: what the player stands on (v43) ----------------------------------
+	// Minecraft's slipperiness of the block under the player's feet (0.6 normal, 0.98 ice,
+	// 0.989 blue ice, 0.8 slime), so TF2's movement slides on ice. 0 = unknown.
+	static constexpr std::uint64_t kOffGround = 0x58B00;
+	struct Ground
+	{
+		float friction;
+		std::uint32_t pad;
+	};
+	static_assert(kOffGround >= kOffFarHidden + sizeof(FarHidden), "FortCraft protocol layout");
+	static_assert(kOffGround + sizeof(Ground) <= kOffOverlayPixels, "FortCraft protocol layout");
+
+	// ---- Minecraft -> TF2: water surfaces at TF2 objects (v45) ------------------------------
+	// For each listed FarObject that reaches into Minecraft water: the height of the water's
+	// surface above it (Minecraft y). TF2 draws the model's part below that line tinted and half
+	// see-through, so Minecraft's water shows over it (seqlocked).
+	static constexpr std::uint64_t kOffWaterLines = 0x58C00;
+	struct WaterLine
+	{
+		std::int32_t ent;       // TF2 client entity index
+		float        surfaceY;  // Minecraft y of the water surface
+	};
+	struct WaterLines
+	{
+		std::uint32_t seq;
+		std::uint32_t count;
+		WaterLine     list[kMaxFarObjects];
+	};
+	static_assert(kOffWaterLines >= kOffGround + sizeof(Ground), "FortCraft protocol layout");
+	static_assert(kOffWaterLines + sizeof(WaterLines) <= kOffOverlayPixels, "FortCraft protocol layout");
 
 	// Minecraft damage = TF2 damage / kDamageScale (a rocket's 90 is 18 Minecraft health, nine
 	// hearts; a zombie has 20).

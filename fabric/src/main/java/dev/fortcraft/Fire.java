@@ -48,6 +48,7 @@ public final class Fire {
 					ServerLevel level = server.getLevel(dimension);
 					if (level != null) {
 						extinguish(level, at, reach);
+						blowAway(level, at, reach, server.getPlayerList().getPlayer(playerId));
 					}
 				});
 				continue;
@@ -78,6 +79,32 @@ public final class Fire {
 		if (logged < 20 && (mobs > 0 || lit != null)) {
 			logged++;
 			FortCraft.LOG.info("FortCraft: TF2 fire at {} set {} mobs on fire{}", at, mobs, lit != null ? ", lit fire at " + lit : "");
+		}
+	}
+
+	/**
+	 * The Pyro's airblast also shoves mobs, as it shoves TF2 players: every mob within reach is
+	 * pushed away from the player and up a little (Alex's tester: airblast did nothing to mobs).
+	 */
+	private static void blowAway(ServerLevel level, Vec3 at, double reach, Object player) {
+		if (!(player instanceof net.minecraft.world.entity.Entity pyro)) {
+			return;
+		}
+		int pushed = 0;
+		for (LivingEntity e : level.getEntitiesOfClass(LivingEntity.class, new AABB(at, at).inflate(reach),
+			e -> e.isAlive() && e != pyro && e.position().distanceTo(at) <= reach)) {
+			Vec3 away = e.position().subtract(pyro.position());
+			away = new Vec3(away.x, 0, away.z);
+			if (away.lengthSqr() < 1.0e-4) {
+				away = pyro.getLookAngle();
+			}
+			away = away.normalize();
+			e.push(away.x * 1.6, 0.45, away.z * 1.6);
+			e.needsSync = true;  // send the new velocity to the client now
+			pushed++;
+		}
+		if (pushed > 0) {
+			FortCraft.LOG.info("FortCraft: airblast pushed {} mobs", pushed);
 		}
 	}
 

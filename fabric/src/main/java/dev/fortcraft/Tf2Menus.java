@@ -76,7 +76,9 @@ public final class Tf2Menus {
 		if (cam == null) {
 			return;
 		}
+		refocus(minecraft);
 		if (cam.uiOpen() && free) {
+			refocusSoon();
 			minecraft.gui.setScreen(new PassthroughScreen());
 			FortCraft.LOG.info("FortCraft: TF2 menu open; mouse and keys go to TF2");
 		} else if (screen instanceof PassthroughScreen s) {
@@ -90,11 +92,32 @@ public final class Tf2Menus {
 				s.closedByTf2 = true;
 				minecraft.gui.setScreen(null);
 				FortCraft.LOG.info("FortCraft: TF2 menu closed; back to playing");
+				refocusSoon();
 			}
 		}
 	}
 
 	private static final boolean[] wasDown = new boolean[6];
+
+	/**
+	 * Linux: TF2's hidden window can take the keyboard when its menus open or close (the tester
+	 * had to click Minecraft to get control back, and sometimes couldn't type in the console).
+	 * For a few seconds after such a change, give the focus back to Minecraft's window if it lost it.
+	 */
+	private static long refocusUntil;
+
+	static void refocusSoon() {
+		refocusUntil = System.nanoTime() + 3_000_000_000L;
+	}
+
+	private static void refocus(Minecraft minecraft) {
+		if (System.getProperty("os.name", "").startsWith("Windows") || System.nanoTime() > refocusUntil || minecraft.isWindowActive()) {
+			return;
+		}
+		org.lwjgl.sdl.SDLVideo.SDL_RaiseWindow(minecraft.getWindow().handle());  // Minecraft 26 windows are SDL3
+		refocusUntil = 0;
+		FortCraft.LOG.info("FortCraft: gave the keyboard back to Minecraft's window");
+	}
 	private static long consoleToggledAt;
 
 	private static boolean edge(boolean down, int key) {
@@ -238,8 +261,9 @@ public final class Tf2Menus {
 
 		@Override
 		public boolean charTyped(CharacterEvent event) {
-			if (System.nanoTime() - consoleToggledAt < 150_000_000L) {
-				return true;  // the console key's own character (`) must not land in the console
+			int c = event.codepoint();
+			if ((c == '`' || c == '~') && System.nanoTime() - consoleToggledAt < 150_000_000L) {
+				return true;  // the console key's own character must not land in the console
 			}
 			FortLink.sendUiEvent(FortLink.UI_CHAR, event.codepoint(), 0, 0);
 			return true;

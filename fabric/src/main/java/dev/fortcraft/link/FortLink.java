@@ -23,7 +23,7 @@ import java.util.Locale;
  */
 public final class FortLink {
 	public static final int MAGIC = 0x46524346;  // "FCRF"
-	public static final int VERSION = 42;
+	public static final int VERSION = 45;
 	/** Windows: a named page-file mapping. Linux: a file in /dev/shm (RAM), which TF2 maps too. */
 	public static final boolean WINDOWS = System.getProperty("os.name", "").toLowerCase(Locale.ROOT).startsWith("windows");
 	public static final String NAME = System.getenv().getOrDefault("FORTCRAFT_LINK", WINDOWS ? "Local\\FortCraft_v1" : "/dev/shm/FortCraft_v1");
@@ -280,6 +280,11 @@ public final class FortLink {
 
 	// MobHits @0x53800 (Minecraft -> TF2): count, pad, then a ring of 32 x (x, y, z, damage, killed, pad).
 	public static synchronized void writeMobHit(double x, double y, double z, float tf2Damage, boolean killed) {
+		writeMobHit(x, y, z, tf2Damage, killed, 0);
+	}
+
+	/** source: the TF2 shot flags behind the hit (CombatRules.SENTRY etc.), for TF2's own bookkeeping. */
+	public static synchronized void writeMobHit(double x, double y, double z, float tf2Damage, boolean killed, int source) {
 		if (shm == null) {
 			return;
 		}
@@ -290,6 +295,7 @@ public final class FortLink {
 		shm.set(JAVA_FLOAT, o + 8, (float) z);
 		shm.set(JAVA_FLOAT, o + 12, tf2Damage);
 		shm.set(JAVA_INT, o + 16, killed ? 1 : 0);
+		shm.set(JAVA_INT, o + 20, source);
 		INT.setRelease(shm, 0x53800, count + 1);
 	}
 
@@ -645,6 +651,29 @@ public final class FortLink {
 			shm.set(JAVA_INT, 0x58908 + i * 4L, ents[i]);
 		}
 		INT.setRelease(shm, 0x58900, ((seq + 1) | 1) + 1);  // even: done
+	}
+
+	/** WaterLines @0x58C00 (v45): seq, count, then {ent, Minecraft y of the water surface}. */
+	public static void writeWaterLines(int[] ents, float[] surfaceY, int count) {
+		if (shm == null) {
+			return;
+		}
+		count = Math.min(count, 64);
+		int seq = shm.get(JAVA_INT, 0x58C00);
+		INT.setRelease(shm, 0x58C00, (seq + 1) | 1);  // odd: writing
+		shm.set(JAVA_INT, 0x58C04, count);
+		for (int i = 0; i < count; i++) {
+			shm.set(JAVA_INT, 0x58C08 + i * 8L, ents[i]);
+			shm.set(JAVA_FLOAT, 0x58C0C + i * 8L, surfaceY[i]);
+		}
+		INT.setRelease(shm, 0x58C00, ((seq + 1) | 1) + 1);  // even: done
+	}
+
+	/** Ground @0x58B00: Minecraft's friction for the block under the player (0.6 normal, 0.98 ice). */
+	public static void writeGroundFriction(float friction) {
+		if (shm != null) {
+			shm.set(JAVA_FLOAT, 0x58B00, friction);
+		}
 	}
 
 	public static int packUseResult() {

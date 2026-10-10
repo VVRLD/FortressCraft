@@ -2,6 +2,15 @@ package dev.fortcraft;
 
 /** Pure rules shared by gameplay and the standalone numeric checks. */
 public final class CombatRules {
+	/** The player's sentry fired it (TF2 counts its mob kills). */
+	public static final int SENTRY = 32;
+	public static final int BLEED_SHIFT = 8;
+
+	/** Seconds of bleeding the weapon causes (Boston Basher...), 0 for none. */
+	public static int bleedSeconds(int flags) {
+		return (flags >>> BLEED_SHIFT) & 0xFF;
+	}
+
 	public static final int MELEE = 1, CRIT = 2, MINI = 4, HEADSHOT = 8, KNIFE = 16;
 	public static final int GENERIC = 0, SHOVEL = 1, PICKAXE = 2, AXE = 3, BLADE = 4;
 	private CombatRules() { }

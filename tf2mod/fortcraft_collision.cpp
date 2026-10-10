@@ -16,6 +16,7 @@
 #include "tf_weaponbase.h"
 #include "tf_weapon_sniperrifle.h"
 #include "tf_player.h"
+#include "tf_obj.h"
 #endif
 
 // memdbgon must be the last include file in a .cpp file!!!
@@ -237,6 +238,19 @@ bool FortCraft_Active()
 {
 	Refresh();
 	return s_bActive;
+}
+
+float FortCraft_GroundFriction()
+{
+	Refresh();
+	if ( !s_bActive || !s_pShm )
+		return -1.0f;
+	const float mc = ( (const proto::Ground *)( s_pShm + proto::kOffGround ) )->friction;
+	if ( mc <= 0.0f || fabsf( mc - 0.6f ) < 0.01f )
+		return -1.0f;  // unknown, or an ordinary block
+	// Minecraft keeps (friction x 0.91) of its speed each tick: 0.6 normal, 0.98 ice. Map the part
+	// it loses onto TF2's surface friction (1 = normal), keeping some control on ice as Minecraft does.
+	return clamp( ( 1.0f - mc ) / 0.4f, 0.15f, 1.0f );
 }
 
 bool FortCraft_HostCreative()
@@ -598,6 +612,10 @@ void FortCraft_ReportWeaponShot( CTFWeaponBase *weapon, const Vector &src, const
 		const int id = weapon->GetWeaponID();
 		CTFPlayer *owner = weapon->GetTFPlayerOwner();
 		if ( weapon->IsCurrentAttackACrit() || ( owner && owner->m_Shared.IsCritBoosted() ) ) flags |= FC_CRIT;
+		float flBleed = 0.0f;  // Boston Basher, Tribalman's Shiv, Southern Hospitality...
+		CALL_ATTRIB_HOOK_FLOAT_ON_OTHER( weapon, flBleed, bleeding_duration );
+		if ( flBleed > 0.0f )
+			flags |= (unsigned int)MIN( 255, (int)ceilf( flBleed ) ) << FC_BLEED_SHIFT;
 		if ( melee )
 		{
 			const int item = weapon->GetAttributeContainer()->GetItem()->GetItemDefIndex();
@@ -998,6 +1016,71 @@ static void ApplySupplyPack( CTFPlayer *pPlayer )
 		request, use.kind, ok ? 1 : 0, pPlayer->GetHealth(), pPlayer->GetMaxHealth() );
 }
 
+#ifndef CLIENT_DLL
+// Minecraft's confirmed hits on mobs, on TF2's server: what TF2 normally does when you damage or
+// kill something. Mobs aren't TF2 entities, so TF2 never saw these: sentry kill counts (and with
+// them Frontier Justice's revenge crits), Baby Face's Blaster boost, Soda Popper hype.
+static uint32_t s_nServerMobHitsSeen = 0xFFFFFFFF;
+static void ServerMobHits( CTFPlayer *pPlayer )
+{
+	const proto::MobHits &hits = *(const proto::MobHits *)( s_pShm + proto::kOffMobHits );
+	const uint32_t count = *(volatile const uint32_t *)&hits.count;
+	if ( s_nServerMobHitsSeen == 0xFFFFFFFF || count < s_nServerMobHitsSeen || count - s_nServerMobHitsSeen > proto::kMaxMobHits )
+		s_nServerMobHitsSeen = count;
+	for ( ; s_nServerMobHitsSeen != count; ++s_nServerMobHitsSeen )
+	{
+		const proto::MobHit &hit = hits.ring[ s_nServerMobHitsSeen % proto::kMaxMobHits ];
+		if ( hit.source & FC_SENTRY )
+		{
+			if ( hit.killed != 1 )
+				continue;
+			for ( int i = 0; i < pPlayer->GetObjectCount(); ++i )
+			{
+				CBaseObject *pObj = pPlayer->GetObject( i );
+				if ( pObj && pObj->GetType() == OBJ_SENTRYGUN && !pObj->IsDying() )
+				{
+					pObj->IncrementKills();
+					Msg( "FortCraft: sentry killed a Minecraft mob (%d kills)\n", pObj->GetKills() );
+					break;
+				}
+			}
+			continue;
+		}
+		// Baby Face's Blaster: boost from damage dealt (as CTFWeaponBase::ApplyOnHitAttributes).
+		int iBoostOnDamage = 0;
+		CALL_ATTRIB_HOOK_INT_ON_OTHER( pPlayer, iBoostOnDamage, boost_on_damage );
+		if ( iBoostOnDamage && hit.damage > 0.0f )
+		{
+			static ConVarRef s_PepMax( "tf_scout_hype_pep_max" ), s_PepMinDamage( "tf_scout_hype_pep_min_damage" ), s_PepMod( "tf_scout_hype_pep_mod" );
+			const float flMod = s_PepMod.IsValid() && s_PepMod.GetFloat() > 0.0f ? s_PepMod.GetFloat() : 1.0f;
+			const float flHype = MIN( s_PepMax.IsValid() ? s_PepMax.GetFloat() : 99.0f,
+				pPlayer->m_Shared.GetScoutHypeMeter() + MAX( s_PepMinDamage.IsValid() ? s_PepMinDamage.GetFloat() : 10.0f, hit.damage ) / flMod );
+			pPlayer->m_Shared.SetScoutHypeMeter( flHype );
+			pPlayer->TeamFortress_SetSpeed();
+		}
+		CTFWeaponBase *pWeapon = pPlayer->GetActiveTFWeapon();
+		if ( pWeapon && hit.damage > 0.0f )
+		{
+			int iRageOnHit = 0;  // Phlogistinator and friends
+			CALL_ATTRIB_HOOK_INT_ON_OTHER( pWeapon, iRageOnHit, rage_on_hit );
+			if ( iRageOnHit && ( pPlayer->IsPlayerClass( TF_CLASS_SOLDIER ) || pPlayer->IsPlayerClass( TF_CLASS_PYRO ) ) )
+				pPlayer->m_Shared.ModifyRage( iRageOnHit );
+			int iHealthOnHit = 0;  // Black Box, Blutsauger...
+			CALL_ATTRIB_HOOK_INT_ON_OTHER( pWeapon, iHealthOnHit, add_onhit_addhealth );
+			if ( iHealthOnHit > 0 )
+				pPlayer->TakeHealth( iHealthOnHit, DMG_GENERIC );
+		}
+		int iHypeOnDamage = 0;
+		CALL_ATTRIB_HOOK_INT_ON_OTHER( pPlayer, iHypeOnDamage, hype_on_damage );
+		if ( iHypeOnDamage && hit.damage > 0.0f )
+		{
+			const float flHype = RemapValClamped( hit.damage, 1.f, 200.f, 1.f, 50.f );
+			pPlayer->m_Shared.SetScoutHypeMeter( MIN( 100.f, flHype + pPlayer->m_Shared.GetScoutHypeMeter() ) );
+		}
+	}
+}
+#endif
+
 void FortCraft_ApplyMinecraftDamage( CBaseEntity *pPlayer )
 {
 	// This existing server tick also retires the Medic presentation proxy when
@@ -1007,6 +1090,9 @@ void FortCraft_ApplyMinecraftDamage( CBaseEntity *pPlayer )
 	if ( !pPlayer || !AnchorTF2( anchor ) )
 		return;
 	ApplySupplyPack( static_cast< CTFPlayer * >( pPlayer ) );
+#ifndef CLIENT_DLL
+	ServerMobHits( static_cast< CTFPlayer * >( pPlayer ) );
+#endif
 	if ( !pPlayer->IsAlive() )
 	{
 		s_nHurtsSeen = ( (const proto::Hurts *)( s_pShm + proto::kOffHurts ) )->count;

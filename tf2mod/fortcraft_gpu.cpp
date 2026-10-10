@@ -358,7 +358,9 @@ static const char kShaderSource[] =
 	"	float3 w = tex2D( White, uv ).rgb;\n"
 	// over black = colour * alpha; over white = colour * alpha + (1 - alpha)
 	"	float alpha = saturate( 1.0 - max( w.r - b.r, max( w.g - b.g, w.b - b.b ) ) );\n"
-	"	float3 colour = alpha > 0.002 ? saturate( b / alpha ) : float3( 0, 0, 0 );\n"
+	// Premultiplied: the colour over black IS colour * alpha. Dividing by alpha (straight alpha)
+	// turned glowing, additive effects (unusuals, muzzle flashes) white and faint (2026-10-10).
+	"	float3 colour = saturate( b );\n"
 	"	return float4( colour, alpha );\n"
 	"}\n";
 

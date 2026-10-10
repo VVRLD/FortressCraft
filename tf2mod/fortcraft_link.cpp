@@ -872,7 +872,9 @@ static void CombinePair( const unsigned char *pBlack, const unsigned char *pWhit
 			s_Inverse[ a ] = ( 255u << 16 ) / a;
 	}
 
-	// Input is the GPU's order (B, G, R, unused); output is R, G, B, A for Minecraft.
+	// Input is the GPU's order (B, G, R, unused); output is R, G, B, A for Minecraft, in
+	// premultiplied alpha: the colour over black is already colour * alpha. (Straight alpha,
+	// dividing by alpha, turned glowing additive effects white and faint.)
 	// over black = colour * alpha; over white = colour * alpha + (1 - alpha).
 	const uint32_t *pB = (const uint32_t *)pBlack, *pW = (const uint32_t *)pWhite;
 	const int nPixels = width * height;
@@ -897,9 +899,7 @@ static void CombinePair( const unsigned char *pBlack, const unsigned char *pWhit
 			pDest32[ i ] = 0;
 			continue;
 		}
-		unsigned int inv = s_Inverse[ alpha ];
-		unsigned int r = MIN( 255u, ( br * inv ) >> 16 ), g = MIN( 255u, ( bg * inv ) >> 16 ), bl = MIN( 255u, ( bb * inv ) >> 16 );
-		pDest32[ i ] = r | ( g << 8 ) | ( bl << 16 ) | ( (uint32_t)alpha << 24 );
+		pDest32[ i ] = br | ( bg << 8 ) | ( bb << 16 ) | ( (uint32_t)alpha << 24 );
 	}
 
 	oh.width = width;
@@ -1322,6 +1322,8 @@ static void AutoJoin( C_TFPlayer *pPlayer )
 	{
 		s_bRulesSet = true;
 		engine->ClientCmd_Unrestricted( "mp_waitingforplayers_time 0; mp_waitingforplayers_cancel 1; mp_timelimit 0; mp_winlimit 0; mp_maxrounds 0\n" );
+		// Weapons reload by themselves (R is Minecraft's inventory; TF2's reload key is optional).
+		engine->ClientCmd_Unrestricted( "cl_autoreload 1\n" );
 		// Respawn straight away after dying (TF2 made Alex wait 16 seconds).
 		engine->ClientCmd_Unrestricted( "mp_disable_respawn_times 1; mp_respawnwavetime 0\n" );
 
@@ -1344,6 +1346,12 @@ static void AutoJoin( C_TFPlayer *pPlayer )
 			// No full-screen TF2 effects over Minecraft (burning, Jarate, Bonk, Ubercharge tints;
 			// strafing view roll).
 			" r_drawscreenoverlay 0; cl_rollangle 0;"
+			// No environment-map reflections: TF2's map has no cubemaps here, so shiny weapons
+			// reflected a bright default one and glowed white (Alex's minigun, 2026-10-10).
+			" mat_specular 0;"
+			// No rim light either: TF2 brightens model edges from the light around them, which
+			// left a white sheen along weapons (minigun barrel, 2026-10-10).
+			" r_rimlight 0;"
 			" mat_antialias 0; mat_forceaniso 0; mat_trilinear 0; mat_reducefillrate 1; cl_detaildist 0;"
 			" cl_ragdoll_physics_enable 0; cl_phys_props_enable 0; tf_particles_disable_weather 1\n" );
 
@@ -1415,6 +1423,29 @@ static bool FarCandidate( C_BaseEntity *pEnt, C_BasePlayer *pLocal )
 	return modelinfo->GetModelType( pEnt->GetModel() ) != mod_brush;
 }
 
+// From Minecraft (v45): TF2 entity index -> TF2 height (z) of the Minecraft water surface there.
+static CUtlMap< int, float > s_WaterLines( DefLessFunc( int ) );
+static void ReadWaterLines()
+{
+	const proto::WaterLines &w = At< proto::WaterLines >( proto::kOffWaterLines );
+	const uint32_t seq = *(volatile const uint32_t *)&w.seq;
+	if ( seq & 1 )
+		return;  // mid-write: keep last frame's
+	int ents[ proto::kMaxFarObjects ];
+	float ys[ proto::kMaxFarObjects ];
+	const uint32_t n = MIN( w.count, proto::kMaxFarObjects );
+	for ( uint32_t i = 0; i < n; ++i )
+	{
+		ents[ i ] = w.list[ i ].ent;
+		ys[ i ] = w.list[ i ].surfaceY;
+	}
+	if ( *(volatile const uint32_t *)&w.seq != seq )
+		return;
+	s_WaterLines.RemoveAll();
+	for ( uint32_t i = 0; i < n; ++i )
+		s_WaterLines.InsertOrReplace( ents[ i ], ( ys[ i ] - (float)MC_FLOOR_Y ) * UNITS_PER_BLOCK + s_vecOrigin.z );
+}
+
 static void UpdateFarOcclusion( C_TFPlayer *pPlayer )
 {
 	const Vector eye = pPlayer->EyePosition();
@@ -1424,12 +1455,17 @@ static void UpdateFarOcclusion( C_TFPlayer *pPlayer )
 	{
 		if ( !FarCandidate( pEnt, pPlayer ) )
 			continue;
-		const float flDist = ( pEnt->WorldSpaceCenter() - eye ).Length();
-		if ( flDist > kFarObjectUnits )
-		{
-			Candidate c = { pEnt, flDist };
-			found.AddToTail( c );
-		}
+		// All of them (v44): Minecraft also says which are in its water. It only hides those
+		// beyond kFarObjectUnits; nearer ones are covered by the depth boxes.
+		Candidate c = { pEnt, ( pEnt->WorldSpaceCenter() - eye ).Length() };
+		found.AddToTail( c );
+	}
+	// Our own player too, for its water line when it's seen (taunts, third person). Never hidden:
+	// the hiding below skips it.
+	if ( pPlayer->GetModel() )
+	{
+		Candidate c = { pPlayer, 0.0f };
+		found.AddToTail( c );
 	}
 	// Nearest first, if there are more than fit.
 	for ( int i = 1; i < found.Count(); ++i )
@@ -1459,6 +1495,7 @@ static void UpdateFarOcclusion( C_TFPlayer *pPlayer )
 	const uint32_t aseq = *(volatile const uint32_t *)&a.seq;
 	if ( aseq & 1 )
 		return;
+	ReadWaterLines();
 	int hidden[ proto::kMaxFarObjects ];
 	const uint32_t count = MIN( a.count, proto::kMaxFarObjects );
 	for ( uint32_t i = 0; i < count; ++i )
@@ -1491,8 +1528,33 @@ static void UpdateFarOcclusion( C_TFPlayer *pPlayer )
 	if ( Plat_FloatTime() > s_flNextLog && ( n > 0 || s_FarHiddenByUs.Count() > 0 ) )
 	{
 		s_flNextLog = Plat_FloatTime() + 5.0;
-		PerfLog( "FortCraft far objects: %u beyond the block depth layer, %d hidden behind Minecraft blocks\n", n, s_FarHiddenByUs.Count() );
+		PerfLog( "FortCraft objects: %u listed, %d hidden behind Minecraft blocks, %u in Minecraft water\n", n, s_FarHiddenByUs.Count(), s_WaterLines.Count() );
+		// Whether the no-shine settings took (both were silently ignored once).
+		ConVarRef specular( "mat_specular" ), rimlight( "r_rimlight" );
+		PerfLog( "FortCraft shine: mat_specular %s, r_rimlight %s\n", specular.IsValid() ? specular.GetString() : "missing",
+			rimlight.IsValid() ? rimlight.GetString() : "missing" );
 	}
+}
+
+// TF2's picture is laid over Minecraft's, so Minecraft's water never covered TF2 objects in it:
+// a sticky on a lake bed or a player wading looked dry. Asked by the SDK's model drawing
+// (c_baseanimating.cpp) for each model: the TF2 height of the Minecraft water surface at it, if
+// it reaches into water. Hats, weapons and other attachments use their wearer's.
+bool FortCraft_WaterLine( C_BaseEntity *pEnt, float &flSurfaceZ )
+{
+	if ( !pEnt || !s_bLinked || s_WaterLines.Count() == 0 )
+		return false;
+	C_BaseEntity *pRoot = pEnt->GetRootMoveParent();
+	if ( !pRoot )
+		return false;
+	C_BaseAnimating *pAnim = pEnt->GetBaseAnimating(), *pRootAnim = pRoot->GetBaseAnimating();
+	if ( ( pAnim && pAnim->IsViewModel() ) || ( pRootAnim && pRootAnim->IsViewModel() ) )
+		return false;  // the first-person weapon never
+	unsigned short i = s_WaterLines.Find( pRoot->entindex() );
+	if ( i == s_WaterLines.InvalidIndex() )
+		return false;
+	flSurfaceZ = s_WaterLines[ i ];
+	return true;
 }
 
 // Projectiles in flight, so Minecraft can show them.

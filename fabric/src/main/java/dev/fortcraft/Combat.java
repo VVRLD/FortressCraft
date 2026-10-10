@@ -118,7 +118,7 @@ public final class Combat {
 		}
 		for (var hit : shotDamage.entrySet()) {
 			ShotGroup group = hit.getKey();
-			hurt(minecraft, group.target(), hit.getValue(), group.scale(), group.backstab());
+			hurt(minecraft, group.target(), hit.getValue(), group.scale(), group.backstab(), group.effects());
 		}
 
 		int ex = FortLink.explosionCount();
@@ -424,7 +424,8 @@ public final class Combat {
 
 	private static long spawnFrames;
 
-	private record ShotGroup(Entity target, float scale, boolean backstab) {
+	/** effects: the shot flags that matter after the hit (SENTRY, bleed seconds). */
+	private record ShotGroup(Entity target, float scale, boolean backstab, int effects) {
 	}
 
 	private static void shoot(Minecraft minecraft, FortLink.Shot shot,
@@ -457,7 +458,8 @@ public final class Combat {
 				&& (shot.headshotRange() <= 0 || bestDist <= shot.headshotRange()) && headHit(best, bestHit);
 			boolean backstab = melee && (shot.flags() & CombatRules.KNIFE) != 0 && behind(best, start, dir);
 			float multiplier = CombatRules.multiplier(shot.flags(), head);
-			shotDamage.merge(new ShotGroup(best, melee ? MELEE_SCALE : BULLET_SCALE, backstab), shot.damage() * multiplier, Float::sum);
+			int effects = shot.flags() & (CombatRules.SENTRY | (0xFF << CombatRules.BLEED_SHIFT));
+			shotDamage.merge(new ShotGroup(best, melee ? MELEE_SCALE : BULLET_SCALE, backstab, effects), shot.damage() * multiplier, Float::sum);
 			if (backstab || multiplier > 1) FortCraft.LOG.info("FortCraft: combat bonus={} weapon={} target={} multiplier={}",
 				backstab ? "backstab" : head ? "headshot" : multiplier == 3 ? "crit" : "mini", shot.weapon(), best.getName().getString(), multiplier);
 		} else if (melee && block.getType() == HitResult.Type.BLOCK) {
@@ -651,6 +653,11 @@ public final class Combat {
 	}
 
 	private static void hurt(Minecraft minecraft, Entity clientTarget, float tf2Damage, float scale, boolean backstab) {
+		hurt(minecraft, clientTarget, tf2Damage, scale, backstab, 0);
+	}
+
+	/** Also used by Bleed for its damage ticks. effects: SENTRY and bleed seconds from the shot. */
+	static void hurt(Minecraft minecraft, Entity clientTarget, float tf2Damage, float scale, boolean backstab, int effects) {
 		IntegratedServer server = minecraft.getSingleplayerServer();
 		if (server == null || minecraft.level == null || minecraft.player == null) {
 			return;
@@ -688,8 +695,13 @@ public final class Combat {
 			boolean damaged = hit.hurtServer(level, level.damageSources().playerAttack(attacker), applied);
 			if (damaged) {
 				var box = hit.getBoundingBox();
-				FortLink.writeMobHit(box.getCenter().x, box.maxY, box.getCenter().z, applied * scale,
-					hit instanceof EndCrystal || (target instanceof LivingEntity living && !living.isAlive()));
+				boolean killed = hit instanceof EndCrystal || (target instanceof LivingEntity living && !living.isAlive());
+				FortLink.writeMobHit(box.getCenter().x, box.maxY, box.getCenter().z, applied * scale, killed,
+					effects & CombatRules.SENTRY);
+				int bleed = CombatRules.bleedSeconds(effects);
+				if (bleed > 0 && !killed && target instanceof LivingEntity) {
+					Bleed.start(target.getId(), bleed);
+				}
 			}
 			FortCraft.LOG.info("FortCraft: TF2 hit {}{} for {} ({} TF2 damage), accepted={}",
 				target.getName().getString(), partName == null ? "" : " part " + partName,

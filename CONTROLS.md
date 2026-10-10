@@ -13,7 +13,7 @@ weapons, menus and HUD. Every key marked *rebindable* can be changed in Minecraf
 | Shift | Crouch |
 | Left mouse | Fire your TF2 weapon (melee also breaks the block you aim at) |
 | Right mouse | Use the block or mob you aim at (doors, chests, villagers, animals); otherwise your weapon's secondary fire (scope, airblast, detonate stickies, cloak, charge) |
-| R | Reload *(rebindable)* |
+| F | Minecraft's inventory *(rebindable)*. TF2 weapons reload by themselves; a manual reload key can be set in Controls. Minecraft's swap-offhand key (normally F) is unbound; set one in Controls if you need it |
 | 1-9, mouse wheel | Switch TF2 weapons |
 | G | Taunt menu; G again does your weapon's taunt; Q or G stops a taunt *(rebindable)* |
 | Z / X / C | TF2 voice menus 1 / 2 / 3; then a number key picks a line, 0 closes *(rebindable)* |
@@ -25,7 +25,7 @@ teleporter exit.
 
 | Key | What it does |
 |---|---|
-| E | Your **backpack**, opened at the page with your Minecraft items *(rebindable; while it is on E, Minecraft's own inventory screen is not)* |
+| E | Your **backpack**, opened at the page with your Minecraft items *(rebindable)* |
 | M | TF2 loadout and items (classes, weapons, cosmetics, crafting) *(rebindable)* |
 | , (comma) | Change class *(rebindable)* |
 | . (period) | Change team *(rebindable)* |

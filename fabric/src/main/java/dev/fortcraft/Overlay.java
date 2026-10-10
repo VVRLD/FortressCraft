@@ -505,9 +505,15 @@ public final class Overlay {
 		}
 	}
 
-	/** Draw it over the whole screen, smoothly scaled. Called from HudMixin in place of Minecraft's HUD. */
+	/**
+	 * Draw it over the whole screen, smoothly scaled. Called from HudMixin in place of Minecraft's
+	 * HUD. TF2 sends premultiplied alpha, so it is blended as such (no white edges or washed-out
+	 * glows).
+	 */
 	public static void draw(GuiGraphicsExtractor graphics) {
-		graphics.blit(texture.getTextureView(), RenderSystem.getSamplerCache().getClampToEdge(FilterMode.LINEAR),
-			0, 0, graphics.guiWidth(), graphics.guiHeight(), 0.0F, 1.0F, 0.0F, 1.0F);
+		((dev.fortcraft.mixin.GuiGraphicsAccessor) graphics).fortcraft$innerBlit(
+			net.minecraft.client.renderer.RenderPipelines.GUI_TEXTURED_PREMULTIPLIED_ALPHA,
+			texture.getTextureView(), RenderSystem.getSamplerCache().getClampToEdge(FilterMode.LINEAR),
+			0, 0, graphics.guiWidth(), graphics.guiHeight(), 0.0F, 1.0F, 0.0F, 1.0F, -1);
 	}
 }

@@ -123,6 +123,7 @@ public final class Puppet {
 			Fire.tick(minecraft);
 			MobsVsBuildings.tick(minecraft);
 			FarOcclusion.tick(minecraft);
+			Bleed.tick(minecraft);
 		}
 
 		if (!guestAlive) {
@@ -173,6 +174,9 @@ public final class Puppet {
 		player.yo = s.y();
 		player.zo = s.z();
 		player.resetFallDistance();
+		// What the player stands on, so TF2's movement slides on ice (protocol Ground).
+		FortLink.writeGroundFriction(minecraft.level.getBlockState(
+			net.minecraft.core.BlockPos.containing(s.x(), s.y() - 0.2, s.z())).getBlock().getFriction());
 		lastSet = new Vec3(s.x(), s.y(), s.z());
 
 		// What will actually be drawn this frame.
