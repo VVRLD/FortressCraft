@@ -1,9 +1,9 @@
 // FortCraft: TF2's player box size, shared by TF2's game rules and its push formulas.
 #pragma once
 
-// Half the width of TF2's player box: 30 units = 0.625 blocks (Valve's is 48 = 1 block). It
-// fits a 1-block gap and an open door (13/16 block = 39 units), and it is still a little wider
-// than Minecraft's player (0.6 blocks = 28.8 units). Never make it narrower than Minecraft's:
+// Half the width of TF2's player box: 30 units = 0.82 blocks (Valve's 48-unit box = 1.3 blocks). It
+// fits a 1-block gap and an open door (13/16 block = 29.7 units), and it is still a little wider
+// than Minecraft's player (0.6 blocks = 21.9 units). Never make it narrower than Minecraft's:
 // then Minecraft's box pokes into walls TF2 lets you touch, and the two games fight (the
 // 2026-10-04 door fix, 28 units, jittered at every wall).
 #define FORTCRAFT_HULL_HALF 15.0f
