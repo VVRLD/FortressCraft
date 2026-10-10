@@ -253,6 +253,14 @@ float FortCraft_GroundFriction()
 	return clamp( ( 1.0f - mc ) / 0.4f, 0.15f, 1.0f );
 }
 
+bool FortCraft_MobBackstabReady()
+{
+	Refresh();
+	if ( !s_bActive || !s_pShm )
+		return false;
+	return ( (const volatile proto::MobBackstab *)( s_pShm + proto::kOffMobBackstab ) )->ready == 1;
+}
+
 bool FortCraft_HostCreative()
 {
 	Refresh();
@@ -1046,6 +1054,10 @@ static void ServerMobHits( CTFPlayer *pPlayer )
 			}
 			continue;
 		}
+		// Mob damage raises TF2's random crit chance like damage to players does (not crit
+		// damage itself, as TF2 doesn't count that either).
+		if ( !( hit.source & FC_CRIT ) && hit.damage > 0.0f )
+			pPlayer->m_Shared.FortCraft_RecordMobDamage( hit.damage, hit.killed == 1 );
 		// Baby Face's Blaster: boost from damage dealt (as CTFWeaponBase::ApplyOnHitAttributes).
 		int iBoostOnDamage = 0;
 		CALL_ATTRIB_HOOK_INT_ON_OTHER( pPlayer, iBoostOnDamage, boost_on_damage );

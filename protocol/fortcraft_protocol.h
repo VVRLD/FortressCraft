@@ -14,7 +14,7 @@
 namespace fortcraft { namespace proto
 {
 	static constexpr std::uint32_t kMagic = 0x46524346;  // "FCRF"
-	static constexpr std::uint32_t kVersion = 45;
+	static constexpr std::uint32_t kVersion = 46;
 	static constexpr wchar_t       kMappingName[] = L"Local\\FortCraft_v1";
 	// Linux: a file in RAM that Minecraft creates and both sides map (same bytes as on Windows).
 	static constexpr char          kMappingPathPosix[] = "/dev/shm/FortCraft_v1";
@@ -171,6 +171,7 @@ namespace fortcraft { namespace proto
 		kCameraTaunting = 1u << 2,   // the player is taunting
 		kCameraUiOpen = 1u << 3,     // a TF2 menu that takes the mouse is open (class/team menu, main menu, loadout)
 		kCameraMedigun = 1u << 4,   // living Medic has a Medigun equipped; Minecraft may heal passive mobs on attack
+		kCameraCloaked = 1u << 5,   // v46: Spy cloaked (mostly invisible); Minecraft's mobs ignore the player
 	};
 
 	struct Camera
@@ -810,6 +811,18 @@ namespace fortcraft { namespace proto
 	};
 	static_assert(kOffWaterLines >= kOffGround + sizeof(Ground), "FortCraft protocol layout");
 	static_assert(kOffWaterLines + sizeof(WaterLines) <= kOffOverlayPixels, "FortCraft protocol layout");
+
+	// ---- Minecraft -> TF2: a mob's back in knife reach (v46) --------------------------------
+	// 1 while the TF2 camera aims at a Minecraft mob's back within melee reach, so the Spy's
+	// knife raises for a backstab and stabs with TF2's backstab swing.
+	static constexpr std::uint64_t kOffMobBackstab = 0x58F00;
+	struct MobBackstab
+	{
+		std::uint32_t ready;
+		std::uint32_t pad;
+	};
+	static_assert(kOffMobBackstab >= kOffWaterLines + sizeof(WaterLines), "FortCraft protocol layout");
+	static_assert(kOffMobBackstab + sizeof(MobBackstab) <= kOffOverlayPixels, "FortCraft protocol layout");
 
 	// Minecraft damage = TF2 damage / kDamageScale (a rocket's 90 is 18 Minecraft health, nine
 	// hearts; a zombie has 20).

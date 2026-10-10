@@ -67,6 +67,9 @@ public final class Combat {
 	/** True while TF2 is linked; read by ServerPlayerMixin on the server thread. */
 	public static volatile boolean linked;
 
+	/** True while the Spy is cloaked; read by PlayerMixin on the server thread (mobs ignore you). */
+	public static volatile boolean cloaked;
+
 	private static int shotsSeen = -1;
 	private static int explosionsSeen = -1;
 	private static boolean difficultySet;
@@ -93,6 +96,11 @@ public final class Combat {
 
 		sendMobBoxes(minecraft);
 		healFriendlyMob(minecraft, buttons);
+		FortLink.Tf2Camera cam = FortLink.readCamera();
+		if (cam != null) {
+			FortLink.writeMobBackstab(!cam.thirdPerson() && !cam.uiOpen() && backstabReady(minecraft, cam));
+			updateCloak(minecraft, cam.cloaked());
+		}
 		sendSpawnPoint(minecraft);
 
 		int count = FortLink.shotCount();
@@ -486,6 +494,53 @@ public final class Combat {
 		}
 	}
 
+	/** The mob TF2's knife would hit from the camera now, if its back is turned (raised knife). */
+	private static boolean backstabReady(Minecraft minecraft, FortLink.Tf2Camera cam) {
+		Vec3 start = new Vec3(cam.x(), cam.y(), cam.z());
+		Vec3 dir = Vec3.directionFromRotation(cam.pitch(), cam.yaw());
+		Vec3 end = start.add(dir.scale(MELEE_REACH));
+		HitResult block = minecraft.level.clip(new ClipContext(start, end, ClipContext.Block.COLLIDER, ClipContext.Fluid.NONE, minecraft.player));
+		double bestDist = block.getType() == HitResult.Type.MISS ? MELEE_REACH : start.distanceTo(block.getLocation());
+		Entity best = null;
+		for (Entity e : combatTargets(minecraft, new AABB(start, end).inflate(1.0))) {
+			AABB box = e.getBoundingBox().inflate(MELEE_BOX_GROW);
+			double d = box.contains(start) ? 0 : box.clip(start, end).map(start::distanceTo).orElse(Double.MAX_VALUE);
+			if (d < bestDist) {
+				bestDist = d;
+				best = e;
+			}
+		}
+		return best != null && behind(best, start, dir);
+	}
+
+	/**
+	 * Cloaked Spy: mobs drop you as a target and can't pick you again until you show (PlayerMixin).
+	 */
+	private static void updateCloak(Minecraft minecraft, boolean now) {
+		if (now == cloaked) {
+			return;
+		}
+		cloaked = now;
+		FortCraft.LOG.info("FortCraft: Spy {}", now ? "cloaked: mobs ignore you" : "visible again");
+		IntegratedServer server = minecraft.getSingleplayerServer();
+		if (!now || server == null || minecraft.player == null) {
+			return;
+		}
+		var dimension = minecraft.level.dimension();
+		UUID playerId = minecraft.player.getUUID();
+		server.execute(() -> {
+			ServerLevel level = server.getLevel(dimension);
+			ServerPlayer player = server.getPlayerList().getPlayer(playerId);
+			if (level == null || player == null) {
+				return;
+			}
+			for (net.minecraft.world.entity.Mob mob : level.getEntitiesOfClass(net.minecraft.world.entity.Mob.class,
+				player.getBoundingBox().inflate(64.0), m -> m.getTarget() == player)) {
+				mob.setTarget(null);
+			}
+		});
+	}
+
 	private static boolean headHit(Entity target, Vec3 hit) {
 		if (target instanceof EnderDragonPart part) return part.name.equals("head");
 		if (!(target instanceof LivingEntity living)) return false;
@@ -746,11 +801,15 @@ public final class Combat {
 				applied = CombatRules.backstabDamage(amount, living.getHealth(), living.getMaxHealth(), boss);
 			}
 			// Every TF2 hit counts. Minecraft ignores hits during the half second after one
-			// (unless bigger), which swallowed pistol, minigun and flame hits.
+			// (unless bigger), which swallowed SMG, pistol, minigun and flame hits. Minecraft 26
+			// keeps that in LivingEntity.damageCooldownTime (setInvulnerableTime alone missed it).
+			if (target instanceof LivingEntity living) {  // for a dragon part: its dragon
+				living.setInvulnerableTime(0);
+				living.damageCooldownTime = 0;
+			}
 			if (hit instanceof LivingEntity living) {
 				living.setInvulnerableTime(0);
-			} else if (target instanceof LivingEntity living) {
-				living.setInvulnerableTime(0);  // a dragon part: its dragon
+				living.damageCooldownTime = 0;
 			}
 			boolean damaged = hit.hurtServer(level, level.damageSources().playerAttack(attacker), applied);
 			if (damaged) {

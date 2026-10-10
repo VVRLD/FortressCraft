@@ -57,6 +57,10 @@ bool FortCraft_NearestHostileMob( const Vector &from, float flRange, Vector &tar
 // ice); -1 when not linked or nothing special. Used by CGameMovement::CategorizeGroundSurface.
 float FortCraft_GroundFriction();
 
+// True while Minecraft says the camera aims at a mob's back within knife reach (both modules: the
+// knife's raised-hand animation and backstab swing are predicted).
+bool FortCraft_MobBackstabReady();
+
 // Bits 8-15: bleed seconds (Boston Basher, Tribalman's Shiv, ...), for Minecraft to apply to mobs.
 // Both modules: the client shows crit text for mob hits flagged FC_CRIT / FC_MINICRIT.
 enum FortCraftShotFlags { FC_MELEE = 1, FC_CRIT = 2, FC_MINICRIT = 4, FC_HEADSHOT = 8, FC_KNIFE = 16, FC_SENTRY = 32,

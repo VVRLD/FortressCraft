@@ -23,7 +23,7 @@ import java.util.Locale;
  */
 public final class FortLink {
 	public static final int MAGIC = 0x46524346;  // "FCRF"
-	public static final int VERSION = 45;
+	public static final int VERSION = 46;
 	/** Windows: a named page-file mapping. Linux: a file in /dev/shm (RAM), which TF2 maps too. */
 	public static final boolean WINDOWS = System.getProperty("os.name", "").toLowerCase(Locale.ROOT).startsWith("windows");
 	public static final String NAME = System.getenv().getOrDefault("FORTCRAFT_LINK", WINDOWS ? "Local\\FortCraft_v1" : "/dev/shm/FortCraft_v1");
@@ -404,7 +404,7 @@ public final class FortLink {
 	}
 
 	/** TF2's render camera this frame (Camera @0x1D0), Minecraft coordinates and degrees. */
-	public record Tf2Camera(boolean thirdPerson, boolean tauntMenu, boolean taunting, boolean uiOpen, boolean medigun, double x, double y, double z, float yaw, float pitch, float zoom) {
+	public record Tf2Camera(boolean thirdPerson, boolean tauntMenu, boolean taunting, boolean uiOpen, boolean medigun, double x, double y, double z, float yaw, float pitch, float zoom, boolean cloaked) {
 	}
 
 	public static Tf2Camera readCamera() {
@@ -418,7 +418,7 @@ public final class FortLink {
 		int flags = shm.get(JAVA_INT, 0x1D4);
 		Tf2Camera c = new Tf2Camera((flags & 1) != 0, (flags & 2) != 0, (flags & 4) != 0, (flags & 8) != 0, (flags & 16) != 0,
 			shm.get(JAVA_FLOAT, 0x1D8), shm.get(JAVA_FLOAT, 0x1DC), shm.get(JAVA_FLOAT, 0x1E0),
-			shm.get(JAVA_FLOAT, 0x1E4), shm.get(JAVA_FLOAT, 0x1E8), shm.get(JAVA_FLOAT, 0x1EC));
+			shm.get(JAVA_FLOAT, 0x1E4), shm.get(JAVA_FLOAT, 0x1E8), shm.get(JAVA_FLOAT, 0x1EC), (flags & 32) != 0);
 		VarHandle.acquireFence();
 		return (int) INT.getAcquire(shm, 0x1D0) == before ? c : null;
 	}
@@ -651,6 +651,13 @@ public final class FortLink {
 			shm.set(JAVA_INT, 0x58908 + i * 4L, ents[i]);
 		}
 		INT.setRelease(shm, 0x58900, ((seq + 1) | 1) + 1);  // even: done
+	}
+
+	/** MobBackstab @0x58F00 (v46): 1 while a mob's back is in knife reach of TF2's aim. */
+	public static void writeMobBackstab(boolean ready) {
+		if (shm != null) {
+			shm.set(JAVA_INT, 0x58F00, ready ? 1 : 0);
+		}
 	}
 
 	/** WaterLines @0x58C00 (v45): seq, count, then {ent, Minecraft y of the water surface}. */

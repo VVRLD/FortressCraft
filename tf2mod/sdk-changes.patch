@@ -1968,7 +1968,7 @@ index b14837f..f554dc8 100644
  
  	int iDamageEnemies = 0;
 diff --git a/src/game/shared/tf/tf_player_shared.cpp b/src/game/shared/tf/tf_player_shared.cpp
-index 97be022..3a7740d 100644
+index 97be022..d16abce 100644
 --- a/src/game/shared/tf/tf_player_shared.cpp
 +++ b/src/game/shared/tf/tf_player_shared.cpp
 @@ -102,6 +102,7 @@
@@ -1979,7 +1979,21 @@ index 97be022..3a7740d 100644
  
  static ConVar tf_demoman_charge_frametime_scaling( "tf_demoman_charge_frametime_scaling", "1", FCVAR_REPLICATED | FCVAR_CHEAT, "When enabled, scale yaw limiting based on client performance (frametime)." );
  static const float YAW_CAP_SCALE_MIN = 0.2f;
-@@ -10277,6 +10278,12 @@ static void UTIL_PlayerBulletTrace( const Vector& vecStart, const Vector& vecEnd
+@@ -9573,6 +9574,13 @@ void CTFPlayerShared::UpdateCritMult( void )
+ //-----------------------------------------------------------------------------
+ // Purpose: 
+ //-----------------------------------------------------------------------------
++// FortCraft: damage to Minecraft mobs counts toward the random crit chance, as damage to players does.
++void CTFPlayerShared::FortCraft_RecordMobDamage( float flDamage, bool bKill )
++{
++	CTakeDamageInfo info( m_pOuter, m_pOuter, flDamage, DMG_GENERIC );
++	RecordDamageEvent( info, bKill, (int)flDamage );
++}
++
+ void CTFPlayerShared::RecordDamageEvent( const CTakeDamageInfo &info, bool bKill, int nVictimPrevHealth  )
+ {
+ 	if ( m_DamageEvents.Count() >= MAX_DAMAGE_EVENTS )
+@@ -10277,6 +10285,12 @@ static void UTIL_PlayerBulletTrace( const Vector& vecStart, const Vector& vecEnd
  //-----------------------------------------------------------------------------
  void CTFPlayer::FireBullet( CTFWeaponBase *pWpn, const FireBulletsInfo_t &info, bool bDoEffects, int nDamageType, int nCustomDamageType /*= TF_DMG_CUSTOM_NONE*/ )
  {
@@ -1992,11 +2006,25 @@ index 97be022..3a7740d 100644
  	// Fire a bullet (ignoring the shooter).
  	Vector vecStart = info.m_vecSrc;
  	Vector vecEnd = vecStart + info.m_vecDirShooting * info.m_flDistance;
-@@ -14793,4 +14800,3 @@ bool CTFPlayer::IsHelpmeButtonPressed() const
+@@ -14793,4 +14807,3 @@ bool CTFPlayer::IsHelpmeButtonPressed() const
  {
  	return m_flHelpmeButtonPressTime != 0.f;
  }
 -
+diff --git a/src/game/shared/tf/tf_player_shared.h b/src/game/shared/tf/tf_player_shared.h
+index fdaef92..61fc64b 100644
+--- a/src/game/shared/tf/tf_player_shared.h
++++ b/src/game/shared/tf/tf_player_shared.h
+@@ -911,6 +911,9 @@ private:
+ 	float GetCritMult( void );
+ 
+ #ifdef GAME_DLL
++public:
++	void  FortCraft_RecordMobDamage( float flDamage, bool bKill );  // FortCraft: mob hits raise the crit chance
++private:
+ 	void  UpdateCritMult( void );
+ 	void  RecordDamageEvent( const CTakeDamageInfo &info, bool bKill, int nVictimPrevHealth );
+ 	void  AddTempCritBonus( float flAmount );
 diff --git a/src/game/shared/tf/tf_projectile_dragons_fury.cpp b/src/game/shared/tf/tf_projectile_dragons_fury.cpp
 index 5226c7a..93164fb 100644
 --- a/src/game/shared/tf/tf_projectile_dragons_fury.cpp
@@ -2203,6 +2231,106 @@ index 3b2c6a1..6b26772 100644
  
  	virtual int		OnTakeDamage( const CTakeDamageInfo &info ) OVERRIDE;
  	virtual void	IncrementDeflected( void );
+diff --git a/src/game/shared/tf/tf_weapon_knife.cpp b/src/game/shared/tf/tf_weapon_knife.cpp
+index 2eb6777..fc5a9ad 100644
+--- a/src/game/shared/tf/tf_weapon_knife.cpp
++++ b/src/game/shared/tf/tf_weapon_knife.cpp
+@@ -6,6 +6,7 @@
+ #include "cbase.h"
+ #include "tf_gamerules.h"
+ #include "tf_weapon_knife.h"
++#include "../../../../../my-passthrough/tf2mod/fortcraft_collision.h"
+ #include "decals.h"
+ #include "debugoverlay_shared.h"
+ 
+@@ -64,6 +65,8 @@ CTFKnife::CTFKnife()
+ 	m_bReadyToBackstab = false;
+ 	m_flBlockedTime = 0.f;
+ 	m_bAllowHolsterBecauseForced = false;
++	m_bFortCraftMobReady = false;
++	m_bFortCraftMobStab = false;
+ 
+ 	ResetVars();
+ }
+@@ -220,6 +223,10 @@ void CTFKnife::PrimaryAttack( void )
+ 	}
+ #endif
+ 
++	// FortCraft: a Minecraft mob's back in reach gets TF2's backstab swing and crit (Minecraft
++	// applies the backstab damage, see Combat.java).
++	m_bFortCraftMobStab = !m_hBackstabVictim.Get() && FortCraft_MobBackstabReady();
++
+ #ifndef CLIENT_DLL
+ 	pPlayer->RemoveInvisibility();
+ 	lagcompensation->FinishLagCompensation( pPlayer );
+@@ -487,7 +494,7 @@ bool CTFKnife::IsBehindAndFacingTarget( CTFPlayer *pTarget )
+ bool CTFKnife::CalcIsAttackCriticalHelper( void )
+ {
+ 	// Always crit from behind, never from front
+-	return IsBackstab();
++	return IsBackstab() || m_bFortCraftMobStab;
+ }
+ 
+ //-----------------------------------------------------------------------------
+@@ -496,7 +503,7 @@ bool CTFKnife::CalcIsAttackCriticalHelper( void )
+ bool CTFKnife::CalcIsAttackCriticalHelperNoCrits( void )
+ {
+ 	// Always crit from behind, never from front
+-	return IsBackstab();
++	return IsBackstab() || m_bFortCraftMobStab;
+ }
+ 
+ //-----------------------------------------------------------------------------
+@@ -505,7 +512,7 @@ bool CTFKnife::CalcIsAttackCriticalHelperNoCrits( void )
+ //-----------------------------------------------------------------------------
+ void CTFKnife::SendPlayerAnimEvent( CTFPlayer *pPlayer )
+ {
+-	if ( IsBackstab() )
++	if ( IsBackstab() || m_bFortCraftMobStab )
+ 	{
+ 		pPlayer->DoAnimationEvent( PLAYERANIMEVENT_CUSTOM_GESTURE, ACT_MP_ATTACK_STAND_SECONDARYFIRE );
+ 	}
+@@ -653,6 +660,27 @@ void CTFKnife::BackstabVMThink( void )
+ 		 (iActivity != ACT_ITEM2_VM_IDLE) && (iActivity != ACT_ITEM2_BACKSTAB_VM_IDLE) )
+ 		return;
+ 
++	// FortCraft: a Minecraft mob's back in reach raises the knife like a player's would.
++	if ( FortCraft_MobBackstabReady() && CanAttack() )
++	{
++		if ( !m_bReadyToBackstab )
++		{
++			SendWeaponAnim( ACT_BACKSTAB_VM_UP );
++			m_bReadyToBackstab = true;
++		}
++		m_bFortCraftMobReady = true;
++		return;
++	}
++	if ( m_bFortCraftMobReady )
++	{
++		m_bFortCraftMobReady = false;
++		if ( m_bReadyToBackstab )
++		{
++			SendWeaponAnim( ACT_BACKSTAB_VM_DOWN );
++			m_bReadyToBackstab = false;
++		}
++	}
++
+ 
+ 	// Are we in backstab range and not cloaked?
+ 	trace_t trace;
+diff --git a/src/game/shared/tf/tf_weapon_knife.h b/src/game/shared/tf/tf_weapon_knife.h
+index 647c078..7c54f74 100644
+--- a/src/game/shared/tf/tf_weapon_knife.h
++++ b/src/game/shared/tf/tf_weapon_knife.h
+@@ -96,6 +96,8 @@ private:
+ 	CNetworkVar( float, m_flKnifeMeltTimestamp );
+ 
+ 	bool m_bWasTaunting;
++	bool m_bFortCraftMobReady;  // FortCraft: hand raised for a Minecraft mob's back
++	bool m_bFortCraftMobStab;   // FortCraft: this swing is a backstab on a Minecraft mob
+ 
+ 	CTFKnife( const CTFKnife & ) {}
+ };
 diff --git a/src/game/shared/tf/tf_weapon_medigun.cpp b/src/game/shared/tf/tf_weapon_medigun.cpp
 index 4caa185..3fa5101 100644
 --- a/src/game/shared/tf/tf_weapon_medigun.cpp

@@ -335,7 +335,10 @@ static void WriteCamera( const Vector &origin, const QAngle &angles )
 		| ( pPlayer && pPlayer->ShouldShowHudMenuTauntSelection() ? proto::kCameraTauntMenu : 0 )
 		| ( pPlayer && pPlayer->m_Shared.InCond( TF_COND_TAUNTING ) ? proto::kCameraTaunting : 0 )
 		| ( UiOpen() ? proto::kCameraUiOpen : 0 )
-		| ( bMedigun ? proto::kCameraMedigun : 0 );
+		| ( bMedigun ? proto::kCameraMedigun : 0 )
+		// Cloaked as TF2's sentries count it: more than 75% invisible (bumping or firing shows you).
+		| ( pPlayer && pPlayer->IsAlive() && pPlayer->m_Shared.IsStealthed() && pPlayer->m_Shared.GetPercentInvisible() > 0.75f
+			? proto::kCameraCloaked : 0 );
 	ToMinecraft( origin, cam.x, cam.y, cam.z );
 	cam.yaw = AngleNormalize( -angles.y - 90.0f );
 	cam.pitch = angles.x;
