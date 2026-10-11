@@ -48,6 +48,10 @@ bool FortCraft_IsLocalItem( unsigned long long itemID );
 void FortCraft_EquipLocalItem( unsigned long long itemID );
 // The backpack menu entry for a Minecraft item: "Use" (supply packs) or "Equip to hand".
 const char *FortCraft_LocalItemMenuLabel( unsigned long long itemID );
+// The backpack's second menu entry for a Minecraft item: put it on (or take it off) the quick key
+// for the class you're playing (4; Engineer and Spy 6).
+const char *FortCraft_QuickSlotMenuLabel( unsigned long long itemID );
+void FortCraft_ToggleQuickSlot( unsigned long long itemID );
 
 // Backpack phase C: Minecraft's craftable 2x2 recipes for TF2's crafting screen. The version
 // changes whenever Minecraft sends a new list; indexes are valid until then.

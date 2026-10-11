@@ -9,6 +9,7 @@ public final class WeaponSelection {
 	private static final int SLOT_COUNT = 9; // preserve the old hotbar-to-TF2 input range for now
 	private static final ScrollWheelHandler WHEEL = new ScrollWheelHandler();
 	private static int slot;
+	private static int previous;
 	private static boolean linked;
 
 	private WeaponSelection() {
@@ -69,6 +70,11 @@ public final class WeaponSelection {
 		return slot;
 	}
 
+	/** The TF2 weapon slot requested before the last key or wheel change (0-based). */
+	public static int previous() {
+		return previous;
+	}
+
 	/** Sets the requested TF2 weapon slot without a key press (holding a Minecraft item uses melee). */
 	public static void force(int next) {
 		slot = next;
@@ -76,6 +82,9 @@ public final class WeaponSelection {
 
 	private static void select(Minecraft minecraft, int next, String source) {
 		Hand.onWeaponSelected(minecraft);
+		if (next != slot) {
+			previous = slot;
+		}
 		slot = next;
 		// The PDA needs each actual key press, not the persistent requested weapon slot. Otherwise
 		// equipping it with slot 4 still requested auto-selects the teleporter exit.

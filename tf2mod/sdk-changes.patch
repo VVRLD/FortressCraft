@@ -334,7 +334,7 @@ index 1143ff2..4b89ec3 100644
  		$File	"tf\tf_abuse_report.h"
  		$File	"c_team_objectiveresource.cpp"
 diff --git a/src/game/client/econ/backpack_panel.cpp b/src/game/client/econ/backpack_panel.cpp
-index ae12623..4d7a302 100644
+index ae12623..372df41 100644
 --- a/src/game/client/econ/backpack_panel.cpp
 +++ b/src/game/client/econ/backpack_panel.cpp
 @@ -46,6 +46,7 @@
@@ -345,7 +345,7 @@ index ae12623..4d7a302 100644
  // memdbgon must be the last include file in a .cpp file!!!
  #include <tier0/memdbgon.h>
  
-@@ -1579,6 +1580,32 @@ void CBackpackPanel::OnConfirmDelete( KeyValues *data )
+@@ -1579,6 +1580,46 @@ void CBackpackPanel::OnConfirmDelete( KeyValues *data )
  //-----------------------------------------------------------------------------
  // Purpose: 
  //-----------------------------------------------------------------------------
@@ -358,6 +358,20 @@ index ae12623..4d7a302 100644
 +			FortCraft_IsLocalItem( m_pItemModelPanels[i]->GetItem()->GetItemID() ) )
 +		{
 +			FortCraft_EquipLocalItem( m_pItemModelPanels[i]->GetItem()->GetItemID() );
++			return;
++		}
++	}
++}
++
++// FortCraft: put the selected Minecraft item on (or take it off) the class's Minecraft item key.
++void CBackpackPanel::DoFortCraftQuickSlot()
++{
++	for ( int i = 0; i < m_pItemModelPanels.Count(); i++ )
++	{
++		if ( m_pItemModelPanels[i]->IsSelected() && m_pItemModelPanels[i]->GetItem() &&
++			FortCraft_IsLocalItem( m_pItemModelPanels[i]->GetItem()->GetItemID() ) )
++		{
++			FortCraft_ToggleQuickSlot( m_pItemModelPanels[i]->GetItem()->GetItemID() );
 +			return;
 +		}
 +	}
@@ -378,7 +392,7 @@ index ae12623..4d7a302 100644
  void CBackpackPanel::OnItemPanelMouseReleased( vgui::Panel *panel )
  {
  	CItemModelPanel *pItemPanel = dynamic_cast < CItemModelPanel * > ( panel );
-@@ -1882,6 +1909,35 @@ void CBackpackPanel::AddCommerceToContextMenu( Menu *pMenu, const char* pszActio
+@@ -1882,6 +1923,36 @@ void CBackpackPanel::AddCommerceToContextMenu( Menu *pMenu, const char* pszActio
  //-----------------------------------------------------------------------------
  void CBackpackPanel::OpenContextMenu()
  {
@@ -403,6 +417,7 @@ index ae12623..4d7a302 100644
 +			m_pContextMenu->SetBorder( scheme()->GetIScheme( GetScheme() )->GetBorder( "NotificationDefault" ) );
 +			m_pContextMenu->SetFont( scheme()->GetIScheme( GetScheme() )->GetFont( "HudFontMediumSecondary", IsProportional() ) );
 +			m_pContextMenu->AddMenuItem( FortCraft_LocalItemMenuLabel( pSelected->GetItemID() ), new KeyValues( "Context_FortCraftEquip" ), this );  // "Use" for supply packs
++			m_pContextMenu->AddMenuItem( FortCraft_QuickSlotMenuLabel( pSelected->GetItemID() ), new KeyValues( "Context_FortCraftQuickSlot" ), this );  // "Put on key 4"
 +			int nX, nY;
 +			g_pVGuiInput->GetCursorPosition( nX, nY );
 +			m_pContextMenu->SetPos( nX - 1, nY - 1 );
@@ -415,15 +430,16 @@ index ae12623..4d7a302 100644
  
  	CUtlVector<CEconItemView*> vecSelectedItems; 
 diff --git a/src/game/client/econ/backpack_panel.h b/src/game/client/econ/backpack_panel.h
-index 82485c4..309c89d 100644
+index 82485c4..a37ead7 100644
 --- a/src/game/client/econ/backpack_panel.h
 +++ b/src/game/client/econ/backpack_panel.h
-@@ -63,6 +63,8 @@ public:
+@@ -63,6 +63,9 @@ public:
  	virtual void OpenContextMenu();
  	MESSAGE_FUNC_PTR( OnItemPanelMousePressed, "ItemPanelMousePressed", panel );
  	MESSAGE_FUNC_PTR( OnItemPanelMouseReleased, "ItemPanelMouseReleased", panel );
 +	MESSAGE_FUNC_PTR( OnItemPanelMouseDoublePressed, "ItemPanelMouseDoublePressed", panel );	// FortCraft
 +	MESSAGE_FUNC( DoFortCraftEquip, "Context_FortCraftEquip" );	// FortCraft
++	MESSAGE_FUNC( DoFortCraftQuickSlot, "Context_FortCraftQuickSlot" );	// FortCraft
  	MESSAGE_FUNC_PTR( OnItemPanelMouseRightRelease, "ItemPanelMouseRightRelease", panel );
  	MESSAGE_FUNC_INT_INT( OnCursorMoved, "OnCursorMoved", x, y );
  	MESSAGE_FUNC_INT_INT( OnItemPanelCursorMoved, "ItemPanelCursorMoved", x, y );
@@ -1443,6 +1459,44 @@ index 4900916..144bb4c 100644
  	}
  
  	const attrib_definition_index_t nUpgradedAttrDefIndex = ApplyUpgradeToItem( pTFPlayer, pItem, iUpgrade, nCost, bDowngrade, !bFree );
+diff --git a/src/game/server/tf/tf_gc_server.cpp b/src/game/server/tf/tf_gc_server.cpp
+index 6ccca97..c2e612e 100644
+--- a/src/game/server/tf/tf_gc_server.cpp
++++ b/src/game/server/tf/tf_gc_server.cpp
+@@ -38,6 +38,8 @@
+ #include "iserver.h"
+ 
+ // memdbgon must be the last include file in a .cpp file!!!
++#include "tf_player.h"
++#include "../../../../../my-passthrough/tf2mod/fortcraft_collision.h"  // FortCraft
+ #include "tier0/memdbgon.h"
+ 
+ using namespace GCSDK;
+@@ -4322,6 +4324,24 @@ void CTFGCServerSystem::OnWebapiEquipmentReceived( CSteamID steamID, HTTPRequest
+ 
+ 		SDK_ApplyInventoryInfo( pSOCache, state.m_pKVCurrentRequest );
+ 
++		// FortCraft: a loadout change applies at once (Alex, 2026-10-11), not at the next death
++		// or class change: the player's items are given again, keeping health and ammo.
++		if ( FortCraft_Active() )
++		{
++			for ( int i = 1; i <= gpGlobals->maxClients; i++ )
++			{
++				CTFPlayer *pPlayer = ToTFPlayer( UTIL_PlayerByIndex( i ) );
++				CSteamID playerID;
++				if ( pPlayer && pPlayer->IsAlive() && pPlayer->GetSteamID( &playerID ) && playerID == steamID )
++				{
++					const int nHealth = pPlayer->GetHealth();
++					pPlayer->Regenerate( false );
++					pPlayer->SetHealth( MIN( nHealth, pPlayer->GetMaxHealth() ) );
++					Msg( "FortCraft: loadout change applied at once\n" );
++				}
++			}
++		}
++
+ 		// Version should match the one they said we have
+ 		Assert( pSOCache->GetVersion() == pValues->GetChildUInt64Value( "version" ) );
+ 	}
 diff --git a/src/game/server/tf/tf_obj.cpp b/src/game/server/tf/tf_obj.cpp
 index c7a9e93..8bdedb0 100644
 --- a/src/game/server/tf/tf_obj.cpp

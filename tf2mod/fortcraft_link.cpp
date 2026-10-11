@@ -34,6 +34,7 @@
 #include "particle_parse.h"
 #include "engine/IEngineSound.h"
 #include "bone_setup.h"
+#include "filesystem.h"
 #include "props_shared.h"
 #include "vgui_controls/Panel.h"
 #include "vgui/IScheme.h"
@@ -226,6 +227,7 @@ static proto::OverlayPose s_PairPose, s_WorkPose;
 // flying; the Scout taps three times, since two taps are its double jump. Landing stops it.
 // Movement (tf_gamemovement.cpp, both modules) sees it as IN_BULLRUSH on the command, a button
 // TF2 never uses, so the client's prediction and the server agree.
+static void QuickSlotPressed( int nSlot );  // the Minecraft item key (below)
 static bool CreativeFlight( bool bJump )
 {
 	static bool s_bFlying, s_bWasJump, s_bAirborne;
@@ -318,10 +320,12 @@ bool FortCraft_ApplyInput( CUserCmd *pCmd )
 	static int s_nLastClass = -1;
 	static int s_nLastDesiredWeapon = -1;
 	static bool s_bSwitchPending = false;
+	bool bNewSlot = false;
 	if ( (int)in.weaponSlot != s_nLastSlot )
 	{
 		s_nLastSlot = (int)in.weaponSlot;
 		s_bSwitchPending = true;
+		bNewSlot = true;
 		Msg( "FortCraft weapon requested: slot=%d\n", s_nLastSlot + 1 );
 	}
 	C_TFPlayer *pPlayer = C_TFPlayer::GetLocalTFPlayer();
@@ -336,6 +340,8 @@ bool FortCraft_ApplyInput( CUserCmd *pCmd )
 		}
 		const int nClass = pPlayer->GetPlayerClass() ? pPlayer->GetPlayerClass()->GetClassIndex() : -1;
 		const int nDesiredWeapon = pWeapon ? pWeapon->entindex() : -1;
+		if ( bNewSlot && !pWeapon )
+			QuickSlotPressed( (int)in.weaponSlot );  // the Minecraft item key
 
 		// Engineer: with the build or destroy PDA out, number keys 1-4 pick a building in TF2's
 		// menu (sentry, dispenser, teleporter entrance, exit) instead of switching weapons.
@@ -3275,6 +3281,80 @@ void FortCraft_EquipLocalItem( unsigned long long itemID )
 		Msg( "FortCraft hand: asked Minecraft to hold %s\n", p->id );
 	}
 	*(volatile uint32_t *)&req.count = req.count + 1;
+}
+
+// ---- The Minecraft item key (Alex, 2026-10-11) -----------------------------------------------
+// Each class can have one Minecraft item on a number key: 4, or 6 for the Engineer and Spy (whose
+// 4 and 5 are PDAs). Set from the backpack ("Put on key 4"); pressing the key pulls the item out
+// as "Equip to hand" does (food to eat, blocks, tools, potions...), and running out or a weapon
+// key goes back to the weapon you had. Saved in cfg/fortcraft_quickslots.txt.
+static KeyValues *s_pQuickSlots;
+
+static KeyValues *QuickSlots()
+{
+	if ( !s_pQuickSlots )
+	{
+		s_pQuickSlots = new KeyValues( "fortcraft_quickslots" );
+		s_pQuickSlots->LoadFromFile( g_pFullFileSystem, "cfg/fortcraft_quickslots.txt", "MOD" );
+	}
+	return s_pQuickSlots;
+}
+
+static int QuickSlotIndex( int nClass )
+{
+	return ( nClass == TF_CLASS_ENGINEER || nClass == TF_CLASS_SPY ) ? 5 : 3;  // 0-based: key 6 / key 4
+}
+
+static int LocalClass()
+{
+	C_TFPlayer *pPlayer = C_TFPlayer::GetLocalTFPlayer();
+	return pPlayer && pPlayer->GetPlayerClass() ? pPlayer->GetPlayerClass()->GetClassIndex() : TF_CLASS_UNDEFINED;
+}
+
+static const char *QuickItemFor( int nClass )
+{
+	return QuickSlots()->GetString( VarArgs( "%d", nClass ), "" );
+}
+
+const char *FortCraft_QuickSlotMenuLabel( unsigned long long itemID )
+{
+	LocalStack *p = LocalStackFor( itemID );
+	const int nClass = LocalClass();
+	const int nKey = QuickSlotIndex( nClass ) + 1;
+	static char s_szLabel[ 64 ];
+	const bool bOn = p && !V_strcmp( QuickItemFor( nClass ), p->id );
+	V_snprintf( s_szLabel, sizeof( s_szLabel ), bOn ? "Take off key %d" : "Put on key %d", nKey );
+	return s_szLabel;
+}
+
+void FortCraft_ToggleQuickSlot( unsigned long long itemID )
+{
+	LocalStack *p = LocalStackFor( itemID );
+	const int nClass = LocalClass();
+	if ( !p || nClass == TF_CLASS_UNDEFINED )
+		return;
+	const char *pszKey = VarArgs( "%d", nClass );
+	const bool bOn = !V_strcmp( QuickItemFor( nClass ), p->id );
+	QuickSlots()->SetString( pszKey, bOn ? "" : p->id );
+	QuickSlots()->SaveToFile( g_pFullFileSystem, "cfg/fortcraft_quickslots.txt", "MOD" );
+	if ( vgui::surface() )
+		vgui::surface()->PlaySound( "ui/item_default_pickup.wav" );
+	Msg( "FortCraft quick key: class %d key %d %s %s\n", nClass, QuickSlotIndex( nClass ) + 1, bOn ? "cleared" : "holds", p->id );
+}
+
+// A number key for an empty weapon slot: if it's this class's Minecraft item key, pull it out.
+static void QuickSlotPressed( int nSlot )
+{
+	const int nClass = LocalClass();
+	if ( nClass == TF_CLASS_UNDEFINED || nSlot != QuickSlotIndex( nClass ) || !s_pShm )
+		return;
+	const char *pszId = QuickItemFor( nClass );
+	if ( !pszId[ 0 ] )
+		return;
+	proto::HandRequest &req = At< proto::HandRequest >( proto::kOffHandRequest );
+	V_snprintf( req.id, sizeof( req.id ), "quick:%s", pszId );
+	*(volatile uint32_t *)&req.count = req.count + 1;
+	Msg( "FortCraft quick key: pulling out %s\n", pszId );
 }
 
 static void SyncHand()

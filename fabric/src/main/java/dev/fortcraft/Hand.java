@@ -30,6 +30,8 @@ public final class Hand {
 	private static final long LAST_GRACE_NANOS = 1_000_000_000L;
 	private static int requestsSeen = -1;
 	private static int weaponSlotBefore;
+	/** While a quick-key request is handled: the weapon slot to come back to, else -1. */
+	private static int quickFrom = -1;
 	private static boolean attackWasDown;
 	private static long equippedAt;
 	/** After a swap, the server's copy of the inventory takes a moment to arrive; don't re-check meanwhile. */
@@ -71,6 +73,18 @@ public final class Hand {
 				putAway(minecraft, "TF2 asked");
 			} else if (id.startsWith("use:")) {
 				useFromBackpack(minecraft, id.substring(4));
+			} else if (id.startsWith("quick:")) {
+				// The loadout's Minecraft item key (4; Engineer and Spy 6), Alex 2026-10-11. Running
+				// out or a weapon key goes back to the weapon held before that key.
+				String item = id.substring(6);
+				quickFrom = WeaponSelection.previous();
+				if (PackItems.isPackId(item)) {
+					useFromBackpack(minecraft, item);
+					WeaponSelection.force(quickFrom);
+				} else {
+					equip(minecraft, item);
+				}
+				quickFrom = -1;
 			} else if (PackItems.isPackId(id)) {
 				useFromBackpack(minecraft, id);  // packs are used, never held (no hand model)
 			} else {
@@ -125,6 +139,9 @@ public final class Hand {
 		int slot = findSlot(inventory, id);
 		if (slot < 0) {
 			FortCraft.LOG.info("FortCraft: can't hold {}: not in Minecraft's inventory", id);
+			if (quickFrom >= 0) {
+				WeaponSelection.force(quickFrom);  // none left: stay on the weapon you had
+			}
 			return;
 		}
 		int hotbar = slot;
@@ -141,7 +158,7 @@ public final class Hand {
 		}
 		inventory.setSelectedSlot(hotbar);
 		if (equippedId == null) {
-			weaponSlotBefore = WeaponSelection.current();
+			weaponSlotBefore = quickFrom >= 0 ? quickFrom : WeaponSelection.current();
 		}
 		equippedId = id;
 		equippedAt = System.nanoTime();
