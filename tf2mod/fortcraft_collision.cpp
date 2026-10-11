@@ -238,6 +238,13 @@ const FortCraftBox *FortCraft_MobBoxes( int *pCount )
 	return s_Mobs.Base();
 }
 
+const unsigned char *FortCraft_MobFlags( int *pCount )
+{
+	Refresh();
+	*pCount = s_bActive ? MIN( s_Mobs.Count(), s_MobHostile.Count() ) : 0;
+	return s_MobHostile.Base();
+}
+
 bool FortCraft_Active()
 {
 	Refresh();
@@ -255,6 +262,22 @@ float FortCraft_GroundFriction()
 	// Minecraft keeps (friction x 0.91) of its speed each tick: 0.6 normal, 0.98 ice. Map the part
 	// it loses onto TF2's surface friction (1 = normal), keeping some control on ice as Minecraft does.
 	return clamp( ( 1.0f - mc ) / 0.4f, 0.15f, 1.0f );
+}
+
+int FortCraft_UpgradeBookshelves()
+{
+	Refresh();
+	if ( !s_bActive || !s_pShm )
+		return -1;
+	return ( (const volatile proto::UpgradeStation *)( s_pShm + proto::kOffUpgradeStation ) )->bookshelves;
+}
+
+int FortCraft_UpgradeLevelsAllowed()
+{
+	const int nShelves = FortCraft_UpgradeBookshelves();
+	if ( nShelves < 0 || nShelves >= 15 )
+		return 0;  // not linked, or a full library: every level
+	return 1 + nShelves / 5;
 }
 
 bool FortCraft_MobBackstabReady()
@@ -669,6 +692,22 @@ void FortCraft_ReportWeaponShot( CTFWeaponBase *weapon, const Vector &src, const
 	FortCraft_ReportShot( src, dir, distance, damage, flags, weapon ? weapon->GetWeaponID() : 0, tool, headshotRange );
 }
 
+void FortCraft_ReportJar( const Vector &src, float radius, int nFlags )
+{
+	Vector anchor;
+	if ( radius <= 0 || !AnchorTF2( anchor ) ) return;
+	const float scale = (float)proto::kUnitsPerBlock;
+	proto::Explosions &out = *(proto::Explosions *)( s_pShm + proto::kOffExplosions );
+	proto::Explosion &e = out.ring[ out.count % proto::kMaxExplosions ];
+	e.x = ( src.x - anchor.x ) / scale + 0.5f;
+	e.y = ( src.z - anchor.z ) / scale - 60.0f;
+	e.z = -( src.y - anchor.y ) / scale + 0.5f;
+	e.radius = radius / scale;
+	e.damage = 0.0f;
+	e.flags = nFlags;
+	*(volatile uint32_t *)&out.count = out.count + 1;
+}
+
 void FortCraft_ReportBlast( const Vector &src, float radius, float damage, int damageType )
 {
 	Vector anchor;
@@ -729,7 +768,15 @@ void FortCraft_WriteBuildings( CBaseEntity **ppObjects, int nCount )
 		const Vector maxs = pObj->GetAbsOrigin() + pObj->WorldAlignMaxs();
 		proto::Building &b = out.list[ n++ ];
 		b.ent = pObj->entindex();
-		b.type = ( pObj->IsBaseObject() && static_cast< CBaseObject * >( pObj )->GetType() == OBJ_SENTRYGUN ) ? 1 : 0;
+		b.type = 0;
+		if ( pObj->IsBaseObject() )
+		{
+			CBaseObject *pBuilding = static_cast< CBaseObject * >( pObj );
+			if ( pBuilding->GetType() == OBJ_SENTRYGUN )
+				b.type = 1;
+			else if ( pBuilding->GetType() == OBJ_DISPENSER && !pBuilding->IsBuilding() && !pBuilding->IsDisabled() )
+				b.type = 2;  // a working dispenser (Minecraft tops up the player's iron near it)
+		}
 		b.minX = ( mins.x - anchor.x ) / s + 0.5f;
 		b.maxX = ( maxs.x - anchor.x ) / s + 0.5f;
 		b.minY = ( mins.z - anchor.z ) / s - 60.0f;
@@ -1083,6 +1130,26 @@ static void DropMoney( const Vector &pos, int nAmount, float flLifetime )
 
 static void UpdateDroppedMoney();
 
+// One of TF2's own pickups (small ammo box, small health kit) dropped like in TF2: tossed up a
+// little, gone after 20 s (Alex, 2026-10-10; TF2's own is 30 s), and kept where it lands.
+static void DropPickup( const char *pszClass, const Vector &pos )
+{
+	CTFPowerup *pItem = dynamic_cast< CTFPowerup * >( CBaseEntity::CreateNoSpawn( pszClass, pos, vec3_angle, NULL ) );
+	if ( !pItem )
+		return;
+	DispatchSpawn( pItem );
+	Vector vecVelocity( RandomFloat( -60.0f, 60.0f ), RandomFloat( -60.0f, 60.0f ), 150.0f );
+	pItem->DropSingleInstance( vecVelocity, NULL, 0.0f, 0.0f );
+	pItem->SetContextThink( &CBaseEntity::SUB_Remove, gpGlobals->curtime + 20.0f, "PowerupRemoveThink" );  // replaces TF2's 30 s
+	DroppedMoney d;
+	d.hPack = pItem;
+	d.bHasGround = false;
+	d.vecGround = vec3_origin;
+	d.flLandAt = 0.0f;
+	s_DroppedMoney.AddToTail( d );
+	Msg( "FortCraft: a mob dropped %s\n", pszClass );
+}
+
 // One bag of the dragon's rain: falls from 8 blocks above the ground Minecraft picked, lands there.
 static void DropMoneyOnGround( const Vector &ground, int nAmount )
 {
@@ -1172,26 +1239,20 @@ static void ServerMobHits( CTFPlayer *pPlayer )
 				Msg( "FortCraft MvM: %s dropped $%d in %d bag(s)\n", ( hit.source & proto::kMobHitMoneyOnly ) ? "Minecraft XP" : "a kill", nMoney, nBags );
 			}
 		}
-		// A TF2 small ammo pack (Minecraft rolled the chance), dropped where the mob died.
-		if ( hit.killed == 1 && ( hit.source & proto::kMobHitDropAmmo ) && AnchorTF2( anchor ) )
+		// TF2's own small ammo box / small health kit (Minecraft rolled the chance), dropped where
+		// the mob died.
+		if ( hit.killed == 1 && ( hit.source & ( proto::kMobHitDropAmmo | proto::kMobHitDropHealth ) ) && AnchorTF2( anchor ) )
 		{
 			const float s = (float)proto::kUnitsPerBlock;
 			const Vector pos( ( hit.x - 0.5f ) * s + anchor.x, -( hit.z - 0.5f ) * s + anchor.y, ( hit.y + 60.0f ) * s + anchor.z );
-			CTFPowerup *pAmmo = dynamic_cast< CTFPowerup * >( CBaseEntity::CreateNoSpawn( "item_ammopack_small", pos, vec3_angle, NULL ) );
-			if ( pAmmo )
-			{
-				DispatchSpawn( pAmmo );
-				Vector vecVelocity( RandomFloat( -60.0f, 60.0f ), RandomFloat( -60.0f, 60.0f ), 150.0f );
-				pAmmo->DropSingleInstance( vecVelocity, NULL, 0.0f, 0.0f );
-				DroppedMoney d;  // stays put once landed, like the cash
-				d.hPack = pAmmo;
-				d.bHasGround = false;
-				d.vecGround = vec3_origin;
-				d.flLandAt = 0.0f;
-				s_DroppedMoney.AddToTail( d );
-				Msg( "FortCraft: a mob dropped a small ammo pack\n" );
-			}
+			if ( hit.source & proto::kMobHitDropAmmo )
+				DropPickup( "item_ammopack_small", pos );
+			if ( hit.source & proto::kMobHitDropHealth )
+				DropPickup( "item_healthkit_small", pos );
 		}
+		// Mad Milk: hitting a milked mob heals 60% of the damage dealt, as on TF2 players.
+		if ( ( hit.source & proto::kMobHitMilk ) && hit.damage > 0.0f && pPlayer->IsAlive() && !( hit.source & FC_SENTRY ) )
+			pPlayer->TakeHealth( hit.damage * 0.6f, DMG_GENERIC );
 		// The weapon's on-kill effects (Powerjack and other heal-on-kill, restore health on
 		// kill, speed boost, cloak on kill), as killing a player does. Not for sentry kills.
 		if ( hit.killed == 1 && !( hit.source & ( FC_SENTRY | proto::kMobHitMoneyOnly ) ) && pPlayer->IsAlive() && pPlayer->GetActiveTFWeapon() )
@@ -1259,6 +1320,8 @@ static void ServerMobHits( CTFPlayer *pPlayer )
 // upgrades forced on, one upgrade station entity to buy through, and the player put in the
 // "upgrade zone" (which opens TF2's upgrade screen) when Minecraft says the table was used.
 static int s_nUpgradeBookshelves;
+
+
 static void UpgradeStation( CTFPlayer *pPlayer, const Vector &anchor )
 {
 	if ( TFGameRules() && !TFGameRules()->GameModeUsesUpgrades() )
@@ -1404,6 +1467,26 @@ static void MvmSaveAndRestore( CTFPlayer *pPlayer )
 }
 #endif
 
+// Where the player last was while alive, for FortCraft_OnPlayerRespawn.
+static Vector s_vecLastAlive;
+static float s_flLastAliveAt = -1000.0f;
+
+#ifndef CLIENT_DLL
+void FortCraft_OnPlayerRespawn( CBaseEntity *pPlayer )
+{
+	// Alive a moment ago (no death in between): TF2 respawned the player to change class. Keep
+	// them where they were instead of sending them to their bed (Alex, 2026-10-10).
+	if ( pPlayer && FortCraft_Active() && gpGlobals->curtime - s_flLastAliveAt < 0.3f )
+	{
+		Vector pos = s_vecLastAlive + Vector( 0, 0, 2 );
+		pPlayer->Teleport( &pos, NULL, &vec3_origin );
+		Msg( "FortCraft: changed class; staying at %.0f %.0f %.0f\n", pos.x, pos.y, pos.z );
+		return;
+	}
+	FortCraft_OnPlayerSpawn( pPlayer );
+}
+#endif
+
 void FortCraft_ApplyMinecraftDamage( CBaseEntity *pPlayer )
 {
 	// This existing server tick also retires the Medic presentation proxy when
@@ -1412,6 +1495,11 @@ void FortCraft_ApplyMinecraftDamage( CBaseEntity *pPlayer )
 	Vector anchor;
 	if ( !pPlayer || !AnchorTF2( anchor ) )
 		return;
+	if ( pPlayer->IsAlive() )
+	{
+		s_vecLastAlive = pPlayer->GetAbsOrigin();
+		s_flLastAliveAt = gpGlobals->curtime;
+	}
 	ApplySupplyPack( static_cast< CTFPlayer * >( pPlayer ) );
 #ifndef CLIENT_DLL
 	ServerMobHits( static_cast< CTFPlayer * >( pPlayer ) );

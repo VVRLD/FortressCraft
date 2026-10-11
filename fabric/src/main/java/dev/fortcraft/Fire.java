@@ -103,8 +103,21 @@ public final class Fire {
 			e.needsSync = true;  // send the new velocity to the client now
 			pushed++;
 		}
-		if (pushed > 0) {
-			FortCraft.LOG.info("FortCraft: airblast pushed {} mobs", pushed);
+		// Reflect mobs' projectiles (skeleton arrows, blaze and ghast fireballs...) back the way the
+		// Pyro is looking, now the Pyro's, as airblast does to TF2 rockets (Alex, 2026-10-10).
+		int reflected = 0;
+		Vec3 look = pyro.getLookAngle();
+		for (net.minecraft.world.entity.projectile.Projectile p : level.getEntitiesOfClass(
+			net.minecraft.world.entity.projectile.Projectile.class, new AABB(at, at).inflate(reach),
+			p -> p.getOwner() != pyro && p.position().distanceTo(at) <= reach && p.getDeltaMovement().lengthSqr() > 0.01)) {
+			double speed = Math.max(1.0, p.getDeltaMovement().length()) * 1.2;
+			p.setDeltaMovement(look.scale(speed));
+			p.setOwner(pyro);
+			p.needsSync = true;
+			reflected++;
+		}
+		if (pushed > 0 || reflected > 0) {
+			FortCraft.LOG.info("FortCraft: airblast pushed {} mobs and reflected {} projectiles", pushed, reflected);
 		}
 	}
 

@@ -59,6 +59,12 @@ public final class Tf2Menus {
 		if (edge(Tf2Keys.MAIN_MENU.isDown(), 3) && free) {
 			open(minecraft, MAIN_MENU, "main menu key -> TF2 main menu");
 		}
+		if (edge(Tf2Keys.GUIDE.isDown(), 6) && free) {
+			minecraft.gui.setScreen(new GuideScreen());
+		}
+		if (free && minecraft.player != null && minecraft.player.tickCount > 60) {
+			GuideScreen.showOnce(minecraft);  // the first time only
+		}
 		if (edge(Tf2Keys.CONSOLE.isDown(), 4) && free) {
 			consoleToggledAt = System.nanoTime();
 			open(minecraft, CONSOLE, "console key -> TF2 console");
@@ -97,7 +103,7 @@ public final class Tf2Menus {
 		}
 	}
 
-	private static final boolean[] wasDown = new boolean[6];
+	private static final boolean[] wasDown = new boolean[7];
 
 	/**
 	 * Linux: TF2's hidden window can take the keyboard when its menus open or close (the tester

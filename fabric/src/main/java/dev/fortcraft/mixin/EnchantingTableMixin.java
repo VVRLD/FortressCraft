@@ -29,13 +29,18 @@ public abstract class EnchantingTableMixin {
 			return;
 		}
 		if (!level.isClientSide()) {
+			// Any bookshelf within 2 blocks around the table, at its level or one above, counts (up
+			// to 15). Minecraft's own rule (exactly 2 away with an empty gap) found none for
+			// shelves placed right against the table (Alex, 2026-10-11).
 			int shelves = 0;
-			for (BlockPos offset : EnchantingTableBlock.BOOKSHELF_OFFSETS) {
-				if (EnchantingTableBlock.isValidBookShelf(level, pos, offset)) {
+			for (BlockPos p : BlockPos.betweenClosed(pos.offset(-2, 0, -2), pos.offset(2, 1, 2))) {
+				if (!p.equals(pos) && level.getBlockState(p).is(net.minecraft.tags.BlockTags.ENCHANTMENT_POWER_PROVIDER)) {
 					shelves++;
 				}
 			}
+			shelves = Math.min(shelves, 15);
 			FortLink.writeUpgradeStation(shelves, pos.getX() + 0.5, pos.getY(), pos.getZ() + 0.5);
+
 			FortCraft.LOG.info("FortCraft: enchanting table at {} opens TF2's upgrades ({} bookshelves)", pos, shelves);
 		}
 		cir.setReturnValue(InteractionResult.SUCCESS);

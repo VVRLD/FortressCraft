@@ -114,7 +114,7 @@ public final class FarOcclusion {
 	}
 
 	/** True if nothing solid lies between the eye and (within slack of) the point. */
-	private static boolean visible(Minecraft minecraft, Vec3 eye, Vec3 point, double slack) {
+	static boolean visible(Minecraft minecraft, Vec3 eye, Vec3 point, double slack) {
 		HitResult hit = minecraft.level.clip(new ClipContext(eye, point, ClipContext.Block.VISUAL, ClipContext.Fluid.NONE, CollisionContext.empty()));
 		return hit.getType() == HitResult.Type.MISS || hit.getLocation().distanceTo(point) <= slack;
 	}

@@ -96,12 +96,16 @@ public final class Combat {
 
 		sendMobBoxes(minecraft);
 		MvmSave.tick(minecraft);
+		jarParticles(minecraft);
+		dispenserIron(minecraft);
+		raidState(minecraft);
 		healFriendlyMob(minecraft, buttons);
 		dripDragonRain(minecraft);
 		FortLink.Tf2Camera cam = FortLink.readCamera();
 		if (cam != null) {
 			FortLink.writeMobBackstab(!cam.thirdPerson() && !cam.uiOpen() && backstabReady(minecraft, cam));
 			updateCloak(minecraft, cam.cloaked());
+			clearEffectsOnDeath(minecraft, cam.dead());
 		}
 		sendSpawnPoint(minecraft);
 
@@ -315,7 +319,8 @@ public final class Combat {
 		mobBoxes[o + 3] = (float) b.maxX;
 		mobBoxes[o + 4] = (float) b.maxY;
 		mobBoxes[o + 5] = (float) b.maxZ;
-		mobHostile[n] = (byte) ((hostile ? 1 : 0) | (hostile && sentrySees(Minecraft.getInstance(), e) ? 2 : 0));
+		mobHostile[n] = (byte) ((hostile ? 1 : 0) | (hostile && sentrySees(Minecraft.getInstance(), e) ? 2 : 0)
+			| (Robots.kindOf(e) != Robots.NONE ? 4 : 0));  // drawn by TF2 as a robot
 		return n + 1;
 	}
 
@@ -513,8 +518,10 @@ public final class Combat {
 			boolean head = (shot.flags() & CombatRules.HEADSHOT) != 0
 				&& (shot.headshotRange() <= 0 || bestDist <= shot.headshotRange()) && headHit(best, bestHit);
 			boolean backstab = melee && (shot.flags() & CombatRules.KNIFE) != 0 && behind(best, start, dir);
-			float multiplier = CombatRules.multiplier(shot.flags(), head);
-			float falloff = CombatRules.rangeModifier(bestDist, shot.flags(), head);
+			// Jarate on the mob: mini-crits, as on a jarated TF2 player.
+			int shotFlags = shot.flags() | (isJarated(best) && (shot.flags() & CombatRules.CRIT) == 0 ? CombatRules.MINI : 0);
+			float multiplier = CombatRules.multiplier(shotFlags, head);
+			float falloff = CombatRules.rangeModifier(bestDist, shotFlags, head);
 			int effects = shot.flags() & (CombatRules.SENTRY | (0xFF << CombatRules.BLEED_SHIFT));
 			// For TF2's crit sound and text over the mob.
 			if (backstab || multiplier == 3.0f) {
@@ -525,8 +532,20 @@ public final class Combat {
 			shotDamage.merge(new ShotGroup(best, DAMAGE_SCALE, backstab, effects), shot.damage() * multiplier * falloff, Float::sum);
 			if (backstab || multiplier > 1) FortCraft.LOG.info("FortCraft: combat bonus={} weapon={} target={} multiplier={}",
 				backstab ? "backstab" : head ? "headshot" : multiplier == 3 ? "crit" : "mini", shot.weapon(), best.getName().getString(), multiplier);
-		} else if (melee && block.getType() == HitResult.Type.BLOCK) {
-			breakMeleeBlock(minecraft, ((BlockHitResult) block).getBlockPos().immutable(), shot.tool());
+		} else if (melee) {
+			// Blocks you can walk through (cobwebs, grass, flowers) have no collision box, so the
+			// swing went straight through them (Alex, 2026-10-10: couldn't break cobwebs). Check
+			// their outline too, and hit the nearer of the two.
+			HitResult outline = minecraft.level.clip(new ClipContext(start, end, ClipContext.Block.OUTLINE,
+				ClipContext.Fluid.NONE, minecraft.player));
+			HitResult target = block;
+			if (outline.getType() == HitResult.Type.BLOCK && (block.getType() != HitResult.Type.BLOCK
+				|| start.distanceTo(outline.getLocation()) < start.distanceTo(block.getLocation()))) {
+				target = outline;
+			}
+			if (target.getType() == HitResult.Type.BLOCK) {
+				breakMeleeBlock(minecraft, ((BlockHitResult) target).getBlockPos().immutable(), shot.tool());
+			}
 		}
 	}
 
@@ -716,7 +735,202 @@ public final class Combat {
 		miningHits = 0;
 	}
 
+	// Jarate / Mad Milk on mobs: entity id -> when it wears off (nanoTime). Read on both threads.
+	private static final java.util.concurrent.ConcurrentHashMap<Integer, Long> jarated = new java.util.concurrent.ConcurrentHashMap<>();
+	private static final java.util.concurrent.ConcurrentHashMap<Integer, Long> milked = new java.util.concurrent.ConcurrentHashMap<>();
+	private static final int JARATE = 1 << 6, MILK = 1 << 7, GAS = 1 << 8;  // protocol kExplosion*
+	private static final long JAR_NANOS = 10_000_000_000L;  // TF2's 10 s
+
+	static boolean isJarated(Entity e) {
+		Long until = jarated.get(e.getId());
+		return until != null && until > System.nanoTime();
+	}
+
+	static boolean isMilked(Entity e) {
+		Long until = milked.get(e.getId());
+		return until != null && until > System.nanoTime();
+	}
+
+	/**
+	 * A thrown jar's splash on Minecraft's mobs (Alex, 2026-10-10): Jarate makes your hits on them
+	 * mini-crits for 10 s, Mad Milk heals you 60% of the damage you deal them for 10 s, Gas
+	 * Passer sets them on fire. Only mobs the splash can reach (no block in between).
+	 */
+	private static void splash(Minecraft minecraft, Vec3 centre, float radius, int flags) {
+		long until = System.nanoTime() + JAR_NANOS;
+		int n = 0;
+		for (Entity e : combatTargets(minecraft, new AABB(centre, centre).inflate(radius))) {
+			if (!(e instanceof LivingEntity) || e.getBoundingBox().getCenter().distanceTo(centre) > radius
+				|| minecraft.level.clip(new ClipContext(centre, e.getBoundingBox().getCenter(), ClipContext.Block.COLLIDER,
+					ClipContext.Fluid.NONE, minecraft.player)).getType() != HitResult.Type.MISS) {
+				continue;
+			}
+			if ((flags & JARATE) != 0) {
+				jarated.put(e.getId(), until);
+			}
+			if ((flags & MILK) != 0) {
+				milked.put(e.getId(), until);
+			}
+			n++;
+			if ((flags & GAS) != 0) {
+				int id = e.getId();
+				IntegratedServer server = minecraft.getSingleplayerServer();
+				var dimension = minecraft.level.dimension();
+				if (server != null) {
+					server.execute(() -> {
+						ServerLevel level = server.getLevel(dimension);
+						Entity mob = level == null ? null : level.getEntity(id);
+						if (mob != null) {
+							mob.igniteForSeconds(6.0f);
+						}
+					});
+				}
+			}
+		}
+		FortCraft.LOG.info("FortCraft: {} splashed {} mobs", (flags & JARATE) != 0 ? "Jarate" : (flags & MILK) != 0 ? "Mad Milk" : "Gas Passer", n);
+	}
+
+	/** Jarate and Mad Milk drip from the mobs wearing them (every half second). */
+	private static void jarParticles(Minecraft minecraft) {
+		if (++jarParticleFrames % 15 != 0 || (jarated.isEmpty() && milked.isEmpty())) {
+			return;
+		}
+		long now = System.nanoTime();
+		jarated.values().removeIf(t -> t <= now);
+		milked.values().removeIf(t -> t <= now);
+		for (var entry : jarated.entrySet()) {
+			Entity e = minecraft.level.getEntity(entry.getKey());
+			if (e != null) {
+				AABB b = e.getBoundingBox();
+				minecraft.level.addParticle(ParticleTypes.FALLING_HONEY, b.getCenter().x, b.maxY, b.getCenter().z, 0, 0, 0);
+			}
+		}
+		for (var entry : milked.entrySet()) {
+			Entity e = minecraft.level.getEntity(entry.getKey());
+			if (e != null) {
+				AABB b = e.getBoundingBox();
+				minecraft.level.addParticle(ParticleTypes.SNOWFLAKE, b.getCenter().x, b.maxY, b.getCenter().z, 0, -0.05, 0);
+			}
+		}
+	}
+
+	private static int jarParticleFrames;
+
+	/**
+	 * Standing at your own working dispenser tops your Minecraft iron up to one stack, an ingot a
+	 * second (Alex, 2026-10-10). TF2's own metal and ammo refill as usual.
+	 */
+	private static void dispenserIron(Minecraft minecraft) {
+		if (++dispenserFrames % 60 != 0 || minecraft.player == null) {
+			return;
+		}
+		List<FortLink.Tf2Building> buildings = FortLink.readBuildings();
+		if (buildings == null) {
+			return;
+		}
+		Vec3 me = minecraft.player.position();
+		boolean near = false;
+		for (FortLink.Tf2Building b : buildings) {
+			if (b.dispenser() && new AABB(b.minX(), b.minY(), b.minZ(), b.maxX(), b.maxY(), b.maxZ()).inflate(1.5).contains(me)) {
+				near = true;
+			}
+		}
+		IntegratedServer server = minecraft.getSingleplayerServer();
+		if (!near || server == null) {
+			return;
+		}
+		UUID id = minecraft.player.getUUID();
+		server.execute(() -> {
+			ServerPlayer player = server.getPlayerList().getPlayer(id);
+			if (player == null || player.isCreative()) {
+				return;
+			}
+			var inv = player.getInventory();
+			int iron = 0;
+			for (int slot = 0; slot < 36; slot++) {
+				if (inv.getItem(slot).is(net.minecraft.world.item.Items.IRON_INGOT)) {
+					iron += inv.getItem(slot).getCount();
+				}
+			}
+			if (iron < 64) {
+				inv.placeItemBackInInventory(new net.minecraft.world.item.ItemStack(net.minecraft.world.item.Items.IRON_INGOT),
+					net.minecraft.util.Prediction.SERVER_ONLY);
+				inv.setChanged();
+			}
+		});
+	}
+
+	private static int dispenserFrames;
+
+	/**
+	 * Your TF2 merc dying clears Minecraft's potion effects (and fire) on the player, as dying in
+	 * Minecraft would (Alex, 2026-10-11). TF2 owns your health, so Minecraft's player never dies.
+	 */
+	private static void clearEffectsOnDeath(Minecraft minecraft, boolean dead) {
+		if (dead == tf2Dead) {
+			return;
+		}
+		tf2Dead = dead;
+		IntegratedServer server = minecraft.getSingleplayerServer();
+		if (!dead || server == null || minecraft.player == null) {
+			return;
+		}
+		UUID id = minecraft.player.getUUID();
+		server.execute(() -> {
+			ServerPlayer player = server.getPlayerList().getPlayer(id);
+			if (player != null) {
+				player.removeAllEffects();
+				player.clearFire();
+				FortCraft.LOG.info("FortCraft: TF2 merc died; Minecraft effects cleared");
+			}
+		});
+	}
+
+	private static boolean tf2Dead;
+
+	/**
+	 * A village raid near the player (96 blocks), told to TF2 once a second, which plays MvM's
+	 * wave music and announcer for it (Alex, 2026-10-11).
+	 */
+	private static void raidState(Minecraft minecraft) {
+		if (++raidFrames % 60 != 0 || minecraft.player == null) {
+			return;
+		}
+		IntegratedServer server = minecraft.getSingleplayerServer();
+		if (server == null) {
+			return;
+		}
+		var dimension = minecraft.level.dimension();
+		BlockPos pos = minecraft.player.blockPosition();
+		server.execute(() -> {
+			ServerLevel level = server.getLevel(dimension);
+			var raid = level == null ? null : level.getRaids().getNearbyRaid(pos, 96 * 96);
+			int state = raid == null ? 0 : raid.isVictory() ? 2 : raid.isLoss() ? 3 : raid.isStarted() && !raid.isStopped() ? 1 : 0;
+			int wave = raid == null ? 0 : raid.getGroupsSpawned();
+			int total = raid == null ? 0 : raid.getNumGroups(level.getDifficulty());
+			int alive = raid == null ? 0 : raid.getTotalRaidersAlive();
+			if (state == 2 && lastRaidState == 1) {
+				// Raid defended: $500 at the player's feet, picked up by the cash magnet (Alex, 2026-10-11).
+				FortLink.writeMobHit(pos.getX() + 0.5, pos.getY() + 0.5, pos.getZ() + 0.5, 0.0f, true, (1 << 7) | (500 << 16));
+				FortCraft.LOG.info("FortCraft: village raid defended, $500 reward");
+			}
+			if (state != lastRaidState || wave != lastRaidWave) {
+				lastRaidState = state;
+				lastRaidWave = wave;
+				FortCraft.LOG.info("FortCraft: village raid state {} wave {}/{} ({} raiders)", state, wave, total, alive);
+			}
+			FortLink.writeRaidState(state, wave, total, alive);
+		});
+	}
+
+	private static int raidFrames;
+	private static volatile int lastRaidState, lastRaidWave;
+
 	private static void blast(Minecraft minecraft, Vec3 centre, float reportedRadius, float baseDamage, int flags) {
+		if ((flags & (JARATE | MILK | GAS)) != 0) {
+			splash(minecraft, centre, reportedRadius, flags);
+			return;
+		}
 		if (reportedRadius <= 0) {
 			FortCraft.LOG.info("FortCraft: harmless blast at {} (jumper or fire weapon): no mob or block damage", centre);
 			return;
@@ -884,15 +1098,23 @@ public final class Combat {
 
 	/**
 	 * Some mobs sometimes drop a TF2 small ammo pack (Alex, 2026-10-10): skeletons (and strays,
-	 * bogged) 20%, wither skeletons 30%, endermen in the End 15%.
+	 * bogged) 30%, wither skeletons 30%, endermen in the End 15%.
 	 */
 	private static boolean dropsAmmo(LivingEntity mob, ServerLevel level) {
 		var type = mob.getType();
-		float chance = type == EntityTypes.SKELETON || type == EntityTypes.STRAY || type == EntityTypes.BOGGED ? 0.20f
+		float chance = type == EntityTypes.SKELETON || type == EntityTypes.STRAY || type == EntityTypes.BOGGED ? 0.30f
 			: type == EntityTypes.WITHER_SKELETON ? 0.30f
 			: type == EntityTypes.ENDERMAN && level.dimension() == Level.END ? 0.15f
 			: 0.0f;
 		return chance > 0 && mob.getRandom().nextFloat() < chance;
+	}
+
+	/** Zombies (and husks, drowned, zombie villagers) drop a TF2 small health kit 20% of the time. */
+	private static boolean dropsHealth(LivingEntity mob) {
+		var type = mob.getType();
+		boolean zombie = type == EntityTypes.ZOMBIE || type == EntityTypes.HUSK || type == EntityTypes.DROWNED
+			|| type == EntityTypes.ZOMBIE_VILLAGER;
+		return zombie && mob.getRandom().nextFloat() < 0.20f;
 	}
 
 	private static boolean dragonDying(Entity entity) {
@@ -983,8 +1205,10 @@ public final class Combat {
 					money = 0;
 				}
 				int ammo = killed && target instanceof LivingEntity dropper && dropsAmmo(dropper, level) ? 1 << 9 : 0;  // kMobHitDropAmmo
+				int health = killed && target instanceof LivingEntity eater && dropsHealth(eater) ? 1 << 10 : 0;  // kMobHitDropHealth
+				int milk = isMilked(target) ? 1 << 11 : 0;  // protocol kMobHitMilk
 				FortLink.writeMobHit(box.getCenter().x, box.maxY, box.getCenter().z, applied * scale, killed,
-					(effects & (CombatRules.SENTRY | CombatRules.CRIT | CombatRules.MINI)) | ammo | (money << 16));
+					(effects & (CombatRules.SENTRY | CombatRules.CRIT | CombatRules.MINI)) | ammo | health | milk | (money << 16));
 				int bleed = CombatRules.bleedSeconds(effects);
 				if (bleed > 0 && !killed && target instanceof LivingEntity) {
 					Bleed.start(target.getId(), bleed);

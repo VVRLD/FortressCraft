@@ -18,6 +18,27 @@ import org.spongepowered.asm.mixin.injection.callback.CallbackInfoReturnable;
 
 @Mixin(Minecraft.class)
 public abstract class MinecraftMixin {
+	/**
+	 * Minecraft aims (the block outline, placing, using) from its own player's eyes, 1.62 blocks up,
+	 * but you look through TF2's camera, lower for most mercs. So a block you aimed at the side of
+	 * could get hit on its top and placing put the new block on top of it (Alex, 2026-10-11). While
+	 * linked, re-aim at blocks from the camera you actually see through.
+	 */
+	@Inject(method = "pick", at = @At("TAIL"))
+	private void fortcraft$aimFromCamera(float partialTick, CallbackInfo ci) {
+		Minecraft self = (Minecraft) (Object) this;
+		if (!dev.fortcraft.Combat.linked || self.player == null || self.level == null || Puppet.tf2EyeHeight() <= 0
+			|| self.hitResult instanceof net.minecraft.world.phys.EntityHitResult) {
+			return;
+		}
+		net.minecraft.client.Camera camera = self.gameRenderer.mainCamera();
+		net.minecraft.world.phys.Vec3 from = camera.position();
+		org.joml.Vector3fc f = camera.forwardVector();
+		net.minecraft.world.phys.Vec3 to = from.add(new net.minecraft.world.phys.Vec3(f.x(), f.y(), f.z()).scale(self.player.blockInteractionRange()));
+		self.hitResult = self.level.clip(new net.minecraft.world.level.ClipContext(from, to, net.minecraft.world.level.ClipContext.Block.OUTLINE,
+			net.minecraft.world.level.ClipContext.Fluid.NONE, self.player));
+	}
+
 	@Unique
 	private static boolean fortcraft$useBlockedThisHold;
 

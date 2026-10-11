@@ -42,7 +42,11 @@ public abstract class ServerPlayerMixin {
 		}
 		ServerPlayer self = (ServerPlayer) (Object) this;
 		cir.setReturnValue(false);
-		if (self.isCreative() || source.is(DamageTypeTags.IS_FALL) || amount <= 0) {
+		// Suffocation ("inWall") is skipped too: TF2 owns where the player is, and Minecraft's taller
+		// player poked its head into the block above when jumping under a low ceiling, which hurt
+		// (Alex, 2026-10-10). TF2's own collision keeps the player out of blocks.
+		if (self.isCreative() || source.is(DamageTypeTags.IS_FALL) || source.is(net.minecraft.world.damagesource.DamageTypes.IN_WALL)
+			|| amount <= 0) {
 			return;
 		}
 		long now = level.getGameTime();
@@ -56,6 +60,14 @@ public abstract class ServerPlayerMixin {
 		} else {
 			fortcraft$lastHitTick = now;
 			fortcraft$lastHitAmount = amount;
+		}
+		// Poison and Wither hit once, then wear off, instead of ticking damage over and over
+		// (Alex, 2026-10-11).
+		if (source.is(net.minecraft.world.damagesource.DamageTypes.MAGIC) && self.hasEffect(net.minecraft.world.effect.MobEffects.POISON)) {
+			self.removeEffect(net.minecraft.world.effect.MobEffects.POISON);
+		}
+		if (source.is(net.minecraft.world.damagesource.DamageTypes.WITHER)) {
+			self.removeEffect(net.minecraft.world.effect.MobEffects.WITHER);
 		}
 		Vec3 from = source.getSourcePosition() != null ? source.getSourcePosition() : self.position();
 		FortLink.writeHurt(send, from.x, from.y, from.z);

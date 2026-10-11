@@ -5,6 +5,7 @@
   "client": [
     "CameraMixin",
     "EnchantingTableMixin",
+    "EntityRenderDispatcherMixin",
     "ExperienceOrbMixin",
     "FoodDataMixin",
     "ClientLanguageMixin",
@@ -20,6 +21,7 @@
     "OptionsMixin",
     "PlayerMixin",
     "ServerPlayerMixin",
+    "SoundManagerMixin",
     "ServerMoveMixin"
   ],
   "injectors": { "defaultRequire": 1 }

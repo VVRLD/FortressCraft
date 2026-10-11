@@ -27,9 +27,11 @@ public final class Tf2Keys {
 	public static final KeyMapping VOICE_2 = key("voice_menu_2", InputConstants.KEY_X);
 	public static final KeyMapping VOICE_3 = key("voice_menu_3", InputConstants.KEY_C);
 	public static final KeyMapping VOICE_CANCEL = key("voice_cancel", InputConstants.KEY_0);
+	/** FortCraft's short controls guide (shown once by itself, then on this key). */
+	public static final KeyMapping GUIDE = key("guide", InputConstants.KEY_H);
 
 	private static final KeyMapping[] ALL = { RELOAD, TAUNT, CLASS_MENU, TEAM_MENU, LOADOUT, BACKPACK, MAIN_MENU, CONSOLE,
-		VOICE_1, VOICE_2, VOICE_3, VOICE_CANCEL };
+		VOICE_1, VOICE_2, VOICE_3, VOICE_CANCEL, GUIDE };
 
 	private Tf2Keys() {
 	}

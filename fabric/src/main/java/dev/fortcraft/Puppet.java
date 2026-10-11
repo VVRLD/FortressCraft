@@ -123,6 +123,7 @@ public final class Puppet {
 			Fire.tick(minecraft);
 			MobsVsBuildings.tick(minecraft);
 			FarOcclusion.tick(minecraft);
+			Robots.tick(minecraft);
 			Bleed.tick(minecraft);
 		}
 

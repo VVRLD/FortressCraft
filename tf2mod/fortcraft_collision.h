@@ -36,6 +36,8 @@ const FortCraftBox *FortCraft_Boxes( int *pCount );
 // movement collision; TF2 draws these before projectiles so they can be hidden by Minecraft.
 const FortCraftBox *FortCraft_VisualBoxes( int *pCount );
 const FortCraftBox *FortCraft_MobBoxes( int *pCount );
+// Per mob box, the same order: proto::kMobHostile / kMobSentrySees / kMobRobot.
+const unsigned char *FortCraft_MobFlags( int *pCount );
 
 // True if the point is inside one of Minecraft's blocks (TF2 units).
 bool FortCraft_PointInBlocks( const Vector &pos );
@@ -57,6 +59,13 @@ bool FortCraft_NearestHostileMob( const Vector &from, float flRange, Vector &tar
 // ice); -1 when not linked or nothing special. Used by CGameMovement::CategorizeGroundSurface.
 float FortCraft_GroundFriction();
 
+// MvM upgrade levels the last-used enchanting table's bookshelves allow per upgrade (0 = no
+// limit, or not linked): 0-4 shelves 1 level, 5-9 2, 10-14 3, 15 all. Both modules: the upgrade
+// screen greys out + at the limit, and the server refuses past it. FortCraft_UpgradeBookshelves
+// gives the count itself (-1 if unknown).
+int FortCraft_UpgradeLevelsAllowed();
+int FortCraft_UpgradeBookshelves();
+
 // True while Minecraft says the camera aims at a mob's back within knife reach (both modules: the
 // knife's raised-hand animation and backstab swing are predicted).
 bool FortCraft_MobBackstabReady();
@@ -76,6 +85,10 @@ void FortCraft_ReportShot( const Vector &src, const Vector &dir, float flDistanc
 void FortCraft_ReportWeaponShot( CTFWeaponBase *weapon, const Vector &src, const Vector &dir,
 	float distance, float damage, int damageType, bool melee, bool mini = false );
 void FortCraft_ReportBlast( const Vector &src, float radius, float damage, int damageType );
+// A thrown jar's splash (Jarate, Mad Milk, Gas Passer) for Minecraft's mobs; nFlags is one of
+// proto::kExplosionJarate / kExplosionMilk / kExplosionGas.
+void FortCraft_ReportJar( const Vector &src, float radius, int nFlags );
+
 
 // TF2 server: fire touched the world or a mob here (TF2 units). Minecraft sets mobs within the
 // radius on fire and lights a fire block; bFlame thins out the flamethrower's many flames. A
@@ -98,6 +111,9 @@ void FortCraft_ApplyMinecraftDamage( CBaseEntity *pPlayer );
 
 // TF2 server, end of player spawn: move the player onto Minecraft's ground (Minecraft's spawn point).
 void FortCraft_OnPlayerSpawn( CBaseEntity *pPlayer );
+// Called from CTFPlayer::Spawn: a respawn from being alive a moment ago (changing class) keeps
+// the player where they were; otherwise FortCraft_OnPlayerSpawn (Minecraft's bed or spawn).
+void FortCraft_OnPlayerRespawn( CBaseEntity *pPlayer );
 
 // For two seconds after spawn, lift a player out if the refreshed Minecraft boxes reveal
 // that the full TF2 hull overlaps a block (the block scan may arrive after the teleport).

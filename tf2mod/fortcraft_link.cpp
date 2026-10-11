@@ -33,6 +33,8 @@
 #include "player_vs_environment/c_tf_upgrades.h"
 #include "particle_parse.h"
 #include "engine/IEngineSound.h"
+#include "bone_setup.h"
+#include "props_shared.h"
 #include "../protocol/fortcraft_protocol.h"
 #include "fortcraft_platform.h"
 
@@ -352,7 +354,8 @@ static void WriteCamera( const Vector &origin, const QAngle &angles )
 		| ( pPlayer && pPlayer->IsAlive() && pPlayer->m_Shared.IsStealthed() && pPlayer->m_Shared.GetPercentInvisible() > 0.75f
 			? proto::kCameraCloaked : 0 )
 		| ( EurekaMenuOpen() ? proto::kCameraEurekaMenu : 0 )
-		| ( engine->Con_IsVisible() ? proto::kCameraConsole : 0 );
+		| ( engine->Con_IsVisible() ? proto::kCameraConsole : 0 )
+		| ( pPlayer && !pPlayer->IsAlive() ? proto::kCameraDead : 0 );
 	ToMinecraft( origin, cam.x, cam.y, cam.z );
 	cam.yaw = AngleNormalize( -angles.y - 90.0f );
 	cam.pitch = angles.x;
@@ -394,6 +397,158 @@ static bool ViewportMenuOpen()
 		return false;
 	IViewPortPanel *pPanel = gViewPortInterface->GetActivePanel();
 	return pPanel && pPanel->IsVisible() && V_strcmp( pPanel->GetName(), PANEL_SCOREBOARD ) != 0;
+}
+
+// MvM's upgrade station music, looping while the upgrade screen is open (Alex, 2026-10-10).
+static void UpgradeMusic( bool bOpen )
+{
+	static const char *kMusic = "items/tf_music_upgrade_machine.wav";
+	static bool s_bPlaying;
+	static double s_flRestartAt;
+	if ( !bOpen )
+	{
+		if ( s_bPlaying )
+		{
+			enginesound->EmitAmbientSound( kMusic, 0.0f, PITCH_NORM, SND_STOP );
+			s_bPlaying = false;
+		}
+		return;
+	}
+	const double flNow = Plat_FloatTime();
+	if ( s_bPlaying && flNow < s_flRestartAt )
+		return;
+	if ( s_bPlaying )
+		enginesound->EmitAmbientSound( kMusic, 0.0f, PITCH_NORM, SND_STOP );
+	enginesound->PrecacheSound( kMusic, true );
+	enginesound->EmitAmbientSound( kMusic, 0.6f );
+	const float flLength = enginesound->GetSoundDuration( kMusic );
+	s_flRestartAt = flNow + ( flLength > 1.0f ? flLength : 30.0f );
+	s_bPlaying = true;
+}
+
+// Cycles through n variations (1..n) from a random start, so the same one doesn't come back
+// until all have played (Alex, 2026-10-11).
+static int NextVariant( int &nLast, int n )
+{
+	if ( nLast < 0 )
+		nLast = RandomInt( 0, n - 1 );
+	nLast = ( nLast + 1 ) % n;
+	return nLast + 1;
+}
+
+// One of the Administrator's MvM lines; the pools below join groups that mean the same thing.
+static void PlayAdminLine( const char *pszGroup, int n, int &nLast )
+{
+	engine->ClientCmd_Unrestricted( VarArgs( "play vo/%s%02d.mp3\n", pszGroup, NextVariant( nLast, n ) ) );
+}
+
+// A village raid near the player, played like MvM's waves (Alex, 2026-10-11):
+// - each raid wave's horn: a wave-start music, cycling MvM's variants (the final-wave one for the
+//   last wave), with the Administrator's first-wave or final-wave line;
+// - all of a wave's raiders dead with more waves to come: the wave-end music and her "prepare for
+//   the next wave" line;
+// - the raid won: the final-wave end music and her final-wave line; lost: the lost-wave ones.
+// A start music still playing fades out over 3 s when its wave ends.
+static void RaidMusic()
+{
+	static const char *s_pszMusic = "";
+	static uint32_t s_nState, s_nWave, s_nAlive;
+	static bool s_bPlaying;
+	static double s_flRestartAt, s_flFadeStart = -1.0;
+	const proto::RaidState &raid = At< proto::RaidState >( proto::kOffRaidState );
+	const uint32_t state = raid.state, wave = raid.wave, total = raid.totalWaves, alive = raid.alive;
+	const double flNow = Plat_FloatTime();
+
+	if ( state == 1 && wave > s_nWave && wave > 0 )
+	{
+		// A new wave's horn.
+		static const char *kMid[] = { "music/mvm_start_mid_wave.wav", "music/mvm_start_tank_wave.wav", "music/mvm_start_wave.wav" };
+		const bool bLast = total > 0 && wave >= total;
+		const char *pszMusic = bLast ? "music/mvm_start_last_wave.wav" : wave == 1 ? "music/mvm_start_wave.wav" : kMid[ ( wave - 2 ) % 3 ];
+		if ( s_bPlaying )
+			enginesound->EmitAmbientSound( s_pszMusic, 0.0f, PITCH_NORM, SND_STOP );
+		s_pszMusic = pszMusic;
+		enginesound->PrecacheSound( s_pszMusic, true );
+		enginesound->EmitAmbientSound( s_pszMusic, 0.7f );
+		const float flLength = enginesound->GetSoundDuration( s_pszMusic );
+		s_flRestartAt = flNow + ( flLength > 1.0f ? flLength : 60.0f );  // when it ends (no loop)
+		s_bPlaying = true;
+		s_flFadeStart = -1.0;
+		// The Administrator announces every wave: first-wave lines, then the general wave-start
+		// lines (two groups, 20 lines), and final-wave lines for the last.
+		static int s_nFirst = -1, s_nMid = -1, s_nFinal = -1;
+		if ( bLast )
+			PlayAdminLine( "mvm_final_wave_start", 12, s_nFinal );
+		else if ( wave == 1 )
+			PlayAdminLine( "mvm_firstwave_start", 6, s_nFirst );
+		else
+		{
+			const int nLine = NextVariant( s_nMid, 20 );
+			if ( nLine <= 12 )
+				engine->ClientCmd_Unrestricted( VarArgs( "play vo/mvm_wave_start%02d.mp3\n", nLine ) );
+			else
+				engine->ClientCmd_Unrestricted( VarArgs( "play vo/mvm_general_wav_start%02d.mp3\n", nLine - 12 ) );
+		}
+		Msg( "FortCraft: village raid wave %u of %u: %s\n", wave, total, pszMusic );
+	}
+	else if ( state == 1 && wave > 0 && alive == 0 && s_nAlive > 0 && ( total == 0 || wave < total ) )
+	{
+		// Wave cleared, more to come.
+		static const char *kEnd[] = { "music/mvm_end_wave.wav", "music/mvm_end_mid_wave.wav", "music/mvm_end_tank_wave.wav" };
+		if ( s_bPlaying )
+			s_flFadeStart = flNow;
+		// Her "good job" lines: the wave-end ones and the bonus ones (11 in all), in turn.
+		static int s_nEnd = -1;
+		const int nLine = NextVariant( s_nEnd, 11 );
+		engine->ClientCmd_Unrestricted( VarArgs( "play %s\n", kEnd[ ( wave - 1 ) % 3 ] ) );
+		if ( nLine <= 8 )
+			engine->ClientCmd_Unrestricted( VarArgs( "play vo/mvm_wave_end%02d.mp3\n", nLine ) );
+		else
+			engine->ClientCmd_Unrestricted( VarArgs( "play vo/mvm_bonus%02d.mp3\n", nLine - 8 ) );
+		Msg( "FortCraft: village raid wave %u cleared\n", wave );
+	}
+	if ( state != s_nState && s_nState == 1 )
+	{
+		if ( s_bPlaying )
+			s_flFadeStart = flNow;
+		if ( state == 2 )
+		{
+			static int s_nFinalEnd = -1;
+			engine->ClientCmd_Unrestricted( "play music/mvm_end_last_wave.wav\n" );
+			PlayAdminLine( "mvm_final_wave_end", 6, s_nFinalEnd );
+			Msg( "FortCraft: village defended\n" );
+		}
+		else if ( state == 3 )
+		{
+			static int s_nLose = -1;
+			engine->ClientCmd_Unrestricted( "play music/mvm_lost_wave.wav\n" );
+			PlayAdminLine( "mvm_wave_lose", 12, s_nLose );
+			Msg( "FortCraft: village lost\n" );
+		}
+	}
+	s_nState = state;
+	s_nWave = state == 0 ? 0 : wave;
+	s_nAlive = alive;
+	const char *kMusic = s_pszMusic;
+	if ( !s_bPlaying )
+		return;
+	if ( s_flFadeStart >= 0.0 )
+	{
+		const float flLeft = 1.0f - (float)( ( flNow - s_flFadeStart ) / 3.0 );
+		if ( flLeft <= 0.0f )
+		{
+			enginesound->EmitAmbientSound( kMusic, 0.0f, PITCH_NORM, SND_STOP );
+			s_bPlaying = false;
+			s_flFadeStart = -1.0;
+		}
+		else
+		{
+			enginesound->EmitAmbientSound( kMusic, 0.7f * flLeft, PITCH_NORM, SND_CHANGE_VOL );
+		}
+		return;
+	}
+	if ( flNow >= s_flRestartAt )
+		s_bPlaying = false;  // the start music has finished; it doesn't loop
 }
 
 // TF2's MvM upgrade screen (opened by Minecraft's enchanting table).
@@ -717,6 +872,8 @@ static void PollUiEvents( C_TFPlayer *pPlayer )
 	}
 	if ( UiOpen() && s_flMenuCursorX >= 0.0f && g_InputInternal )
 		MoveCursor( s_flMenuCursorX, s_flMenuCursorY );
+	UpgradeMusic( UpgradePanel() != NULL );
+	RaidMusic();
 
 	// Report a change of menu state once, so the log shows what happened.
 	static bool s_bWasOpen;
@@ -1073,13 +1230,50 @@ static uintp WorkerMain( void * )
 // (invisible), so rockets and effects drawn afterward are hidden behind them.
 // Walk-through plants are omitted: their box-only depth masks hid whole mercs
 // and the narrow substitute still cut conspicuous strips through them.
+// Blocks in front of far robots (protocol RobotOccluders, v64), in TF2 units.
+static void ReadRobotOccluders( CUtlVector< FortCraftBox > &out )
+{
+	const proto::RobotOccluders &src = At< proto::RobotOccluders >( proto::kOffRobotOccluders );
+	const uint32_t seq = *(volatile const uint32_t *)&src.seq;
+	if ( seq & 1 )
+		return;  // mid-write: keep last frame's
+	CUtlVector< FortCraftBox > boxes;
+	const uint32_t n = MIN( src.count, proto::kMaxRobotOccluders );
+	for ( uint32_t i = 0; i < n; ++i )
+	{
+		const proto::BlockBox &b = src.boxes[ i ];
+		FortCraftBox &o = boxes[ boxes.AddToTail() ];
+		o.mins.Init( ( b.minX - 0.5f ) * UNITS_PER_BLOCK + s_vecOrigin.x, -( b.maxZ - 0.5f ) * UNITS_PER_BLOCK + s_vecOrigin.y,
+			( b.minY - (float)MC_FLOOR_Y ) * UNITS_PER_BLOCK + s_vecOrigin.z );
+		o.maxs.Init( ( b.maxX - 0.5f ) * UNITS_PER_BLOCK + s_vecOrigin.x, -( b.minZ - 0.5f ) * UNITS_PER_BLOCK + s_vecOrigin.y,
+			( b.maxY - (float)MC_FLOOR_Y ) * UNITS_PER_BLOCK + s_vecOrigin.z );
+	}
+	if ( *(volatile const uint32_t *)&src.seq != seq )
+		return;
+	out.Swap( boxes );
+}
+
 static void DrawBlockDepth()
 {
-	int counts[ 3 ] = { 0, 0, 0 };
-	const FortCraftBox *lists[ 3 ] = {
-		FortCraft_Boxes( &counts[ 0 ] ), FortCraft_VisualBoxes( &counts[ 1 ] ), FortCraft_MobBoxes( &counts[ 2 ] )
+	static CUtlVector< FortCraftBox > s_Occluders;
+	ReadRobotOccluders( s_Occluders );
+	int counts[ 4 ] = { 0, 0, 0, s_Occluders.Count() };
+	const FortCraftBox *lists[ 4 ] = {
+		FortCraft_Boxes( &counts[ 0 ] ), FortCraft_VisualBoxes( &counts[ 1 ] ), FortCraft_MobBoxes( &counts[ 2 ] ), s_Occluders.Base()
 	};
-	if ( !counts[ 0 ] && !counts[ 2 ] )
+	// Mobs TF2 draws as robots stay out of the depth layer: the robot would be hidden inside its box.
+	int nFlags = 0;
+	const unsigned char *pMobFlags = FortCraft_MobFlags( &nFlags );
+	static CUtlVector< FortCraftBox > s_DepthMobs;
+	s_DepthMobs.RemoveAll();
+	for ( int i = 0; i < counts[ 2 ]; ++i )
+	{
+		if ( i >= nFlags || !( pMobFlags[ i ] & proto::kMobRobot ) )
+			s_DepthMobs.AddToTail( lists[ 2 ][ i ] );
+	}
+	lists[ 2 ] = s_DepthMobs.Base();
+	counts[ 2 ] = s_DepthMobs.Count();
+	if ( !counts[ 0 ] && !counts[ 2 ] && !counts[ 3 ] )
 		return;
 	static CMaterialReference s_WriteZ;
 	if ( !s_WriteZ.IsValid() )
@@ -1088,7 +1282,7 @@ static void DrawBlockDepth()
 	CMatRenderContextPtr pRenderContext( materials );
 	pRenderContext->Bind( s_WriteZ );
 	const int kBoxesPerBatch = 500;  // 6 quads = 24 vertices, 36 indices each; a dynamic mesh takes at most 32768 indices
-	for ( int list = 0; list < 3; ++list )
+	for ( int list = 0; list < 4; ++list )
 	{
 		if ( list == 1 )
 			continue;
@@ -1127,6 +1321,79 @@ static void DrawBlockDepth()
 	{
 		s_flNextDepthLog = Plat_FloatTime() + 5.0;
 		PerfLog( "FortCraft depth: %d solid, %d visual skipped, %d mob boxes\n", counts[ 0 ], counts[ 1 ], counts[ 2 ] );
+	}
+}
+
+// Soft round shadows on Minecraft's ground under TF2's players, buildings, projectiles and
+// pickups (Alex, 2026-10-10: they looked like they floated). TF2's own shadows need TF2's map;
+// these find the ground in Minecraft's blocks below each thing (blocks near the player only),
+// fade with height, and are hidden behind blocks by the depth layer drawn just before.
+static void DrawBlobShadows()
+{
+	static CMaterialReference s_Blob;
+	if ( !s_Blob.IsValid() )
+	{
+		KeyValues *kv = new KeyValues( "UnlitGeneric" );
+		kv->SetString( "$basetexture", "vgui/white" );
+		kv->SetInt( "$vertexcolor", 1 );
+		kv->SetInt( "$vertexalpha", 1 );
+		kv->SetInt( "$translucent", 1 );
+		s_Blob.Init( materials->CreateMaterial( "__fortcraft_blob_shadow", kv ) );
+	}
+	C_BasePlayer *pLocal = C_BasePlayer::GetLocalPlayer();
+	const float flMaxHeight = 3.0f * UNITS_PER_BLOCK;
+	CMatRenderContextPtr pRenderContext( materials );
+	pRenderContext->Bind( s_Blob );
+	int nDrawn = 0;
+	for ( C_BaseEntity *pEnt = ClientEntityList().FirstBaseEntity(); pEnt && nDrawn < 256; pEnt = ClientEntityList().NextBaseEntity( pEnt ) )
+	{
+		if ( pEnt->IsDormant() || !pEnt->GetModel() || pEnt->IsEffectActive( EF_NODRAW ) || pEnt->GetMoveParent() )
+			continue;
+		if ( pEnt == pLocal && !( ::input && ::input->CAM_IsThirdPerson() ) )
+			continue;  // your own merc isn't drawn in first person
+		if ( pEnt->IsPlayer() ? !pEnt->IsAlive() : false )
+			continue;
+		if ( modelinfo->GetModelType( pEnt->GetModel() ) == mod_brush || pEnt->IsBaseCombatWeapon() )
+			continue;
+		const char *pszClass = pEnt->GetClientClass() ? pEnt->GetClientClass()->m_pNetworkName : "";
+		if ( V_stristr( pszClass, "ViewModel" ) || V_stristr( pszClass, "Prop" ) || V_stristr( pszClass, "World" ) || V_stristr( pszClass, "Ragdoll" ) )
+			continue;
+		const Vector origin = pEnt->GetAbsOrigin();
+		trace_t tr;
+		FortCraft_ClearTrace( origin + Vector( 0, 0, 4 ), origin - Vector( 0, 0, flMaxHeight ), tr );
+		FortCraft_ClipHullTrace( origin + Vector( 0, 0, 4 ), origin - Vector( 0, 0, flMaxHeight ), vec3_origin, vec3_origin, tr );
+		if ( !tr.DidHit() || tr.plane.normal.z < 0.7f )
+			continue;  // nothing below (or a wall): no shadow
+		const float flHeight = MAX( 0.0f, origin.z - tr.endpos.z );
+		const float flFade = 1.0f - flHeight / flMaxHeight;
+		const float flRadius = clamp( pEnt->CollisionProp()->BoundingRadius2D() * 0.7f, 6.0f, 40.0f ) * ( 0.6f + 0.4f * flFade );
+		const unsigned char alpha = (unsigned char)( 110.0f * flFade );
+		const Vector centre = tr.endpos + Vector( 0, 0, 0.6f );
+		const int kSegments = 16;
+		IMesh *pMesh = pRenderContext->GetDynamicMesh();
+		CMeshBuilder mb;
+		mb.Begin( pMesh, MATERIAL_TRIANGLES, kSegments );
+		for ( int i = 0; i < kSegments; ++i )
+		{
+			const float a0 = 2.0f * M_PI_F * i / kSegments, a1 = 2.0f * M_PI_F * ( i + 1 ) / kSegments;
+			mb.Position3fv( centre.Base() );
+			mb.Color4ub( 0, 0, 0, alpha );
+			mb.TexCoord2f( 0, 0.5f, 0.5f );
+			mb.AdvanceVertex();
+			const Vector p1 = centre + Vector( cosf( a1 ) * flRadius, sinf( a1 ) * flRadius, 0 );
+			mb.Position3fv( p1.Base() );
+			mb.Color4ub( 0, 0, 0, 0 );
+			mb.TexCoord2f( 0, 0.5f, 0.5f );
+			mb.AdvanceVertex();
+			const Vector p0 = centre + Vector( cosf( a0 ) * flRadius, sinf( a0 ) * flRadius, 0 );
+			mb.Position3fv( p0.Base() );
+			mb.Color4ub( 0, 0, 0, 0 );
+			mb.TexCoord2f( 0, 0.5f, 0.5f );
+			mb.AdvanceVertex();
+		}
+		mb.End();
+		pMesh->Draw();
+		++nDrawn;
 	}
 }
 
@@ -1199,6 +1466,7 @@ void FortCraft_ClearForOverlay()
 		pRenderContext->ClearBuffers( true, true );
 	}
 	DrawBlockDepth();
+	DrawBlobShadows();
 }
 
 void FortCraft_ReadOverlay( int width, int height )
@@ -1551,6 +1819,558 @@ static void HideMapEntities()
 	}
 }
 
+// ---- Raiders as Mann vs. Machine robots (protocol RaidRobots, v63) ----------------------------
+// Alex, 2026-10-11: "native TF2 MvM robots, but instead of navmesh they use Minecraft's movement".
+// Minecraft keeps the mobs (AI, pathfinding, raid waves, damage) and stops drawing them; here TF2
+// draws a robot in each one's place: TF2's robot model and weapon, its run/stand/air animations
+// blended by how the mob moves, attack and flinch gestures, robot footsteps and voices, and gibs
+// when it dies. The robot is scaled to the mob's hitbox, which is what TF2's weapons hit.
+class C_FortCraftRobot : public C_BaseAnimating
+{
+public:
+	DECLARE_CLASS( C_FortCraftRobot, C_BaseAnimating );
+	int m_nGestureSeq = -1;
+	float m_flGestureCycle = 1.0f;
+
+	// One gesture (attack swing, bow release, flinch) layered over the movement sequence, as
+	// TF2's players do with their animation layers.
+	virtual void AccumulateLayers( IBoneSetup &boneSetup, Vector pos[], Quaternion q[], float currentTime ) OVERRIDE
+	{
+		BaseClass::AccumulateLayers( boneSetup, pos, q, currentTime );
+		if ( m_nGestureSeq >= 0 && m_flGestureCycle < 1.0f && m_nGestureSeq < boneSetup.GetStudioHdr()->GetNumSeq() )
+			boneSetup.AccumulatePose( pos, q, m_nGestureSeq, m_flGestureCycle, 1.0f, currentTime, m_pIk );
+	}
+};
+
+struct RobotKind
+{
+	const char *pszModel, *pszWeapon, *pszExtra;
+	const char *pszVoice;       // sound script class: Sniper.MVM_PainSharp01 ...
+	bool bAlwaysGiant;          // the ravager's Giant Heavy
+	const char *pszGiantModel;  // MvM's giant model for this class, if it has one
+	bool bMighty;               // giants of this class have their own voice lines (M_MVM_*)
+	const char *pszGiantStep;
+	int nPain, nBattleCry, nCheers;
+	Activity stand, run, air, attack, deployedStand, deployedRun;
+};
+
+// Indexed by the kind Minecraft sends (Robots.java): 1 Bowman, 2 Demoknight, 3 Medic, 4 Scout,
+// 5 Giant Heavy, 6 Jarate Sniper.
+static const RobotKind kRobotKinds[] = {
+	{ NULL, NULL, NULL, NULL, false, NULL, false, NULL, 0, 0, 0, ACT_INVALID, ACT_INVALID, ACT_INVALID, ACT_INVALID, ACT_INVALID, ACT_INVALID },
+	{ "models/bots/sniper/bot_sniper.mdl", "models/weapons/c_models/c_bow/c_bow.mdl", NULL, "Sniper", false, NULL, false, "MVM.GiantSoldierStep", 4, 6, 8,
+		ACT_MP_STAND_ITEM2, ACT_MP_RUN_ITEM2, ACT_MP_AIRWALK_ITEM2, ACT_MP_ATTACK_STAND_ITEM2, ACT_MP_DEPLOYED_IDLE_ITEM2, ACT_INVALID },
+	{ "models/bots/demo/bot_demo.mdl", "models/weapons/c_models/c_claymore/c_claymore.mdl", "models/weapons/c_models/c_targe/c_targe.mdl", "Demoman", false,
+		"models/bots/demo_boss/bot_demo_boss.mdl", true, "MVM.GiantDemomanStep", 7, 7, 8,
+		ACT_MP_STAND_MELEE, ACT_MP_RUN_MELEE, ACT_MP_AIRWALK_MELEE, ACT_MP_ATTACK_STAND_MELEE, ACT_INVALID, ACT_INVALID },
+	{ "models/bots/medic/bot_medic.mdl", "models/weapons/c_models/c_medigun/c_medigun.mdl", NULL, "Medic", false, NULL, false, "MVM.GiantSoldierStep", 8, 6, 6,
+		ACT_MP_STAND_SECONDARY, ACT_MP_RUN_SECONDARY, ACT_MP_AIRWALK_SECONDARY, ACT_MP_ATTACK_STAND_SECONDARY, ACT_INVALID, ACT_INVALID },
+	{ "models/bots/scout/bot_scout.mdl", "models/weapons/c_models/c_bat.mdl", NULL, "Scout", false,
+		"models/bots/scout_boss/bot_scout_boss.mdl", true, "MVM.GiantScoutStep", 8, 5, 6,
+		ACT_MP_STAND_MELEE, ACT_MP_RUN_MELEE, ACT_MP_AIRWALK_MELEE, ACT_MP_ATTACK_STAND_MELEE, ACT_INVALID, ACT_INVALID },
+	// The Giant Heavy spins up its minigun while it hunts and fires when the ravager attacks.
+	{ "models/bots/heavy_boss/bot_heavy_boss.mdl", "models/weapons/c_models/c_minigun/c_minigun.mdl", NULL, "Heavy", true,
+		"models/bots/heavy_boss/bot_heavy_boss.mdl", true, "MVM.GiantHeavyStep", 5, 6, 8,
+		ACT_MP_STAND_PRIMARY, ACT_MP_RUN_PRIMARY, ACT_MP_AIRWALK_PRIMARY, ACT_MP_ATTACK_STAND_PRIMARY, ACT_MP_DEPLOYED_IDLE, ACT_MP_DEPLOYED_PRIMARY },
+	{ "models/bots/sniper/bot_sniper.mdl", "models/weapons/c_models/urinejar.mdl", NULL, "Sniper", false, NULL, false, "MVM.GiantSoldierStep", 4, 6, 8,
+		ACT_MP_STAND_ITEM1, ACT_MP_RUN_ITEM1, ACT_MP_AIRWALK_ITEM1, ACT_MP_ATTACK_STAND_ITEM1, ACT_INVALID, ACT_INVALID },
+};
+
+struct RobotState
+{
+	int id = 0;
+	int kind = 0;
+	C_FortCraftRobot *pModel = NULL;
+	C_BaseAnimating *pWeapon = NULL, *pExtra = NULL;
+	// The same entities by handle: if TF2 itself removes them (a map change), the pointers above
+	// are dropped instead of used.
+	CHandle< C_BaseAnimating > hModel, hWeapon, hExtra;
+	uint16_t flags = 0;      // last frame's
+	Vector vecLast = vec3_origin;
+	Vector vecVelocity = vec3_origin;  // smoothed, TF2 units per second
+	float flStepUnits = 0.0f;          // walked since the last footstep
+	double flNextVoice = 0.0;
+	double flNextCast = 0.0;
+	double flRetryAt = 0.0;  // model couldn't be made (not precached yet): try again then
+	bool bGiant = false;     // the model made is the giant one
+	bool bShieldCharge = false;
+	bool bDead = false;
+	bool bSeen = false;      // in this frame's list
+};
+static CUtlVector< RobotState > s_Robots;
+
+struct RobotGib
+{
+	C_BaseAnimating *pModel;
+	CHandle< C_BaseAnimating > hModel;
+	Vector pos, vel;
+	QAngle ang, spin;
+	double flBorn;
+	bool bResting;
+};
+static CUtlVector< RobotGib > s_RobotGibs;
+static const double kGibLife = 8.0;
+
+static Vector RobotToTF2( float x, float y, float z )
+{
+	return Vector( ( x - 0.5f ) * UNITS_PER_BLOCK + s_vecOrigin.x, -( z - 0.5f ) * UNITS_PER_BLOCK + s_vecOrigin.y,
+		( y - (float)MC_FLOOR_Y ) * UNITS_PER_BLOCK + s_vecOrigin.z );
+}
+
+static void RobotSound( const char *pszName, const Vector &pos )
+{
+	C_BaseEntity::PrecacheScriptSound( pszName );
+	CLocalPlayerFilter filter;
+	C_BaseEntity::EmitSound( filter, SOUND_FROM_WORLD, pszName, &pos );
+}
+
+// "Sniper.MVM_PainSharp03", "Heavy.M_MVM_BattleCry05" ...
+static void RobotVoice( const RobotKind &k, bool bGiant, const char *pszLine, int nCount, const Vector &pos )
+{
+	if ( nCount <= 0 )
+		return;
+	RobotSound( VarArgs( "%s.%sMVM_%s%02d", k.pszVoice, bGiant && k.bMighty ? "M_" : "", pszLine, RandomInt( 1, nCount ) ), pos );
+}
+
+static C_BaseAnimating *RobotPart( const char *pszModel, C_BaseAnimating *pParent )
+{
+	if ( !pszModel )
+		return NULL;
+	C_BaseAnimating *pPart = new C_BaseAnimating;
+	if ( !pPart->InitializeAsClientEntity( pszModel, RENDER_GROUP_OPAQUE_ENTITY ) )
+	{
+		pPart->Release();
+		return NULL;
+	}
+	pPart->m_nSkin = 1;  // BLU, like MvM's robots
+	pPart->FollowEntity( pParent, true );
+	return pPart;
+}
+
+static void ReleaseRobot( RobotState &r )
+{
+	if ( r.hModel.Get() != r.pModel )
+		r.pModel = NULL;
+	if ( r.hWeapon.Get() != r.pWeapon )
+		r.pWeapon = NULL;
+	if ( r.hExtra.Get() != r.pExtra )
+		r.pExtra = NULL;
+	if ( r.pWeapon )
+		r.pWeapon->Release();
+	if ( r.pExtra )
+		r.pExtra->Release();
+	if ( r.pModel )
+		r.pModel->Release();
+	r.pWeapon = r.pExtra = NULL;
+	r.pModel = NULL;
+}
+
+static int RobotSequence( C_BaseAnimating *pModel, Activity act )
+{
+	return act == ACT_INVALID ? -1 : pModel->SelectWeightedSequence( act );
+}
+
+// The robot breaks apart like MvM's do: its model's gib pieces fly off and bounce on Minecraft's
+// blocks, then fade.
+static void RobotGibs( RobotState &r )
+{
+	if ( !r.pModel || UTIL_IsLowViolence() )
+		return;
+	CUtlVector< breakmodel_t > list;
+	BuildGibList( list, r.pModel->GetModelIndex(), 1.0f, COLLISION_GROUP_NONE );
+	const Vector origin = r.pModel->GetAbsOrigin();
+	const QAngle angles = r.pModel->GetAbsAngles();
+	const float flScale = r.pModel->GetModelScale();
+	matrix3x4_t xf;
+	AngleMatrix( angles, origin, xf );
+	for ( int i = 0; i < list.Count() && s_RobotGibs.Count() < 96; ++i )
+	{
+		C_BaseAnimating *pGib = new C_BaseAnimating;
+		if ( !pGib->InitializeAsClientEntity( list[ i ].modelName, RENDER_GROUP_OPAQUE_ENTITY ) )
+		{
+			pGib->Release();
+			continue;
+		}
+		pGib->m_nSkin = 1;
+		pGib->SetModelScale( flScale );
+		RobotGib g;
+		g.pModel = pGib;
+		g.hModel = pGib;
+		VectorTransform( list[ i ].offset * flScale, xf, g.pos );
+		g.pos.z += 8.0f * flScale;
+		g.ang = angles;
+		g.vel = r.vecVelocity + Vector( RandomFloat( -160, 160 ), RandomFloat( -160, 160 ), RandomFloat( 220, 380 ) );
+		g.spin = QAngle( RandomFloat( -360, 360 ), RandomFloat( -360, 360 ), RandomFloat( -360, 360 ) );
+		g.flBorn = Plat_FloatTime();
+		g.bResting = false;
+		pGib->SetAbsOrigin( g.pos );
+		pGib->SetAbsAngles( g.ang );
+		s_RobotGibs.AddToTail( g );
+	}
+}
+
+static void UpdateRobotGibs( float dt )
+{
+	const double flNow = Plat_FloatTime();
+	for ( int i = s_RobotGibs.Count() - 1; i >= 0; --i )
+	{
+		RobotGib &g = s_RobotGibs[ i ];
+		const double flAge = flNow - g.flBorn;
+		if ( g.hModel.Get() != g.pModel )
+		{
+			s_RobotGibs.Remove( i );  // TF2 removed it already
+			continue;
+		}
+		if ( flAge > kGibLife )
+		{
+			g.pModel->Release();
+			s_RobotGibs.Remove( i );
+			continue;
+		}
+		if ( !g.bResting )
+		{
+			g.vel.z -= 800.0f * dt;
+			const Vector next = g.pos + g.vel * dt;
+			trace_t tr;
+			FortCraft_ClearTrace( g.pos, next, tr );
+			FortCraft_ClipHullTrace( g.pos, next, Vector( -3, -3, -3 ), Vector( 3, 3, 3 ), tr );
+			if ( tr.DidHit() )
+			{
+				g.pos = tr.endpos;
+				// Bounce off the block face, losing most of the speed.
+				const float flInto = DotProduct( g.vel, tr.plane.normal );
+				g.vel = ( g.vel - tr.plane.normal * ( 1.6f * flInto ) ) * 0.4f;
+				g.spin *= 0.5f;
+				if ( tr.plane.normal.z > 0.7f && g.vel.Length() < 60.0f )
+					g.bResting = true;
+			}
+			else
+			{
+				g.pos = next;
+			}
+			g.ang += g.spin * dt;
+			g.pModel->SetAbsOrigin( g.pos );
+			g.pModel->SetAbsAngles( g.ang );
+		}
+		// Fade over the last second.
+		const float flLeft = (float)( kGibLife - flAge );
+		if ( flLeft < 1.0f )
+		{
+			g.pModel->SetRenderMode( kRenderTransTexture );
+			g.pModel->SetRenderColorA( (byte)( 255.0f * MAX( flLeft, 0.0f ) ) );
+		}
+	}
+}
+
+static void ReleaseAllRobots()
+{
+	FOR_EACH_VEC( s_Robots, i )
+		ReleaseRobot( s_Robots[ i ] );
+	s_Robots.RemoveAll();
+	FOR_EACH_VEC( s_RobotGibs, i )
+	{
+		if ( s_RobotGibs[ i ].hModel.Get() == s_RobotGibs[ i ].pModel )
+			s_RobotGibs[ i ].pModel->Release();
+	}
+	s_RobotGibs.RemoveAll();
+}
+
+static void UpdateRobot( RobotState &r, const proto::RaidRobot &in, float dt )
+{
+	const RobotKind &k = kRobotKinds[ r.kind ];
+	const uint16_t f = in.flags, was = r.flags;
+	const Vector pos = RobotToTF2( in.x, in.y, in.z );
+	auto rose = [ & ]( uint16_t bit ) { return ( f & bit ) && !( was & bit ); };
+
+	if ( r.bDead )
+		return;
+	if ( r.pModel && r.hModel.Get() != r.pModel )
+	{
+		// TF2 removed our entities (a map change): make new ones.
+		r.pModel = NULL;
+		r.pWeapon = r.pExtra = NULL;
+	}
+	if ( r.pWeapon && r.hWeapon.Get() != r.pWeapon )
+		r.pWeapon = NULL;
+	if ( r.pExtra && r.hExtra.Get() != r.pExtra )
+		r.pExtra = NULL;
+	const bool bGiant = k.bAlwaysGiant || ( f & proto::kRobotGiant ) != 0;
+	if ( f & proto::kRobotDead )
+	{
+		// Dead: voice, gibs (and a giant's explosion), and the robot is gone.
+		r.bDead = true;
+		if ( r.pModel )
+			RobotSound( VarArgs( "%s.%sMVM_Death", k.pszVoice, bGiant && k.bMighty ? "M_" : "" ), pos );
+		if ( bGiant )
+			RobotSound( r.kind == 5 ? "MVM.GiantHeavyExplodes" : "MVM.GiantCommonExplodes", pos );
+		RobotGibs( r );
+		ReleaseRobot( r );
+		return;
+	}
+	if ( r.pModel && r.bGiant != bGiant )
+		ReleaseRobot( r );  // became a giant: make the giant model
+	const char *pszModel = bGiant && k.pszGiantModel ? k.pszGiantModel : k.pszModel;
+	if ( !r.pModel )
+	{
+		if ( Plat_FloatTime() < r.flRetryAt )
+			return;
+		// The client can only make models the server precached (CTFPlayer::PrecacheTFPlayer
+		// precaches the robots for FortCraft); before that, retry every 2 s.
+		if ( modelinfo->GetModelIndex( pszModel ) == -1 )
+		{
+			static double s_flWarnAt;
+			if ( Plat_FloatTime() >= s_flWarnAt )
+			{
+				s_flWarnAt = Plat_FloatTime() + 10.0;
+				Warning( "FortCraft: robot model %s isn't precached; raiders can't be drawn yet\n", pszModel );
+			}
+			r.flRetryAt = Plat_FloatTime() + 2.0;
+			return;
+		}
+		r.pModel = new C_FortCraftRobot;
+		if ( !r.pModel->InitializeAsClientEntity( pszModel, RENDER_GROUP_OPAQUE_ENTITY ) )
+		{
+			r.pModel->Release();
+			r.pModel = NULL;
+			r.flRetryAt = Plat_FloatTime() + 2.0;
+			return;
+		}
+		Msg( "FortCraft: raider %d drawn as robot %s\n", r.id, pszModel );
+		r.bGiant = bGiant;
+		if ( bGiant )
+			RobotVoice( k, true, "BattleCry", k.nBattleCry, pos );
+		r.pModel->m_nSkin = 1;
+		r.pWeapon = RobotPart( k.pszWeapon, r.pModel );
+		r.pExtra = RobotPart( k.pszExtra, r.pModel );
+		r.hModel = r.pModel;
+		r.hWeapon = r.pWeapon;
+		r.hExtra = r.pExtra;
+		r.vecLast = pos;
+		r.vecVelocity.Init();
+		r.flStepUnits = 0.0f;
+		r.flNextVoice = Plat_FloatTime() + RandomFloat( 2.0f, 6.0f );
+	}
+	C_FortCraftRobot *pModel = r.pModel;
+
+	// Size: the robot as tall as the mob's hitbox (TF2's players are 82 units tall); giants
+	// a bit bigger still.
+	float flScale = in.height * UNITS_PER_BLOCK / 82.0f;
+	if ( k.bAlwaysGiant )
+		flScale = MAX( flScale, 1.75f );  // MvM's giants are 1.75x
+	if ( fabsf( pModel->GetModelScale() - flScale ) > 0.01f )
+		pModel->SetModelScale( flScale );
+
+	// Movement from Minecraft's positions (teleports and re-centring aren't steps).
+	Vector delta = pos - r.vecLast;
+	r.vecLast = pos;
+	if ( dt > 0.0f && delta.Length() < 4.0f * UNITS_PER_BLOCK )
+	{
+		const Vector v = delta / dt;
+		r.vecVelocity = r.vecVelocity * 0.8f + v * 0.2f;
+	}
+	const float flSpeed = r.vecVelocity.Length2D();
+	const bool bGround = ( f & proto::kRobotGround ) != 0;
+	const bool bCharging = ( f & proto::kRobotCharging ) != 0;
+	// Drawn bow (Bowman) or spun-up minigun (Giant Heavy hunting).
+	const bool bDeployed = r.kind == 1 ? bCharging : r.kind == 5 ? ( f & proto::kRobotAggressive ) != 0 : false;
+
+	// Facing: Minecraft yaw 0 faces south (+Z), TF2 yaw 0 faces east (+X).
+	const float flBodyYaw = AngleNormalize( -in.bodyYaw - 90.0f );
+	const float flHeadYaw = AngleNormalize( -in.headYaw - 90.0f );
+	pModel->SetAbsOrigin( pos );
+	pModel->SetAbsAngles( QAngle( 0, flBodyYaw, 0 ) );
+
+	// Movement sequence.
+	int nSeq;
+	// Slow walks count as moving too, or the robot slid along in its standing pose (Alex).
+	const bool bMoving = flSpeed > 0.04f * UNITS_PER_BLOCK;
+	if ( !bGround )
+		nSeq = RobotSequence( pModel, k.air );
+	else if ( bMoving )
+		nSeq = RobotSequence( pModel, bDeployed && k.deployedRun != ACT_INVALID ? k.deployedRun : k.run );
+	else if ( ( f & proto::kRobotCelebrating ) && pModel->LookupSequence( "taunt01" ) >= 0 )
+		nSeq = pModel->LookupSequence( "taunt01" );
+	else
+		nSeq = RobotSequence( pModel, bDeployed && k.deployedStand != ACT_INVALID ? k.deployedStand : k.stand );
+	if ( nSeq < 0 )
+		nSeq = RobotSequence( pModel, k.stand );
+	if ( nSeq < 0 )
+		nSeq = 0;
+	if ( pModel->GetSequence() != nSeq )
+	{
+		pModel->SetSequence( nSeq );
+		pModel->SetCycle( 0.0f );
+	}
+
+	// Run direction relative to the body (TF2's move_x / move_y), aim from the head.
+	float flRate = 1.0f;
+	if ( bMoving )
+	{
+		const float flMoveYaw = RAD2DEG( atan2f( r.vecVelocity.y, r.vecVelocity.x ) );
+		const float flRel = DEG2RAD( AngleNormalize( flMoveYaw - flBodyYaw ) );
+		pModel->SetPoseParameter( "move_x", cosf( flRel ) );
+		pModel->SetPoseParameter( "move_y", -sinf( flRel ) );
+		const float flGround = pModel->GetSequenceGroundSpeed( nSeq ) * flScale;
+		if ( flGround > 1.0f )
+			flRate = clamp( flSpeed / flGround, 0.1f, 3.0f );
+	}
+	else
+	{
+		pModel->SetPoseParameter( "move_x", 0.0f );
+		pModel->SetPoseParameter( "move_y", 0.0f );
+	}
+	pModel->SetPoseParameter( "body_yaw", clamp( AngleNormalize( flHeadYaw - flBodyYaw ), -44.0f, 44.0f ) );
+	pModel->SetPoseParameter( "body_pitch", clamp( -in.pitch, -89.0f, 89.0f ) );
+	float flCycle = pModel->GetCycle() + dt * flRate * pModel->GetSequenceCycleRate( pModel->GetModelPtr(), nSeq );
+	pModel->SetCycle( pModel->IsSequenceLooping( nSeq ) ? flCycle - floorf( flCycle ) : MIN( flCycle, 1.0f ) );
+
+	// Gestures: an attack (mob swing, ravager ram, bow release, evoker casting), else a flinch.
+	bool bAttack = rose( proto::kRobotSwing ) || rose( proto::kRobotRam );
+	if ( r.kind == 1 && ( was & proto::kRobotCharging ) && !bCharging )
+		bAttack = true;  // Bowman lets the arrow go
+	if ( ( f & proto::kRobotCasting ) && Plat_FloatTime() >= r.flNextCast )
+	{
+		bAttack = true;
+		r.flNextCast = Plat_FloatTime() + 1.0;
+	}
+	if ( bAttack )
+	{
+		pModel->m_nGestureSeq = RobotSequence( pModel, k.attack );
+		pModel->m_flGestureCycle = 0.0f;
+	}
+	else if ( rose( proto::kRobotHurt ) && pModel->m_flGestureCycle >= 1.0f )
+	{
+		pModel->m_nGestureSeq = RobotSequence( pModel, ACT_MP_GESTURE_FLINCH_CHEST );
+		pModel->m_flGestureCycle = 0.0f;
+	}
+	if ( pModel->m_nGestureSeq >= 0 && pModel->m_flGestureCycle < 1.0f )
+		pModel->m_flGestureCycle += dt * pModel->GetSequenceCycleRate( pModel->GetModelPtr(), pModel->m_nGestureSeq );
+
+	// Far ones behind Minecraft's blocks aren't drawn.
+	C_BaseAnimating *parts[ 3 ] = { pModel, r.pWeapon, r.pExtra };
+	for ( int i = 0; i < 3; ++i )
+	{
+		if ( !parts[ i ] )
+			continue;
+		if ( f & proto::kRobotHidden )
+			parts[ i ]->AddEffects( EF_NODRAW );
+		else
+			parts[ i ]->RemoveEffects( EF_NODRAW );
+	}
+
+	// Sounds.
+	if ( bGround && bMoving )
+	{
+		r.flStepUnits += flSpeed * dt;
+		const float flStride = ( bGiant ? 1.0f : 0.9f ) * UNITS_PER_BLOCK * MAX( flScale, 0.5f );
+		if ( r.flStepUnits >= flStride )
+		{
+			r.flStepUnits = 0.0f;
+			RobotSound( bGiant && k.pszGiantStep ? k.pszGiantStep : "MVM.BotStep", pos );
+		}
+	}
+	const double flNow = Plat_FloatTime();
+
+	// Demoknight's shield charge: Minecraft sends it running far faster than a walk.
+	if ( r.kind == 2 )
+	{
+		const bool bShield = flSpeed > 6.0f * UNITS_PER_BLOCK && bGround;
+		if ( bShield && !r.bShieldCharge )
+		{
+			RobotSound( "DemoCharge.Charging", pos );
+			RobotVoice( k, bGiant, "BattleCry", k.nBattleCry, pos );
+		}
+		r.bShieldCharge = bShield;
+	}
+	// Giant Heavy's minigun: winds up while hunting, fires on each ravager attack.
+	if ( r.kind == 5 )
+	{
+		if ( rose( proto::kRobotAggressive ) )
+			RobotSound( "MVM.GiantHeavyGunWindUp", pos );
+		else if ( ( was & proto::kRobotAggressive ) && !( f & proto::kRobotAggressive ) )
+			RobotSound( "MVM.GiantHeavyGunWindDown", pos );
+		if ( rose( proto::kRobotRam ) )
+			RobotSound( "MVM.GiantHeavyGunFire", pos );
+	}
+	if ( rose( proto::kRobotHurt ) )
+	{
+		RobotVoice( k, bGiant, "PainSharp", k.nPain, pos );
+		r.flNextVoice = MAX( r.flNextVoice, flNow + 1.0 );
+	}
+	else if ( rose( proto::kRobotRoar ) )
+	{
+		RobotVoice( k, bGiant, "BattleCry", k.nBattleCry, pos );
+	}
+	else if ( rose( proto::kRobotCelebrating ) )
+	{
+		RobotVoice( k, bGiant, "Cheers", k.nCheers, pos );
+	}
+	else if ( ( f & proto::kRobotAggressive ) && flNow >= r.flNextVoice )
+	{
+		RobotVoice( k, bGiant, "BattleCry", k.nBattleCry, pos );
+		r.flNextVoice = flNow + RandomFloat( 8.0f, 16.0f );
+	}
+	r.flags = f;
+}
+
+static void UpdateRobots()
+{
+	static double s_flLast;
+	const double flNow = Plat_FloatTime();
+	const float dt = s_flLast > 0.0 ? (float)MIN( flNow - s_flLast, 0.1 ) : 0.0f;
+	s_flLast = flNow;
+
+	const proto::RaidRobots &src = At< proto::RaidRobots >( proto::kOffRaidRobots );
+	const uint32_t seq = *(volatile const uint32_t *)&src.seq;
+	if ( !( seq & 1 ) )
+	{
+		static proto::RaidRobot s_In[ proto::kMaxRaidRobots ];
+		const uint32_t n = MIN( src.count, proto::kMaxRaidRobots );
+		memcpy( s_In, src.robots, n * sizeof( proto::RaidRobot ) );
+		if ( *(volatile const uint32_t *)&src.seq == seq )
+		{
+			FOR_EACH_VEC( s_Robots, i )
+				s_Robots[ i ].bSeen = false;
+			for ( uint32_t j = 0; j < n; ++j )
+			{
+				const proto::RaidRobot &in = s_In[ j ];
+				if ( in.kind == 0 || in.kind >= ARRAYSIZE( kRobotKinds ) )
+					continue;
+				int found = -1;
+				FOR_EACH_VEC( s_Robots, i )
+				{
+					if ( s_Robots[ i ].id == in.id && s_Robots[ i ].kind == in.kind )
+					{
+						found = i;
+						break;
+					}
+				}
+				if ( found < 0 )
+				{
+					if ( in.flags & proto::kRobotDead )
+						continue;  // came into range already dying
+					RobotState r;
+					r.id = in.id;
+					r.kind = in.kind;
+					found = s_Robots.AddToTail( r );
+				}
+				s_Robots[ found ].bSeen = true;
+				UpdateRobot( s_Robots[ found ], in, dt );
+			}
+			// Gone from Minecraft's list (out of range, despawned, or dead and removed).
+			for ( int i = s_Robots.Count() - 1; i >= 0; --i )
+			{
+				if ( !s_Robots[ i ].bSeen )
+				{
+					ReleaseRobot( s_Robots[ i ] );
+					s_Robots.Remove( i );
+				}
+			}
+		}
+	}
+	UpdateRobotGibs( dt );
+}
+
 // ---- Far objects behind Minecraft blocks (protocol FarObjects / FarHidden) -------------------
 // Beyond the scanned blocks TF2 has no depth for Minecraft's world, so far objects drew through
 // houses and hills. TF2 lists them; Minecraft answers which it can't see; TF2 hides those with
@@ -1562,6 +2382,8 @@ static bool FarCandidate( C_BaseEntity *pEnt, C_BasePlayer *pLocal )
 {
 	if ( pEnt->IsDormant() || !pEnt->GetClientClass() || !pEnt->GetModel() || pEnt == pLocal )
 		return false;
+	if ( pEnt->entindex() < 0 )
+		return false;  // TF2-side only (robots, gibs): no index for Minecraft to answer about
 	if ( pEnt->GetMoveParent() == pLocal || pEnt->IsBaseCombatWeapon() )
 		return false;  // what the player holds or wears
 	const char *pszClass = pEnt->GetClientClass()->m_pNetworkName;
@@ -2286,6 +3108,7 @@ void FortCraft_OnRenderStart()
 
 	WriteProjectiles();
 	UpdateFarOcclusion( pPlayer );
+	UpdateRobots();
 
 	LinkLog( "sample=%llu tick=%d alpha=%.3f sent=(%.4f,%.4f,%.4f) yaw=%.2f tf2=(%.1f,%.1f,%.1f) speed=%.0f onGround=%d\n",
 		(unsigned long long)s_nSample, gpGlobals->tickcount, gpGlobals->interpolation_amount, x, y, z, yaw,

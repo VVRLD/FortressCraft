@@ -14,6 +14,7 @@ weapons, menus and HUD. Every key marked *rebindable* can be changed in Minecraf
 | Left mouse | Fire your TF2 weapon (melee also breaks the block you aim at) |
 | Right mouse | Use the block or mob you aim at (doors, chests, villagers, animals); otherwise your weapon's secondary fire (scope, airblast, detonate stickies, cloak, charge) |
 | F | Minecraft's inventory *(rebindable)*. Minecraft's swap-offhand key (normally F) is unbound; set one in Controls if you need it |
+| H | FortCraft's quick guide (shown once by itself the first time) *(rebindable)* |
 | R | TF2 reload *(rebindable)*. Weapons also reload by themselves. With the Eureka Effect out, R opens its teleport menu: 1 = your bed or spawn point, 2 = your teleporter exit, Q = cancel |
 | 1-9, mouse wheel | Switch TF2 weapons |
 | G | Taunt menu; G again does your weapon's taunt; Q or G stops a taunt *(rebindable)* |

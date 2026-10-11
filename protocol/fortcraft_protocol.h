@@ -14,7 +14,7 @@
 namespace fortcraft { namespace proto
 {
 	static constexpr std::uint32_t kMagic = 0x46524346;  // "FCRF"
-	static constexpr std::uint32_t kVersion = 57;
+	static constexpr std::uint32_t kVersion = 64;
 	static constexpr wchar_t       kMappingName[] = L"Local\\FortCraft_v1";
 	// Linux: a file in RAM that Minecraft creates and both sides map (same bytes as on Windows).
 	static constexpr char          kMappingPathPosix[] = "/dev/shm/FortCraft_v1";
@@ -174,6 +174,7 @@ namespace fortcraft { namespace proto
 		kCameraCloaked = 1u << 5,   // v46: Spy cloaked (mostly invisible); Minecraft's mobs ignore the player
 		kCameraEurekaMenu = 1u << 6, // v49: the Eureka Effect's teleport menu is open (1, 2 and Q go to it)
 		kCameraConsole = 1u << 7,   // v53: TF2's console is showing (every key types, menu keys included)
+		kCameraDead = 1u << 8,      // v62: TF2's merc is dead (Minecraft clears the player's potion effects)
 	};
 
 	struct Camera
@@ -406,7 +407,9 @@ namespace fortcraft { namespace proto
 	// kMobSentrySees if one of the player's sentries has a clear line to it through Minecraft's
 	// world (TF2 only knows the blocks near the player, so sentries shot mobs behind far houses).
 	// Engineer sentries shoot mobs with both.
-	static constexpr std::uint8_t kMobHostile = 1, kMobSentrySees = 2;
+	// v63: kMobRobot, the mob is drawn by TF2 as an MvM robot (RaidRobots), so its box is left out
+	// of the depth layer (the robot itself would be hidden inside it).
+	static constexpr std::uint8_t kMobHostile = 1, kMobSentrySees = 2, kMobRobot = 4;
 	static constexpr std::uint64_t kOffMobHostile = 0x42E00;
 	static_assert(kOffMobHostile >= kOffMobBoxes + sizeof(MobBoxes), "FortCraft protocol layout");
 	static_assert(kOffMobHostile + kMaxMobBoxes <= 0x43000, "FortCraft protocol layout");
@@ -634,7 +637,7 @@ namespace fortcraft { namespace proto
 	struct Building
 	{
 		std::uint32_t ent;   // TF2 entity index
-		std::uint32_t type;  // v47: 1 = sentry gun, 0 = another building
+		std::uint32_t type;  // v47: 1 = sentry gun, 0 = another building; v59: 2 = a working dispenser
 		float         minX, minY, minZ, maxX, maxY, maxZ;
 	};
 	static_assert(sizeof(Building) == 32, "FortCraft protocol layout");
@@ -888,6 +891,65 @@ namespace fortcraft { namespace proto
 	static_assert(kOffMvmRestore >= kOffMvmState + sizeof(MvmState), "FortCraft protocol layout");
 	static_assert(kOffMvmRestore + sizeof(MvmRestore) <= kOffOverlayPixels, "FortCraft protocol layout");
 	static_assert(kOffFarObjects >= kOffMvmRestore + sizeof(MvmRestore), "FortCraft protocol layout");
+
+	// ---- Minecraft -> TF2: a village raid near the player (v60) -------------------------------
+	// 0 none, 1 under way, 2 defended (victory), 3 lost; v61: which wave has spawned (1..),
+	// how many waves in all, and raiders alive. TF2 plays MvM's wave music and announcer.
+	static constexpr std::uint64_t kOffRaidState = 0x5E500;
+	struct RaidState
+	{
+		std::uint32_t state;
+		std::uint32_t wave;
+		std::uint32_t totalWaves;
+		std::uint32_t alive;
+	};
+	static_assert(kOffRaidState >= kOffFarHidden + sizeof(FarHidden), "FortCraft protocol layout");
+	static_assert(kOffRaidState + sizeof(RaidState) <= kOffOverlayPixels, "FortCraft protocol layout");
+
+	// ---- Minecraft -> TF2: raiders drawn as MvM robots (v63) -----------------------------------
+	// Pillagers, vindicators, evokers, vexes, ravagers and witches within 64 blocks, every
+	// Minecraft frame. Minecraft stops drawing them and TF2 draws a robot for each, animated from
+	// these (Robots.java). Seqlock like MobBoxes.
+	static constexpr std::uint64_t kOffRaidRobots = 0x5E600;
+	static constexpr std::uint32_t kMaxRaidRobots = 64;
+	static constexpr std::uint16_t kRobotDead = 1, kRobotHurt = 2, kRobotGround = 4, kRobotSwing = 8,
+		kRobotCharging = 16, kRobotCasting = 32, kRobotCelebrating = 64, kRobotAggressive = 128,
+		kRobotRam = 256, kRobotRoar = 512, kRobotHidden = 1024, kRobotCaptain = 2048, kRobotDrinking = 4096,
+		kRobotGiant = 8192;  // v64: a giant robot (Minecraft scaled the mob up)
+	struct RaidRobot
+	{
+		std::int32_t  id;     // Minecraft entity id
+		std::uint8_t  kind;   // 1 Bowman, 2 Demoknight, 3 Medic, 4 Scout, 5 Giant Heavy, 6 Jarate Sniper
+		std::uint8_t  pad;
+		std::uint16_t flags;  // kRobot*; kRobotHidden: far and behind Minecraft's blocks
+		float x, y, z;                  // feet, Minecraft blocks
+		float bodyYaw, headYaw, pitch;  // Minecraft degrees
+		float height, width;            // hitbox, blocks
+	};
+	struct RaidRobots
+	{
+		std::uint32_t seq;
+		std::uint32_t count;
+		RaidRobot     robots[kMaxRaidRobots];
+	};
+	static_assert(sizeof(RaidRobot) == 40, "FortCraft protocol layout");
+	static_assert(kOffRaidRobots >= kOffRaidState + sizeof(RaidState), "FortCraft protocol layout");
+	static_assert(kOffRaidRobots + sizeof(RaidRobots) <= kOffOverlayPixels, "FortCraft protocol layout");
+
+	// ---- Minecraft -> TF2: blocks in front of far robots (v64) ---------------------------------
+	// TF2's depth layer only has the blocks near the player, so robots further away showed through
+	// walls. Minecraft casts rays from the camera to points over each far robot and sends the
+	// blocks they hit; TF2 draws them into depth too. Seqlock like MobBoxes.
+	static constexpr std::uint64_t kOffRobotOccluders = 0x5F100;
+	static constexpr std::uint32_t kMaxRobotOccluders = 512;
+	struct RobotOccluders
+	{
+		std::uint32_t seq;
+		std::uint32_t count;
+		BlockBox      boxes[kMaxRobotOccluders];
+	};
+	static_assert(kOffRobotOccluders >= kOffRaidRobots + sizeof(RaidRobots), "FortCraft protocol layout");
+	static_assert(kOffRobotOccluders + sizeof(RobotOccluders) <= kOffOverlayPixels, "FortCraft protocol layout");
 	// v51: MobHit source bit for money that isn't a kill (Minecraft's other XP: ores, furnaces,
 	// breeding, fishing...). Only the cash drop happens: no hit number, no on-kill effects.
 	static constexpr std::uint32_t kMobHitMoneyOnly = 1u << 7;
@@ -897,6 +959,12 @@ namespace fortcraft { namespace proto
 	// v57: the kill also drops a TF2 small ammo pack (skeletons, wither skeletons, End endermen,
 	// by chance; Minecraft rolls it).
 	static constexpr std::uint32_t kMobHitDropAmmo = 1u << 9;
+	// v58: the kill also drops a TF2 small health kit (zombies, by chance).
+	static constexpr std::uint32_t kMobHitDropHealth = 1u << 10;
+	// v59: the mob hit was covered in Mad Milk: the player heals 60% of the damage, as in TF2.
+	static constexpr std::uint32_t kMobHitMilk = 1u << 11;
+	// v59: Explosion flags for a thrown jar's splash (no damage): Jarate, Mad Milk, Gas Passer.
+	static constexpr std::uint32_t kExplosionJarate = 1u << 6, kExplosionMilk = 1u << 7, kExplosionGas = 1u << 8;
 
 	// Minecraft damage = TF2 damage / kDamageScale (a rocket's 90 is 18 Minecraft health, nine
 	// hearts; a zombie has 20).

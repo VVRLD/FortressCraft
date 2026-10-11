@@ -23,7 +23,7 @@ import java.util.Locale;
  */
 public final class FortLink {
 	public static final int MAGIC = 0x46524346;  // "FCRF"
-	public static final int VERSION = 57;
+	public static final int VERSION = 64;
 	/** Windows: a named page-file mapping. Linux: a file in /dev/shm (RAM), which TF2 maps too. */
 	public static final boolean WINDOWS = System.getProperty("os.name", "").toLowerCase(Locale.ROOT).startsWith("windows");
 	public static final String NAME = System.getenv().getOrDefault("FORTCRAFT_LINK", WINDOWS ? "Local\\FortCraft_v1" : "/dev/shm/FortCraft_v1");
@@ -300,7 +300,15 @@ public final class FortLink {
 	}
 
 	/** One Engineer building: TF2 entity index and box, Minecraft coordinates. */
-	public record Tf2Building(int ent, double minX, double minY, double minZ, double maxX, double maxY, double maxZ, boolean sentry) {
+	/** type: 1 = sentry gun, 2 = a working dispenser, 0 = another building (v59). */
+	public record Tf2Building(int ent, double minX, double minY, double minZ, double maxX, double maxY, double maxZ, int type) {
+		public boolean sentry() {
+			return type == 1;
+		}
+
+		public boolean dispenser() {
+			return type == 2;
+		}
 	}
 
 	// Buildings @0x54000 (TF2 -> Minecraft): seq, count, then up to 16 x (ent, pad, 6 floats). Null if mid-write.
@@ -318,7 +326,7 @@ public final class FortLink {
 			long o = 0x54008 + i * 32L;
 			list.add(new Tf2Building(shm.get(JAVA_INT, o), shm.get(JAVA_FLOAT, o + 8), shm.get(JAVA_FLOAT, o + 12),
 				shm.get(JAVA_FLOAT, o + 16), shm.get(JAVA_FLOAT, o + 20), shm.get(JAVA_FLOAT, o + 24), shm.get(JAVA_FLOAT, o + 28),
-				shm.get(JAVA_INT, o + 4) == 1));
+				shm.get(JAVA_INT, o + 4)));
 		}
 		VarHandle.acquireFence();
 		return (int) INT.getAcquire(shm, 0x54000) == before ? list : null;
@@ -405,7 +413,7 @@ public final class FortLink {
 	}
 
 	/** TF2's render camera this frame (Camera @0x1D0), Minecraft coordinates and degrees. */
-	public record Tf2Camera(boolean thirdPerson, boolean tauntMenu, boolean taunting, boolean uiOpen, boolean medigun, double x, double y, double z, float yaw, float pitch, float zoom, boolean cloaked, boolean eurekaMenu, boolean console) {
+	public record Tf2Camera(boolean thirdPerson, boolean tauntMenu, boolean taunting, boolean uiOpen, boolean medigun, double x, double y, double z, float yaw, float pitch, float zoom, boolean cloaked, boolean eurekaMenu, boolean console, boolean dead) {
 	}
 
 	public static Tf2Camera readCamera() {
@@ -419,7 +427,7 @@ public final class FortLink {
 		int flags = shm.get(JAVA_INT, 0x1D4);
 		Tf2Camera c = new Tf2Camera((flags & 1) != 0, (flags & 2) != 0, (flags & 4) != 0, (flags & 8) != 0, (flags & 16) != 0,
 			shm.get(JAVA_FLOAT, 0x1D8), shm.get(JAVA_FLOAT, 0x1DC), shm.get(JAVA_FLOAT, 0x1E0),
-			shm.get(JAVA_FLOAT, 0x1E4), shm.get(JAVA_FLOAT, 0x1E8), shm.get(JAVA_FLOAT, 0x1EC), (flags & 32) != 0, (flags & 64) != 0, (flags & 128) != 0);
+			shm.get(JAVA_FLOAT, 0x1E4), shm.get(JAVA_FLOAT, 0x1E8), shm.get(JAVA_FLOAT, 0x1EC), (flags & 32) != 0, (flags & 64) != 0, (flags & 128) != 0, (flags & 256) != 0);
 		VarHandle.acquireFence();
 		return (int) INT.getAcquire(shm, 0x1D0) == before ? c : null;
 	}
@@ -471,6 +479,42 @@ public final class FortLink {
 		shm.set(JAVA_FLOAT, 0x54908, y);
 		shm.set(JAVA_FLOAT, 0x5490C, z);
 		INT.setRelease(shm, 0x54900, ++mcTeleportSeq);
+	}
+
+	/**
+	 * RaidRobots @0x5E600 (v63): seq, count, then 40 bytes per raider TF2 draws as a robot: id,
+	 * kind (byte), pad, flags (short), then x, y, z, body yaw, head yaw, pitch, height, width.
+	 */
+	public static void writeRobots(int[] ids, byte[] kinds, short[] flags, float[] values, int count) {
+		if (shm == null) {
+			return;
+		}
+		count = Math.min(count, 64);
+		int seq = shm.get(JAVA_INT, 0x5E600);
+		INT.setRelease(shm, 0x5E600, (seq + 1) | 1);  // odd: writing
+		for (int i = 0; i < count; i++) {
+			long o = 0x5E608 + i * 40L;
+			shm.set(JAVA_INT, o, ids[i]);
+			shm.set(JAVA_BYTE, o + 4, kinds[i]);
+			shm.set(JAVA_BYTE, o + 5, (byte) 0);
+			shm.set(JAVA_SHORT, o + 6, flags[i]);
+			MemorySegment.copy(values, i * 8, shm, JAVA_FLOAT, o + 8, 8);
+		}
+		shm.set(JAVA_INT, 0x5E604, count);
+		INT.setRelease(shm, 0x5E600, ((seq + 1) | 1) + 1);  // even: done
+	}
+
+	/** RobotOccluders @0x5F100 (v64): seq, count, then up to 512 boxes of 6 floats (blocks in front of far robots). */
+	public static void writeRobotOccluders(float[] boxes, int count) {
+		if (shm == null) {
+			return;
+		}
+		count = Math.min(count, 512);
+		int seq = shm.get(JAVA_INT, 0x5F100);
+		INT.setRelease(shm, 0x5F100, (seq + 1) | 1);  // odd: writing
+		MemorySegment.copy(boxes, 0, shm, JAVA_FLOAT, 0x5F108, count * 6);
+		shm.set(JAVA_INT, 0x5F104, count);
+		INT.setRelease(shm, 0x5F100, ((seq + 1) | 1) + 1);  // even: done
 	}
 
 	// MobBoxes @0x42000 (Minecraft -> TF2): seq, count, then up to 128 boxes of 6 floats.
@@ -704,6 +748,16 @@ public final class FortLink {
 		}
 		INT.setRelease(shm, 0x5A200, seq);
 		return seq;
+	}
+
+	/** RaidState @0x5E500 (v61): state (0 none, 1 under way, 2 defended, 3 lost), wave, total waves, raiders alive. */
+	public static void writeRaidState(int state, int wave, int totalWaves, int alive) {
+		if (shm != null) {
+			shm.set(JAVA_INT, 0x5E504, wave);
+			shm.set(JAVA_INT, 0x5E508, totalWaves);
+			shm.set(JAVA_INT, 0x5E50C, alive);
+			shm.set(JAVA_INT, 0x5E500, state);
+		}
 	}
 
 	/** UpgradeStation @0x59000 (v50): the player used an enchanting table (TF2's MvM upgrades). */

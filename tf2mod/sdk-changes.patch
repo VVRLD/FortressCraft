@@ -537,6 +537,91 @@ index 941823f..06af0c1 100644
  }
  
  
+diff --git a/src/game/client/tf/player_vs_environment/c_tf_upgrades.cpp b/src/game/client/tf/player_vs_environment/c_tf_upgrades.cpp
+index f60e253..7da7cd4 100644
+--- a/src/game/client/tf/player_vs_environment/c_tf_upgrades.cpp
++++ b/src/game/client/tf/player_vs_environment/c_tf_upgrades.cpp
+@@ -27,6 +27,8 @@
+ #include "c_tf_objective_resource.h"
+ #include "vgui/IInput.h"
+ #include "tf_tips.h"
++#include "../../../../../../my-passthrough/tf2mod/fortcraft_collision.h"  // FortCraft
++bool FortCraft_IsLinked();  // fortcraft_link.cpp
+ #include "econ_ui.h"
+ #include "econ_item_preset.h"
+ #include "gc_clientsystem.h"
+@@ -295,6 +297,18 @@ void CUpgradeBuyPanel::UpdateImages( int nCurrentMoney )
+ 		}
+ 	}
+ 
++	// FortCraft: the enchanting table's bookshelves cap the levels of each upgrade (one bar per
++	// level). At the cap, + greys out like a maxed upgrade; the tip bar says why.
++	const int nFortCraftLevels = FortCraft_UpgradeLevelsAllowed();
++	if ( nFortCraftLevels > 0 && nCurrentStep >= nFortCraftLevels && !m_bInspectMode )
++	{
++		m_pIncrementButton->SetEnabled( false );
++		m_pIncrementButton->SetInactiveImage( "pve/buy_disabled" );
++		m_pIncrementButton->SetActiveImage( "pve/buy_disabled" );
++		for ( int nUpgradeButton = nCurrentStep; nUpgradeButton < nImageTotal; ++nUpgradeButton )
++			SetSkillTreeButtonColors( nUpgradeButton, CUpgradeBuyPanel::COLOR_SET_DISABLED );
++	}
++
+ 	V_strcpy_safe( m_szAttribName, pMannVsMachineUpgrade->szAttrib );
+ }
+ 
+@@ -2152,8 +2166,52 @@ void CHudUpgradePanel::OnCommand( const char *command )
+ 	BaseClass::OnCommand( command );
+ }
+ 
++// FortCraft's own tips for the upgrade screen, instead of TF2's MvM ones (Alex, 2026-10-11).
++static const char *s_FortCraftTips[] = {
++	"Harder mobs drop more cash: zombies $10-20, skeletons $20-30, endermen $40-60, the Wither $2,500+ and the Ender Dragon $20,000.",
++	"Bunny hop across water: keep jumping as you land and you keep your speed. A fast way to travel.",
++	"More bookshelves around the enchanting table unlock more upgrade levels: 5, 10 and 15 shelves.",
++	"Dying drops half your cash where you died. Get back within 5 minutes to pick it up.",
++	"Mining ores, smelting, breeding and fishing pay a few dollars too.",
++	"Upgrades stay on each weapon. Swap weapons freely and switch back: they're still there.",
++	"Changed your mind? Press - on an upgrade to get all your money back, any time.",
++	"Skeletons sometimes drop ammo and zombies drop health kits. Grab them within 20 seconds.",
++	"Stand at your dispenser to refill your iron ingots, up to a full stack.",
++	"Jarate makes mobs take mini-crits. Hit a Mad Milked mob to heal yourself.",
++	"Cloaked Spies are ignored by mobs until they show again.",
++	"No hunger here: any food heals you, and cooked food heals more.",
++	"Your money and upgrades are saved with your world.",
++};
++
+ void CHudUpgradePanel::UpdateTip()
+ {
++	if ( FortCraft_IsLinked() )
++	{
++		// First tip when the screen opens: what this table's bookshelves allow. Then FortCraft tips.
++		static float s_flLastTipAt = -1000.0f;
++		static int s_nNextTip;
++		char szTip[ 512 ];
++		const int nShelves = FortCraft_UpgradeBookshelves();
++		const int nLevels = FortCraft_UpgradeLevelsAllowed();
++		if ( gpGlobals->curtime - s_flLastTipAt > 3.0f && nShelves >= 0 )
++		{
++			if ( nLevels > 0 )
++				V_snprintf( szTip, sizeof( szTip ), "This table has %d bookshelves: up to %d level%s of each upgrade. Add bookshelves for more (5, 10, 15).",
++					nShelves, nLevels, nLevels == 1 ? "" : "s" );
++			else
++				V_snprintf( szTip, sizeof( szTip ), "This table has %d bookshelves: every upgrade level is unlocked.", nShelves );
++		}
++		else
++		{
++			V_strncpy( szTip, s_FortCraftTips[ s_nNextTip % ARRAYSIZE( s_FortCraftTips ) ], sizeof( szTip ) );
++			++s_nNextTip;
++		}
++		s_flLastTipAt = gpGlobals->curtime;
++		wchar_t wszTip[ 512 ];
++		g_pVGuiLocalize->ConvertANSIToUnicode( szTip, wszTip, sizeof( wszTip ) );
++		m_pTipPanel->SetDialogVariable( "tiptext", wszTip );
++		return;
++	}
+ 	int iClassUsed;
+ 	m_pTipPanel->SetDialogVariable( "tiptext", g_TFTips.GetRandomMvMTip( iClassUsed ) );
+ }
 diff --git a/src/game/client/tf/tf_fx_explosions.cpp b/src/game/client/tf/tf_fx_explosions.cpp
 index 70e555c..360b719 100644
 --- a/src/game/client/tf/tf_fx_explosions.cpp
@@ -1208,6 +1293,42 @@ index 565bc79..c48ade2 100644
  protected:
  	virtual void ComeToRest( void );
  
+diff --git a/src/game/server/tf/player_vs_environment/tf_upgrades.cpp b/src/game/server/tf/player_vs_environment/tf_upgrades.cpp
+index 4900916..144bb4c 100644
+--- a/src/game/server/tf/player_vs_environment/tf_upgrades.cpp
++++ b/src/game/server/tf/player_vs_environment/tf_upgrades.cpp
+@@ -19,6 +19,7 @@
+ #include "tf_weapon_wrench.h"
+ #include "tf_weapon_builder.h"
+ #include "tf_objective_resource.h"
++#include "../../../../../../my-passthrough/tf2mod/fortcraft_collision.h"  // FortCraft
+ 
+ 
+ extern ConVar tf_mvm_skill;
+@@ -307,6 +308,23 @@ bool CUpgrades::PlayerPurchasingUpgrade( CTFPlayer *pTFPlayer, int iItemSlot, in
+ 		int nTier = TFGameRules()->GetUpgradeTier( iUpgrade );
+ 		if ( nTier && !TFGameRules()->IsUpgradeTierEnabled( pTFPlayer, iItemSlot, iUpgrade ) )
+ 			{ return false; }
++
++		// FortCraft: the bookshelves around Minecraft's enchanting table unlock upgrade levels.
++		const int nLevelsAllowed = FortCraft_UpgradeLevelsAllowed();
++		CUtlVector< CUpgradeInfo > *pHistory = pTFPlayer->FortCraft_UpgradeHistory();
++		if ( nLevelsAllowed > 0 && pHistory )
++		{
++			const item_definition_index_t iItemDef = pItem ? pItem->GetItemDefIndex() : INVALID_ITEM_DEF_INDEX;
++			int nOwned = 0;
++			FOR_EACH_VEC( *pHistory, h )
++			{
++				const CUpgradeInfo &info = pHistory->Element( h );
++				if ( info.m_iPlayerClass == pTFPlayer->GetPlayerClass()->GetClassIndex() && info.m_itemDefIndex == iItemDef && info.m_upgrade == iUpgrade )
++					++nOwned;
++			}
++			if ( nOwned >= nLevelsAllowed )
++				return false;  // the screen greys out + at this point; its tip bar says why
++		}
+ 	}
+ 
+ 	const attrib_definition_index_t nUpgradedAttrDefIndex = ApplyUpgradeToItem( pTFPlayer, pItem, iUpgrade, nCost, bDowngrade, !bFree );
 diff --git a/src/game/server/tf/tf_obj.cpp b/src/game/server/tf/tf_obj.cpp
 index c7a9e93..8bdedb0 100644
 --- a/src/game/server/tf/tf_obj.cpp
@@ -1437,7 +1558,7 @@ index 2c86d52..cc7b936 100644
  
  	int GetBaseTurnRate( void );
 diff --git a/src/game/server/tf/tf_player.cpp b/src/game/server/tf/tf_player.cpp
-index c030951..fa9bc76 100644
+index c030951..8f746f0 100644
 --- a/src/game/server/tf/tf_player.cpp
 +++ b/src/game/server/tf/tf_player.cpp
 @@ -6,6 +6,8 @@
@@ -1515,18 +1636,65 @@ index c030951..fa9bc76 100644
  	// Update timers.
  	UpdateTimers();
  
-@@ -3944,6 +3989,10 @@ void CTFPlayer::Spawn()
+@@ -2935,6 +2980,46 @@ void CTFPlayer::PrecacheTFPlayer()
+ 	// Precache the player models and gibs.
+ 	PrecachePlayerModels();
+ 
++	// FortCraft: Minecraft's raiders are drawn as MvM robots (fortcraft_link.cpp, UpdateRobots).
++	// TF2's client can only make models (and their gibs) the server has precached, so precache
++	// the robots, their weapons and voices on every map, not only in MvM.
++	PrecacheMvM();
++	{
++		static const char *kRobotWeapons[] = {
++			"models/weapons/c_models/c_bow/c_bow.mdl", "models/weapons/c_models/c_claymore/c_claymore.mdl",
++			"models/weapons/c_models/c_targe/c_targe.mdl", "models/weapons/c_models/c_medigun/c_medigun.mdl",
++			"models/weapons/c_models/c_bat.mdl", "models/weapons/c_models/urinejar.mdl",
++			"models/weapons/c_models/c_minigun/c_minigun.mdl",
++		};
++		for ( int i = 0; i < ARRAYSIZE( kRobotWeapons ); ++i )
++			PrecacheModel( kRobotWeapons[ i ] );
++		struct RobotVoice { const char *pszClass; int nPain, nBattleCry, nCheers; };
++		static const RobotVoice kRobotVoices[] = {
++			{ "Sniper", 4, 6, 8 }, { "Demoman", 7, 7, 8 }, { "Medic", 8, 6, 6 }, { "Scout", 8, 5, 6 }, { "Heavy", 5, 6, 8 },
++		};
++		PrecacheScriptSound( "MVM.GiantHeavyGunWindUp" );
++		PrecacheScriptSound( "MVM.GiantHeavyGunWindDown" );
++		PrecacheScriptSound( "MVM.GiantHeavyGunFire" );
++		PrecacheScriptSound( "MVM.GiantHeavyEntrance" );
++		for ( int i = 0; i < ARRAYSIZE( kRobotVoices ); ++i )
++		{
++			const RobotVoice &v = kRobotVoices[ i ];
++			// Normal robots' lines and, for classes that have them, giants' (M_MVM_).
++			const bool bMighty = V_strcmp( v.pszClass, "Heavy" ) == 0 || V_strcmp( v.pszClass, "Demoman" ) == 0 || V_strcmp( v.pszClass, "Scout" ) == 0;
++			for ( int nGiant = 0; nGiant <= ( bMighty ? 1 : 0 ); ++nGiant )
++			{
++				const char *pszPrefix = nGiant ? "M_" : "";
++				PrecacheScriptSound( UTIL_VarArgs( "%s.%sMVM_Death", v.pszClass, pszPrefix ) );
++				for ( int n = 1; n <= v.nPain; ++n )
++					PrecacheScriptSound( UTIL_VarArgs( "%s.%sMVM_PainSharp%02d", v.pszClass, pszPrefix, n ) );
++				for ( int n = 1; n <= v.nBattleCry; ++n )
++					PrecacheScriptSound( UTIL_VarArgs( "%s.%sMVM_BattleCry%02d", v.pszClass, pszPrefix, n ) );
++				for ( int n = 1; n <= v.nCheers; ++n )
++					PrecacheScriptSound( UTIL_VarArgs( "%s.%sMVM_Cheers%02d", v.pszClass, pszPrefix, n ) );
++			}
++		}
++	}
++
+ 	// Precache the player sounds.
+ 	PrecacheScriptSound( "Player.Spawn" );
+ 	PrecacheScriptSound( "TFPlayer.Pain" );
+@@ -3944,6 +4029,10 @@ void CTFPlayer::Spawn()
  	}
  
  	SetContextThink( &CTFPlayer::PostSpawnThink, gpGlobals->curtime + 0.1f, "PostSpawnThink" );
 +
 +	// FortCraft: spawn on top of Minecraft's ground, not at TF2's own spawn point (which can sit
-+	// below Minecraft's ground and dropped Alex into the void).
-+	FortCraft_OnPlayerSpawn( this );
++	// below Minecraft's ground and dropped Alex into the void). Changing class keeps your place.
++	FortCraft_OnPlayerRespawn( this );
  }
  
  //-----------------------------------------------------------------------------
-@@ -6976,6 +7025,18 @@ void CTFPlayer::HandleCommand_JoinClass( const char *pClassName, bool bAllowSpaw
+@@ -6976,6 +7065,18 @@ void CTFPlayer::HandleCommand_JoinClass( const char *pClassName, bool bAllowSpaw
  		return;
  	}
  
@@ -1545,7 +1713,7 @@ index c030951..fa9bc76 100644
  	// We can respawn instantly if:
  	//	- We're dead, and we're past the required post-death time
  	//	- We're inside a respawn room of our own team
-@@ -7518,6 +7579,27 @@ bool CTFPlayer::ClientCommand( const CCommand &args )
+@@ -7518,6 +7619,27 @@ bool CTFPlayer::ClientCommand( const CCommand &args )
  		}
  		return true;
  	}
@@ -1573,7 +1741,7 @@ index c030951..fa9bc76 100644
  	else if ( FStrEq( pcmd, "stop_taunt" ) )
  	{
  		if( m_Shared.GetTauntIndex() == TAUNT_LONG && !m_Shared.InCond( TF_COND_HALLOWEEN_KART ) )
-@@ -8662,7 +8744,7 @@ CTFPlayer *CTFPlayer::TeamFortress_GetDisguiseTarget( int nTeam, int nClass )
+@@ -8662,7 +8784,7 @@ CTFPlayer *CTFPlayer::TeamFortress_GetDisguiseTarget( int nTeam, int nClass )
  //-----------------------------------------------------------------------------
  float DamageForce( const Vector &size, float damage, float scale )
  { 
@@ -1582,7 +1750,7 @@ index c030951..fa9bc76 100644
  	
  	if ( force > 1000.0 )
  	{
-@@ -8813,7 +8895,18 @@ int CTFPlayer::OnTakeDamage( const CTakeDamageInfo &inputInfo )
+@@ -8813,7 +8935,18 @@ int CTFPlayer::OnTakeDamage( const CTakeDamageInfo &inputInfo )
  	CTFWeaponBase *pWeapon = dynamic_cast< CTFWeaponBase * >( inputInfo.GetWeapon() );
  
  	if ( GetFlags() & FL_GODMODE )
@@ -1601,7 +1769,7 @@ index c030951..fa9bc76 100644
  
  	if ( IsInCommentaryMode() )
  		return 0;
-@@ -8980,6 +9073,24 @@ int CTFPlayer::OnTakeDamage( const CTakeDamageInfo &inputInfo )
+@@ -8980,6 +9113,24 @@ int CTFPlayer::OnTakeDamage( const CTakeDamageInfo &inputInfo )
  				bHitEnemy = true;
  			}
  		}
@@ -1626,7 +1794,7 @@ index c030951..fa9bc76 100644
  
  /*
  		// no fall damage in space
-@@ -21998,17 +22109,20 @@ CON_COMMAND_F( currency_give, "Have some in-game money.", FCVAR_CHEAT )
+@@ -21998,17 +22149,20 @@ CON_COMMAND_F( currency_give, "Have some in-game money.", FCVAR_CHEAT )
  //-----------------------------------------------------------------------------
  void CTFPlayer::AddCurrency( int nAmount )
  {
@@ -2437,6 +2605,34 @@ index 3b2c6a1..6b26772 100644
  
  	virtual int		OnTakeDamage( const CTakeDamageInfo &info ) OVERRIDE;
  	virtual void	IncrementDeflected( void );
+diff --git a/src/game/shared/tf/tf_weapon_jar.cpp b/src/game/shared/tf/tf_weapon_jar.cpp
+index ba54bf9..d05749d 100644
+--- a/src/game/shared/tf/tf_weapon_jar.cpp
++++ b/src/game/shared/tf/tf_weapon_jar.cpp
+@@ -26,6 +26,7 @@
+ #include "particle_parse.h"
+ #include "bone_setup.h"
+ #include "tf_flame.h"
++#include "../../../../../my-passthrough/tf2mod/fortcraft_collision.h"  // FortCraft
+ #endif
+ 
+ //=============================================================================
+@@ -317,6 +318,15 @@ extern void ExtinguishPlayer( CEconEntity *pExtinguisher, CTFPlayer *pOwner, CTF
+ 
+ void JarExplode( int iEntIndex, CTFPlayer *pAttacker, CBaseEntity *pOriginalWeapon, CBaseEntity *pWeapon, const Vector& vContactPoint, int iTeam, float flRadius, ETFCond cond, float flDuration, const char *pszImpactEffect, const char *pszExplodeSound )
+ {
++	// FortCraft: Minecraft's mobs get splashed too (Jarate: mini-crits; Mad Milk: hits heal you;
++	// Gas Passer: they catch fire).
++	if ( cond == TF_COND_URINE )
++		FortCraft_ReportJar( vContactPoint, flRadius, 1 << 6 );
++	else if ( cond == TF_COND_MAD_MILK )
++		FortCraft_ReportJar( vContactPoint, flRadius, 1 << 7 );
++	else if ( cond == TF_COND_GAS )
++		FortCraft_ReportJar( vContactPoint, flRadius, 1 << 8 );
++
+ 	// Splash!
+ 	CPVSFilter particleFilter( vContactPoint );
+ 	TE_TFParticleEffect( particleFilter, 0.0, pszImpactEffect, vContactPoint, vec3_angle );
 diff --git a/src/game/shared/tf/tf_weapon_knife.cpp b/src/game/shared/tf/tf_weapon_knife.cpp
 index 2eb6777..fc5a9ad 100644
 --- a/src/game/shared/tf/tf_weapon_knife.cpp
