@@ -99,6 +99,9 @@ void FortCraft_ReportFire( const Vector &pos, float flRadius, bool bFlame );
 // hits on them back (TF2 damage = Minecraft health points x building max health / 20).
 class CBaseEntity;
 void FortCraft_WriteBuildings( CBaseEntity **ppObjects, int nCount );
+// True for a building, sticky or cash pack parked because it was left far outside TF2's field
+// (see ShiftOrPark); it is hidden there and not sent to Minecraft.
+bool FortCraft_IsParked( const CBaseEntity *pEnt );
 
 // TF2 server, once per player think: when the player is far from the middle of TF2's playing
 // field, move the player, buildings and projectiles back by whole blocks (Minecraft sees no move).

@@ -762,8 +762,8 @@ void FortCraft_WriteBuildings( CBaseEntity **ppObjects, int nCount )
 	for ( int i = 0; i < nCount && n < proto::kMaxBuildings; ++i )
 	{
 		CBaseEntity *pObj = ppObjects[ i ];
-		if ( !pObj )
-			continue;
+		if ( !pObj || FortCraft_IsParked( pObj ) )
+			continue;  // parked far away: not in Minecraft's world here
 		const Vector mins = pObj->GetAbsOrigin() + pObj->WorldAlignMins();
 		const Vector maxs = pObj->GetAbsOrigin() + pObj->WorldAlignMaxs();
 		proto::Building &b = out.list[ n++ ];
@@ -804,8 +804,10 @@ void FortCraft_ApplyBuildingHits()
 		CBaseEntity *pObj = UTIL_EntityByIndex( (int)hit.ent );
 		if ( !pObj || !pObj->IsBaseObject() || hit.amount <= 0.0f )
 			continue;
-		// Minecraft's player has 20 health: a mob's hit takes the same share of the building's.
-		const float damage = hit.amount * pObj->GetMaxHealth() / 20.0f;
+		// Mobs barely hurt buildings (Alex, 2026-10-11): 2 health per Minecraft damage point, so a
+		// zombie (3) takes 6 a hit from a 150-health sentry. It was the same share of the building's
+		// health as of a Minecraft player's 20.
+		const float damage = hit.amount * 2.0f;
 		CTakeDamageInfo info( GetWorldEntity(), GetWorldEntity(), damage, DMG_CLUB );
 		info.SetDamagePosition( pObj->WorldSpaceCenter() );
 		pObj->TakeDamage( info );
@@ -815,17 +817,125 @@ void FortCraft_ApplyBuildingHits()
 
 // Re-centring: keep the player within TF2's playing field however far they travel in Minecraft.
 // Moves every entity whose class name starts with this back by delta (re-centring).
+// ---- Things left far away -------------------------------------------------------------------
+// A re-centre moves everything by the player's distance from TF2's middle. After dying or
+// teleporting far (a bed 2000 blocks away), things left behind (buildings, stickies, your
+// dropped cash) would land far past TF2's map edge (about 16000 units), where TF2 clamps or
+// loses them; they turned up in walls (Alex, 2026-10-11). Those are parked instead: hidden,
+// not solid, buildings switched off, at the field's corner, with the place they belong
+// (in TF2 units, which can be out of range) remembered. When a later re-centre brings that
+// place back inside the field, they return there.
+struct ParkedThing
+{
+	EHANDLE hEnt;
+	Vector vecBelongs;
+};
+static CUtlVector< ParkedThing > s_Parked;
+static const float kFieldLimit = 14000.0f;
+
+static bool InField( const Vector &p )
+{
+	return fabsf( p.x ) < kFieldLimit && fabsf( p.y ) < kFieldLimit;
+}
+
+static void SetParked( CBaseEntity *pEnt, bool bParked )
+{
+	if ( bParked )
+	{
+		pEnt->AddEffects( EF_NODRAW );
+		pEnt->AddSolidFlags( FSOLID_NOT_SOLID );
+	}
+	else
+	{
+		pEnt->RemoveEffects( EF_NODRAW );
+		pEnt->RemoveSolidFlags( FSOLID_NOT_SOLID );
+	}
+	if ( pEnt->IsBaseObject() )
+	{
+		CBaseObject *pObj = static_cast< CBaseObject * >( pEnt );
+		if ( bParked )
+			pObj->SetDisabled( true );
+		else
+			pObj->UpdateDisabledState();
+	}
+	pEnt->SetAbsVelocity( vec3_origin );
+}
+
+bool FortCraft_IsParked( const CBaseEntity *pEnt )
+{
+	FOR_EACH_VEC( s_Parked, i )
+	{
+		if ( s_Parked[ i ].hEnt.Get() == pEnt )
+			return true;
+	}
+	return false;
+}
+
+// Moves one thing by -delta, parking it if that leaves TF2's field. Projectiles in flight that
+// would leave the field are simply removed. Returns false if it's gone.
+static bool ShiftOrPark( CBaseEntity *pEnt, const Vector &delta )
+{
+	const Vector p = pEnt->GetAbsOrigin() - delta;
+	if ( InField( p ) )
+	{
+		pEnt->Teleport( &p, NULL, NULL );
+		return true;
+	}
+	const char *pszClass = pEnt->GetClassname();
+	const bool bKeep = pEnt->IsBaseObject() || V_strstr( pszClass, "currencypack" ) || V_strstr( pszClass, "pipe_remote" );
+	if ( !bKeep )
+	{
+		UTIL_Remove( pEnt );
+		return false;
+	}
+	ParkedThing t;
+	t.hEnt = pEnt;
+	t.vecBelongs = p;
+	s_Parked.AddToTail( t );
+	Vector corner( kFieldLimit + 1500.0f, kFieldLimit + 1500.0f, p.z );
+	pEnt->Teleport( &corner, NULL, NULL );
+	SetParked( pEnt, true );
+	Msg( "FortCraft: parked %s %d far away (it belongs at %.0f %.0f)\n", pszClass, pEnt->entindex(), p.x, p.y );
+	return true;
+}
+
+// After a re-centre by delta: parked things' places move too; those back inside return.
+static void UpdateParked( const Vector &delta )
+{
+	for ( int i = s_Parked.Count() - 1; i >= 0; --i )
+	{
+		CBaseEntity *pEnt = s_Parked[ i ].hEnt.Get();
+		if ( !pEnt )
+		{
+			s_Parked.Remove( i );
+			continue;
+		}
+		s_Parked[ i ].vecBelongs -= delta;
+		if ( InField( s_Parked[ i ].vecBelongs ) )
+		{
+			const Vector p = s_Parked[ i ].vecBelongs;
+			pEnt->Teleport( &p, NULL, NULL );
+			SetParked( pEnt, false );
+			Msg( "FortCraft: %s %d is back where it belongs\n", pEnt->GetClassname(), pEnt->entindex() );
+			s_Parked.Remove( i );
+		}
+	}
+}
+
 static int ShiftByClassname( const char *pszPrefix, const Vector &delta )
 {
 	const int nLen = V_strlen( pszPrefix );
-	int n = 0;
+	CUtlVector< CBaseEntity * > found;
 	for ( CBaseEntity *pEnt = gEntList.FirstEnt(); pEnt; pEnt = gEntList.NextEnt( pEnt ) )
 	{
-		if ( V_strncmp( pEnt->GetClassname(), pszPrefix, nLen ) != 0 )
-			continue;
-		Vector p = pEnt->GetAbsOrigin() - delta;
-		pEnt->Teleport( &p, NULL, NULL );
-		++n;
+		if ( V_strncmp( pEnt->GetClassname(), pszPrefix, nLen ) == 0 && !FortCraft_IsParked( pEnt ) )
+			found.AddToTail( pEnt );
+	}
+	int n = 0;
+	FOR_EACH_VEC( found, i )
+	{
+		if ( ShiftOrPark( found[ i ], delta ) )
+			++n;
 	}
 	return n;
 }
@@ -849,13 +959,11 @@ void FortCraft_MaybeRecentre( CBaseEntity *pPlayer, CBaseEntity **ppObjects, int
 	// and projectiles in flight.
 	Vector newPos = pos - delta;
 	pPlayer->Teleport( &newPos, NULL, NULL );
+	UpdateParked( delta );
 	for ( int i = 0; i < nObjects; ++i )
 	{
-		if ( ppObjects[ i ] )
-		{
-			Vector p = ppObjects[ i ]->GetAbsOrigin() - delta;
-			ppObjects[ i ]->Teleport( &p, NULL, NULL );
-		}
+		if ( ppObjects[ i ] && !FortCraft_IsParked( ppObjects[ i ] ) )
+			ShiftOrPark( ppObjects[ i ], delta );
 	}
 	// Cash lying around stays where it is in Minecraft's world too.
 	const int nProjectiles = ShiftByClassname( "tf_projectile", delta ) + ShiftByClassname( "item_currencypack", delta );
@@ -933,6 +1041,7 @@ static void PlaceAtMinecraft( CBaseEntity *pPlayer, const Vector &anchor, float 
 	if ( fabsf( pos.x ) >= kLimit || fabsf( pos.y ) >= kLimit )
 	{
 		const Vector delta( floorf( pos.x / s + 0.5f ) * s, floorf( pos.y / s + 0.5f ) * s, 0.0f );
+		UpdateParked( delta );
 		const int nObjects = ShiftByClassname( "obj_", delta );
 		const int nProjectiles = ShiftByClassname( "tf_projectile", delta ) + ShiftByClassname( "item_currencypack", delta );
 		proto::Recentre &r = *(proto::Recentre *)( s_pShm + proto::kOffRecentre );
@@ -1499,6 +1608,15 @@ void FortCraft_ApplyMinecraftDamage( CBaseEntity *pPlayer )
 	{
 		s_vecLastAlive = pPlayer->GetAbsOrigin();
 		s_flLastAliveAt = gpGlobals->curtime;
+		// A witch's Jarate hit the player (v65): covered for 8 s, like TF2's own Jarate.
+		static uint32_t s_nJarateSeen;
+		const uint32_t nJarate = ( (const proto::PlayerJarate *)( s_pShm + proto::kOffPlayerJarate ) )->count;
+		if ( nJarate != s_nJarateSeen )
+		{
+			if ( s_nJarateSeen != 0 || nJarate < 3 )
+				static_cast< CTFPlayer * >( pPlayer )->m_Shared.AddCond( TF_COND_URINE, 8.0f );
+			s_nJarateSeen = nJarate;
+		}
 	}
 	ApplySupplyPack( static_cast< CTFPlayer * >( pPlayer ) );
 #ifndef CLIENT_DLL

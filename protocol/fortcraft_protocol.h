@@ -14,7 +14,7 @@
 namespace fortcraft { namespace proto
 {
 	static constexpr std::uint32_t kMagic = 0x46524346;  // "FCRF"
-	static constexpr std::uint32_t kVersion = 64;
+	static constexpr std::uint32_t kVersion = 65;
 	static constexpr wchar_t       kMappingName[] = L"Local\\FortCraft_v1";
 	// Linux: a file in RAM that Minecraft creates and both sides map (same bytes as on Windows).
 	static constexpr char          kMappingPathPosix[] = "/dev/shm/FortCraft_v1";
@@ -915,7 +915,11 @@ namespace fortcraft { namespace proto
 	static constexpr std::uint16_t kRobotDead = 1, kRobotHurt = 2, kRobotGround = 4, kRobotSwing = 8,
 		kRobotCharging = 16, kRobotCasting = 32, kRobotCelebrating = 64, kRobotAggressive = 128,
 		kRobotRam = 256, kRobotRoar = 512, kRobotHidden = 1024, kRobotCaptain = 2048, kRobotDrinking = 4096,
-		kRobotGiant = 8192;  // v64: a giant robot (Minecraft scaled the mob up)
+		kRobotGiant = 8192,  // v64: a giant robot (Minecraft scaled the mob up)
+		kRobotCharge = 16384,   // v65: Demoknight shield-charging (Minecraft's server started it)
+		kRobotFiring = 32768;   // v65: Giant Heavy's minigun firing
+	// v65: kind 7 is not a robot but a Jarate jar a witch threw (TF2 draws the jar, then the splash).
+	static constexpr std::uint8_t kRobotKindJar = 7;
 	struct RaidRobot
 	{
 		std::int32_t  id;     // Minecraft entity id
@@ -950,6 +954,16 @@ namespace fortcraft { namespace proto
 	};
 	static_assert(kOffRobotOccluders >= kOffRaidRobots + sizeof(RaidRobots), "FortCraft protocol layout");
 	static_assert(kOffRobotOccluders + sizeof(RobotOccluders) <= kOffOverlayPixels, "FortCraft protocol layout");
+
+	// ---- Minecraft -> TF2: the player was hit by a witch's Jarate (v65) ------------------------
+	// A counter; each time it goes up TF2's server covers the player in Jarate (8 s).
+	static constexpr std::uint64_t kOffPlayerJarate = 0x62200;
+	struct PlayerJarate
+	{
+		std::uint32_t count;
+		std::uint32_t pad;
+	};
+	static_assert(kOffPlayerJarate >= kOffRobotOccluders + sizeof(RobotOccluders), "FortCraft protocol layout");
 	// v51: MobHit source bit for money that isn't a kill (Minecraft's other XP: ores, furnaces,
 	// breeding, fishing...). Only the cash drop happens: no hit number, no on-kill effects.
 	static constexpr std::uint32_t kMobHitMoneyOnly = 1u << 7;

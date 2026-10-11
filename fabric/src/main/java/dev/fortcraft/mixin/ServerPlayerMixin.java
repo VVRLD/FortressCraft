@@ -69,6 +69,10 @@ public abstract class ServerPlayerMixin {
 		if (source.is(net.minecraft.world.damagesource.DamageTypes.WITHER)) {
 			self.removeEffect(net.minecraft.world.effect.MobEffects.WITHER);
 		}
+		// Raids are easier: everything hurts half as much while one is under way (Alex, 2026-10-11).
+		if (Combat.raidUnderWay()) {
+			send *= 0.5f;
+		}
 		Vec3 from = source.getSourcePosition() != null ? source.getSourcePosition() : self.position();
 		FortLink.writeHurt(send, from.x, from.y, from.z);
 		FortCraft.LOG.info("FortCraft: {} hit the player for {} Minecraft health; sent to TF2", source.getMsgId(),

@@ -17,11 +17,14 @@
     "ItemsMixin",
     "LivingEntityMixin",
     "MinecraftMixin",
+    "MobAttackMixin",
     "MouseHandlerMixin",
     "OptionsMixin",
     "PlayerMixin",
     "ServerPlayerMixin",
+    "SnowballMixin",
     "SoundManagerMixin",
+    "WitchMixin",
     "ServerMoveMixin"
   ],
   "injectors": { "defaultRequire": 1 }

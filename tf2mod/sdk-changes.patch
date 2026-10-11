@@ -1383,7 +1383,7 @@ index c7a9e93..8bdedb0 100644
  
  	// Only make a shadow if the object doesn't use vphysics
 diff --git a/src/game/server/tf/tf_obj_sentrygun.cpp b/src/game/server/tf/tf_obj_sentrygun.cpp
-index aa261cb..b20f4a6 100644
+index aa261cb..751c24a 100644
 --- a/src/game/server/tf/tf_obj_sentrygun.cpp
 +++ b/src/game/server/tf/tf_obj_sentrygun.cpp
 @@ -25,6 +25,7 @@
@@ -1545,6 +1545,17 @@ index aa261cb..b20f4a6 100644
  //-----------------------------------------------------------------------------
  // 
  //-----------------------------------------------------------------------------
+@@ -1552,6 +1673,10 @@ bool CObjectSentrygun::Fire()
+ 		CALL_ATTRIB_HOOK_FLOAT_ON_OTHER( GetOwner(), info.m_flDamage, mult_engy_sentry_damage );
+ 
+ 		FireBullets( info );
++		// FortCraft: a Wrangled sentry's bullets hit Minecraft's mobs too (Alex, 2026-10-11: the
++		// Wrangler did no damage). Its own target finding already reports its shots at mobs.
++		if ( m_bPlayerControlled )
++			FortCraft_ReportShot( vecSrc, vecAimDir, MAX( flDistToTarget + 100.0f, 2048.0f ), info.m_flDamage, FC_SENTRY );
+ 
+ 		// sentry gun fire 'heats up' the nav mesh around it
+ 		UpdateNavMeshCombatStatus();
 diff --git a/src/game/server/tf/tf_obj_sentrygun.h b/src/game/server/tf/tf_obj_sentrygun.h
 index 2c86d52..cc7b936 100644
 --- a/src/game/server/tf/tf_obj_sentrygun.h
@@ -1558,7 +1569,7 @@ index 2c86d52..cc7b936 100644
  
  	int GetBaseTurnRate( void );
 diff --git a/src/game/server/tf/tf_player.cpp b/src/game/server/tf/tf_player.cpp
-index c030951..8f746f0 100644
+index c030951..07f41f4 100644
 --- a/src/game/server/tf/tf_player.cpp
 +++ b/src/game/server/tf/tf_player.cpp
 @@ -6,6 +6,8 @@
@@ -1636,7 +1647,7 @@ index c030951..8f746f0 100644
  	// Update timers.
  	UpdateTimers();
  
-@@ -2935,6 +2980,46 @@ void CTFPlayer::PrecacheTFPlayer()
+@@ -2935,6 +2980,51 @@ void CTFPlayer::PrecacheTFPlayer()
  	// Precache the player models and gibs.
  	PrecachePlayerModels();
  
@@ -1661,6 +1672,11 @@ index c030951..8f746f0 100644
 +		PrecacheScriptSound( "MVM.GiantHeavyGunWindDown" );
 +		PrecacheScriptSound( "MVM.GiantHeavyGunFire" );
 +		PrecacheScriptSound( "MVM.GiantHeavyEntrance" );
++		PrecacheScriptSound( "Jar.Explode" );
++		PrecacheScriptSound( "Weapon_CompoundBow.Single" );
++		PrecacheParticleSystem( "peejar_impact" );
++		PrecacheParticleSystem( "bullet_tracer01_blue" );
++		PrecacheParticleSystem( "muzzle_minigun_constant" );
 +		for ( int i = 0; i < ARRAYSIZE( kRobotVoices ); ++i )
 +		{
 +			const RobotVoice &v = kRobotVoices[ i ];
@@ -1683,7 +1699,7 @@ index c030951..8f746f0 100644
  	// Precache the player sounds.
  	PrecacheScriptSound( "Player.Spawn" );
  	PrecacheScriptSound( "TFPlayer.Pain" );
-@@ -3944,6 +4029,10 @@ void CTFPlayer::Spawn()
+@@ -3944,6 +4034,10 @@ void CTFPlayer::Spawn()
  	}
  
  	SetContextThink( &CTFPlayer::PostSpawnThink, gpGlobals->curtime + 0.1f, "PostSpawnThink" );
@@ -1694,7 +1710,7 @@ index c030951..8f746f0 100644
  }
  
  //-----------------------------------------------------------------------------
-@@ -6976,6 +7065,18 @@ void CTFPlayer::HandleCommand_JoinClass( const char *pClassName, bool bAllowSpaw
+@@ -6976,6 +7070,18 @@ void CTFPlayer::HandleCommand_JoinClass( const char *pClassName, bool bAllowSpaw
  		return;
  	}
  
@@ -1713,7 +1729,7 @@ index c030951..8f746f0 100644
  	// We can respawn instantly if:
  	//	- We're dead, and we're past the required post-death time
  	//	- We're inside a respawn room of our own team
-@@ -7518,6 +7619,27 @@ bool CTFPlayer::ClientCommand( const CCommand &args )
+@@ -7518,6 +7624,27 @@ bool CTFPlayer::ClientCommand( const CCommand &args )
  		}
  		return true;
  	}
@@ -1741,7 +1757,7 @@ index c030951..8f746f0 100644
  	else if ( FStrEq( pcmd, "stop_taunt" ) )
  	{
  		if( m_Shared.GetTauntIndex() == TAUNT_LONG && !m_Shared.InCond( TF_COND_HALLOWEEN_KART ) )
-@@ -8662,7 +8784,7 @@ CTFPlayer *CTFPlayer::TeamFortress_GetDisguiseTarget( int nTeam, int nClass )
+@@ -8662,7 +8789,7 @@ CTFPlayer *CTFPlayer::TeamFortress_GetDisguiseTarget( int nTeam, int nClass )
  //-----------------------------------------------------------------------------
  float DamageForce( const Vector &size, float damage, float scale )
  { 
@@ -1750,7 +1766,7 @@ index c030951..8f746f0 100644
  	
  	if ( force > 1000.0 )
  	{
-@@ -8813,7 +8935,18 @@ int CTFPlayer::OnTakeDamage( const CTakeDamageInfo &inputInfo )
+@@ -8813,7 +8940,18 @@ int CTFPlayer::OnTakeDamage( const CTakeDamageInfo &inputInfo )
  	CTFWeaponBase *pWeapon = dynamic_cast< CTFWeaponBase * >( inputInfo.GetWeapon() );
  
  	if ( GetFlags() & FL_GODMODE )
@@ -1769,7 +1785,7 @@ index c030951..8f746f0 100644
  
  	if ( IsInCommentaryMode() )
  		return 0;
-@@ -8980,6 +9113,24 @@ int CTFPlayer::OnTakeDamage( const CTakeDamageInfo &inputInfo )
+@@ -8980,6 +9118,24 @@ int CTFPlayer::OnTakeDamage( const CTakeDamageInfo &inputInfo )
  				bHitEnemy = true;
  			}
  		}
@@ -1794,7 +1810,7 @@ index c030951..8f746f0 100644
  
  /*
  		// no fall damage in space
-@@ -21998,17 +22149,20 @@ CON_COMMAND_F( currency_give, "Have some in-game money.", FCVAR_CHEAT )
+@@ -21998,17 +22154,20 @@ CON_COMMAND_F( currency_give, "Have some in-game money.", FCVAR_CHEAT )
  //-----------------------------------------------------------------------------
  void CTFPlayer::AddCurrency( int nAmount )
  {
@@ -2150,7 +2166,7 @@ index 7e9ceed..cf5c53e 100644
  
  	Vector vecNewDirVelocity = vecNewVelocity - DotProduct( tr.plane.normal, vecNewVelocity ) * tr.plane.normal;
 diff --git a/src/game/shared/tf/tf_gamemovement.cpp b/src/game/shared/tf/tf_gamemovement.cpp
-index 4766016..b15e85f 100644
+index 4766016..4014ac8 100644
 --- a/src/game/shared/tf/tf_gamemovement.cpp
 +++ b/src/game/shared/tf/tf_gamemovement.cpp
 @@ -22,6 +22,7 @@
@@ -2216,17 +2232,48 @@ index 4766016..b15e85f 100644
 -	
 -	CTraceFilterObject traceFilter( mv->m_nPlayerHandle.Get(), collisionGroup );
 +		CTraceFilterObject traceFilter( mv->m_nPlayerHandle.Get(), collisionGroup );
-+
-+		enginetrace->TraceRay( ray, fMask, &traceFilter, &pm );
-+	}
  
 -	enginetrace->TraceRay( ray, fMask, &traceFilter, &pm );
++		enginetrace->TraceRay( ray, fMask, &traceFilter, &pm );
++	}
++
 +	// FortCraft: Minecraft blocks are solid too.
 +	if ( fMask & CONTENTS_SOLID )
 +		FortCraft_ClipHullTrace( start, end, GetPlayerMins(), GetPlayerMaxs(), pm );
  }
  
  //-----------------------------------------------------------------------------
+@@ -2621,6 +2651,30 @@ void CTFGameMovement::FullWalkMoveUnderwater()
+ //-----------------------------------------------------------------------------
+ void CTFGameMovement::FullWalkMove()
+ {
++	// FortCraft: creative flight (double-tap jump, Scout triple; fortcraft_link.cpp sets
++	// IN_BULLRUSH). No gravity; Minecraft's flying speed, 10.9 blocks/s across; jump rises and
++	// crouch sinks at 7.5 blocks/s. Minecraft's blocks still stop you.
++	if ( FortCraft_Active() && ( mv->m_nButtons & IN_BULLRUSH ) && FortCraft_HostCreative() )
++	{
++		Vector vecForward, vecRight;
++		AngleVectors( mv->m_vecViewAngles, &vecForward, &vecRight, NULL );
++		vecForward.z = 0.0f;
++		vecRight.z = 0.0f;
++		VectorNormalize( vecForward );
++		VectorNormalize( vecRight );
++		Vector vecWish = vecForward * mv->m_flForwardMove + vecRight * mv->m_flSideMove;
++		Vector vecTarget = VectorNormalize( vecWish ) > 0.0f ? vecWish * 523.0f : vec3_origin;
++		vecTarget.z = ( mv->m_nButtons & IN_JUMP ) ? 360.0f : ( mv->m_nButtons & IN_DUCK ) ? -360.0f : 0.0f;
++		const float flBlend = MIN( 1.0f, 10.0f * gpGlobals->frametime );
++		mv->m_vecVelocity += ( vecTarget - mv->m_vecVelocity ) * flBlend;
++		SetGroundEntity( NULL );
++		CheckVelocity();
++		TryPlayerMove();
++		CategorizePosition();
++		CheckVelocity();
++		return;
++	}
++
+ 	if ( !InWater() ) 
+ 	{
+ 		if ( m_pTFPlayer->m_Shared.InCond( TF_COND_PARACHUTE_ACTIVE ) && mv->m_vecVelocity[2] < 0 )
 diff --git a/src/game/shared/tf/tf_gamerules.cpp b/src/game/shared/tf/tf_gamerules.cpp
 index b14837f..2c23525 100644
 --- a/src/game/shared/tf/tf_gamerules.cpp

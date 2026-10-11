@@ -220,6 +220,52 @@ static void AuditEquippedContent( C_TFPlayer *pPlayer, C_TFWeaponBase *pActive )
 static proto::OverlayPose s_LastLookPose;  // the look ApplyLatestLook last set, in Minecraft degrees, and when
 static proto::OverlayPose s_PairPose, s_WorkPose;
 
+// Creative flight (Alex, 2026-10-11), as in Minecraft: tap jump twice quickly to start or stop
+// flying; the Scout taps three times, since two taps are its double jump. Landing stops it.
+// Movement (tf_gamemovement.cpp, both modules) sees it as IN_BULLRUSH on the command, a button
+// TF2 never uses, so the client's prediction and the server agree.
+static bool CreativeFlight( bool bJump )
+{
+	static bool s_bFlying, s_bWasJump, s_bAirborne;
+	static double s_flLastTap;
+	static int s_nTaps;
+	C_TFPlayer *pPlayer = C_TFPlayer::GetLocalTFPlayer();
+	if ( !pPlayer || !pPlayer->IsAlive() || !FortCraft_HostCreative() )
+	{
+		s_bFlying = false;
+		s_nTaps = 0;
+		s_bWasJump = bJump;
+		return false;
+	}
+	const int nTapsNeeded = pPlayer->IsPlayerClass( TF_CLASS_SCOUT ) ? 3 : 2;
+	const double flNow = Plat_FloatTime();
+	if ( bJump && !s_bWasJump )
+	{
+		if ( flNow - s_flLastTap > 0.35 )
+			s_nTaps = 0;  // too slow: start counting again
+		s_flLastTap = flNow;
+		if ( ++s_nTaps >= nTapsNeeded )
+		{
+			s_nTaps = 0;
+			s_bFlying = !s_bFlying;
+			s_bAirborne = false;
+			Msg( "FortCraft: creative flight %s\n", s_bFlying ? "on" : "off" );
+		}
+	}
+	s_bWasJump = bJump;
+	if ( s_bFlying )
+	{
+		if ( pPlayer->GetGroundEntity() == NULL )
+			s_bAirborne = true;
+		else if ( s_bAirborne && !bJump )
+		{
+			s_bFlying = false;  // landed
+			Msg( "FortCraft: creative flight off (landed)\n" );
+		}
+	}
+	return s_bFlying;
+}
+
 bool FortCraft_ApplyInput( CUserCmd *pCmd )
 {
 	if ( !s_bLinked )
@@ -260,6 +306,8 @@ bool FortCraft_ApplyInput( CUserCmd *pCmd )
 	if ( in.buttons & proto::kInAttack ) buttons |= IN_ATTACK;
 	if ( in.buttons & proto::kInReload ) buttons |= IN_RELOAD;
 	if ( in.buttons & proto::kInAttack2 ) buttons |= IN_ATTACK2;
+	if ( CreativeFlight( ( in.buttons & proto::kInJump ) != 0 ) )
+		buttons |= IN_BULLRUSH;
 	pCmd->buttons = buttons;
 
 	// Minecraft's hotbar slot picks the TF2 weapon slot (1: primary, 2: secondary, 3: melee...).
@@ -1874,6 +1922,9 @@ static const RobotKind kRobotKinds[] = {
 		ACT_MP_STAND_PRIMARY, ACT_MP_RUN_PRIMARY, ACT_MP_AIRWALK_PRIMARY, ACT_MP_ATTACK_STAND_PRIMARY, ACT_MP_DEPLOYED_IDLE, ACT_MP_DEPLOYED_PRIMARY },
 	{ "models/bots/sniper/bot_sniper.mdl", "models/weapons/c_models/urinejar.mdl", NULL, "Sniper", false, NULL, false, "MVM.GiantSoldierStep", 4, 6, 8,
 		ACT_MP_STAND_ITEM1, ACT_MP_RUN_ITEM1, ACT_MP_AIRWALK_ITEM1, ACT_MP_ATTACK_STAND_ITEM1, ACT_INVALID, ACT_INVALID },
+	// 7: not a robot, a witch's Jarate jar in flight.
+	{ "models/weapons/c_models/urinejar.mdl", NULL, NULL, NULL, false, NULL, false, NULL, 0, 0, 0,
+		ACT_INVALID, ACT_INVALID, ACT_INVALID, ACT_INVALID, ACT_INVALID, ACT_INVALID },
 };
 
 struct RobotState
@@ -1892,8 +1943,11 @@ struct RobotState
 	double flNextVoice = 0.0;
 	double flNextCast = 0.0;
 	double flRetryAt = 0.0;  // model couldn't be made (not precached yet): try again then
+	float flFacing = 0.0f;   // body yaw drawn last frame (turning to the player is eased)
+	bool bAimingAtPlayer = false;
 	bool bGiant = false;     // the model made is the giant one
-	bool bShieldCharge = false;
+	CNewParticleEffect *pMuzzle = NULL;  // Giant Heavy's minigun flash while firing
+	double flNextTracer = 0.0;
 	bool bDead = false;
 	bool bSeen = false;      // in this frame's list
 };
@@ -1963,6 +2017,7 @@ static void ReleaseRobot( RobotState &r )
 		r.pModel->Release();
 	r.pWeapon = r.pExtra = NULL;
 	r.pModel = NULL;
+	r.pMuzzle = NULL;  // went with the weapon
 }
 
 static int RobotSequence( C_BaseAnimating *pModel, Activity act )
@@ -1981,6 +2036,10 @@ static void RobotGibs( RobotState &r )
 	const Vector origin = r.pModel->GetAbsOrigin();
 	const QAngle angles = r.pModel->GetAbsAngles();
 	const float flScale = r.pModel->GetModelScale();
+	// MvM's giant gib pieces are already modelled at giant size: scaling them by the giant's 1.75
+	// again made them enormous (Alex, 2026-10-11).
+	const RobotKind &k = kRobotKinds[ r.kind ];
+	const float flGibScale = r.bGiant && k.pszGiantModel ? flScale / 1.75f : flScale;
 	matrix3x4_t xf;
 	AngleMatrix( angles, origin, xf );
 	for ( int i = 0; i < list.Count() && s_RobotGibs.Count() < 96; ++i )
@@ -1992,7 +2051,7 @@ static void RobotGibs( RobotState &r )
 			continue;
 		}
 		pGib->m_nSkin = 1;
-		pGib->SetModelScale( flScale );
+		pGib->SetModelScale( flGibScale );
 		RobotGib g;
 		g.pModel = pGib;
 		g.hModel = pGib;
@@ -2031,9 +2090,26 @@ static void UpdateRobotGibs( float dt )
 		{
 			g.vel.z -= 800.0f * dt;
 			const Vector next = g.pos + g.vel * dt;
+			// Collide with the gib's whole turned shape, not a tiny box at its origin: pieces sank
+			// half into the ground (Alex, 2026-10-11).
+			Vector vecLocalMins, vecLocalMaxs, vecMins, vecMaxs;
+			// The piece's own animation box (tight); the render box can be much bigger than the mesh.
+			CStudioHdr *pHdr = g.pModel->GetModelPtr();
+			if ( pHdr && pHdr->GetNumSeq() > 0 )
+			{
+				vecLocalMins = pHdr->pSeqdesc( 0 ).bbmin * g.pModel->GetModelScale();
+				vecLocalMaxs = pHdr->pSeqdesc( 0 ).bbmax * g.pModel->GetModelScale();
+			}
+			else
+			{
+				g.pModel->GetRenderBounds( vecLocalMins, vecLocalMaxs );  // already scaled
+			}
+			matrix3x4_t rot;
+			AngleMatrix( g.ang, rot );
+			RotateAABB( rot, vecLocalMins, vecLocalMaxs, vecMins, vecMaxs );
 			trace_t tr;
 			FortCraft_ClearTrace( g.pos, next, tr );
-			FortCraft_ClipHullTrace( g.pos, next, Vector( -3, -3, -3 ), Vector( 3, 3, 3 ), tr );
+			FortCraft_ClipHullTrace( g.pos, next, vecMins, vecMaxs, tr );
 			if ( tr.DidHit() )
 			{
 				g.pos = tr.endpos;
@@ -2107,6 +2183,28 @@ static void UpdateRobot( RobotState &r, const proto::RaidRobot &in, float dt )
 		ReleaseRobot( r );
 		return;
 	}
+	if ( r.kind == proto::kRobotKindJar )
+	{
+		// A Jarate jar: the jar model, tumbling along Minecraft's snowball path.
+		if ( !r.pModel )
+		{
+			if ( modelinfo->GetModelIndex( k.pszModel ) == -1 )
+				return;
+			r.pModel = new C_FortCraftRobot;
+			if ( !r.pModel->InitializeAsClientEntity( k.pszModel, RENDER_GROUP_OPAQUE_ENTITY ) )
+			{
+				r.pModel->Release();
+				r.pModel = NULL;
+				return;
+			}
+			r.hModel = r.pModel;
+			r.pModel->m_nSkin = 1;
+		}
+		r.vecLast = pos;
+		r.pModel->SetAbsOrigin( pos + Vector( 0, 0, 4 ) );
+		r.pModel->SetAbsAngles( QAngle( fmodf( (float)Plat_FloatTime() * 720.0f, 360.0f ), AngleNormalize( -in.bodyYaw - 90.0f ), 0 ) );
+		return;
+	}
 	if ( r.pModel && r.bGiant != bGiant )
 		ReleaseRobot( r );  // became a giant: make the giant model
 	const char *pszModel = bGiant && k.pszGiantModel ? k.pszGiantModel : k.pszModel;
@@ -2174,9 +2272,31 @@ static void UpdateRobot( RobotState &r, const proto::RaidRobot &in, float dt )
 	// Drawn bow (Bowman) or spun-up minigun (Giant Heavy hunting).
 	const bool bDeployed = r.kind == 1 ? bCharging : r.kind == 5 ? ( f & proto::kRobotAggressive ) != 0 : false;
 
-	// Facing: Minecraft yaw 0 faces south (+Z), TF2 yaw 0 faces east (+X).
-	const float flBodyYaw = AngleNormalize( -in.bodyYaw - 90.0f );
-	const float flHeadYaw = AngleNormalize( -in.headYaw - 90.0f );
+	// Facing: Minecraft yaw 0 faces south (+Z), TF2 yaw 0 faces east (+X). Robots look at the
+	// player (Alex): within 24 blocks the head and aim follow you, and one standing still, or
+	// fighting, turns its body to you too, like MvM's bots facing their target.
+	float flBodyYaw = AngleNormalize( -in.bodyYaw - 90.0f );
+	float flHeadYaw = AngleNormalize( -in.headYaw - 90.0f );
+	float flAimPitch = -in.pitch;
+	r.bAimingAtPlayer = false;
+	C_TFPlayer *pLocal = C_TFPlayer::GetLocalTFPlayer();
+	if ( pLocal && pLocal->IsAlive() && !( f & proto::kRobotCelebrating ) )
+	{
+		const Vector eye = pos + Vector( 0, 0, in.height * UNITS_PER_BLOCK * 0.9f );
+		const Vector to = pLocal->WorldSpaceCenter() - eye;
+		if ( to.Length() < 24.0f * UNITS_PER_BLOCK )
+		{
+			QAngle look;
+			VectorAngles( to, look );
+			flHeadYaw = look.y;
+			flAimPitch = -AngleNormalize( look.x );
+			// MvM's bots face their target even while running (the run blends sideways or
+			// backwards); Alex: "none of the bots are really aiming at me".
+			flBodyYaw = ApproachAngle( flHeadYaw, r.flFacing, 540.0f * MAX( dt, 0.001f ) );
+			r.bAimingAtPlayer = true;
+		}
+	}
+	r.flFacing = flBodyYaw;
 	pModel->SetAbsOrigin( pos );
 	pModel->SetAbsAngles( QAngle( 0, flBodyYaw, 0 ) );
 
@@ -2206,21 +2326,45 @@ static void UpdateRobot( RobotState &r, const proto::RaidRobot &in, float dt )
 	float flRate = 1.0f;
 	if ( bMoving )
 	{
+		// As TF2's own player animation does: the run's full stride is reached at its own ground
+		// speed; slower, the move pose shrinks towards standing (shorter steps, same pace), and
+		// faster, the run plays faster. Before, slow robots took full strides slowly and slid.
 		const float flMoveYaw = RAD2DEG( atan2f( r.vecVelocity.y, r.vecVelocity.x ) );
 		const float flRel = DEG2RAD( AngleNormalize( flMoveYaw - flBodyYaw ) );
 		pModel->SetPoseParameter( "move_x", cosf( flRel ) );
 		pModel->SetPoseParameter( "move_y", -sinf( flRel ) );
 		const float flGround = pModel->GetSequenceGroundSpeed( nSeq ) * flScale;
+		float flAmount = 1.0f;
 		if ( flGround > 1.0f )
-			flRate = clamp( flSpeed / flGround, 0.1f, 3.0f );
+		{
+			flAmount = MIN( flSpeed / flGround, 1.0f );
+			flRate = MAX( flSpeed / flGround, 1.0f );
+			flRate = MIN( flRate, 3.0f );
+		}
+		pModel->SetPoseParameter( "move_x", cosf( flRel ) * flAmount );
+		pModel->SetPoseParameter( "move_y", -sinf( flRel ) * flAmount );
+		// Some classes' runs blend by direction and amount instead (the Bowman's Huntsman run,
+		// Scout's bat run, ...): without these they slid (Alex, 2026-10-11).
+		pModel->SetPoseParameter( "move_yaw", RAD2DEG( flRel ) );
+		pModel->SetPoseParameter( "move_scale", flAmount );
 	}
 	else
 	{
 		pModel->SetPoseParameter( "move_x", 0.0f );
 		pModel->SetPoseParameter( "move_y", 0.0f );
+		pModel->SetPoseParameter( "move_scale", 0.0f );
 	}
-	pModel->SetPoseParameter( "body_yaw", clamp( AngleNormalize( flHeadYaw - flBodyYaw ), -44.0f, 44.0f ) );
-	pModel->SetPoseParameter( "body_pitch", clamp( -in.pitch, -89.0f, 89.0f ) );
+	const float flBodyYawPose = clamp( AngleNormalize( flHeadYaw - flBodyYaw ), -45.0f, 45.0f );
+	static double s_flAimLogAt;
+	if ( r.bAimingAtPlayer && Plat_FloatTime() >= s_flAimLogAt )
+	{
+		s_flAimLogAt = Plat_FloatTime() + 3.0;
+		Msg( "FortCraft robot %d (kind %d): facing %.0f, to player %.0f, body_yaw %.0f, body_pitch %.0f, speed %.0f, seq %s\n",
+			r.id, r.kind, flBodyYaw, flHeadYaw, flBodyYawPose, flAimPitch, flSpeed,
+			pModel->GetModelPtr() ? pModel->GetModelPtr()->pSeqdesc( nSeq ).pszLabel() : "?" );
+	}
+	pModel->SetPoseParameter( "body_yaw", flBodyYawPose );
+	pModel->SetPoseParameter( "body_pitch", clamp( flAimPitch, -89.0f, 89.0f ) );
 	float flCycle = pModel->GetCycle() + dt * flRate * pModel->GetSequenceCycleRate( pModel->GetModelPtr(), nSeq );
 	pModel->SetCycle( pModel->IsSequenceLooping( nSeq ) ? flCycle - floorf( flCycle ) : MIN( flCycle, 1.0f ) );
 
@@ -2241,6 +2385,11 @@ static void UpdateRobot( RobotState &r, const proto::RaidRobot &in, float dt )
 	else if ( rose( proto::kRobotHurt ) && pModel->m_flGestureCycle >= 1.0f )
 	{
 		pModel->m_nGestureSeq = RobotSequence( pModel, ACT_MP_GESTURE_FLINCH_CHEST );
+		pModel->m_flGestureCycle = 0.0f;
+	}
+	if ( ( f & proto::kRobotFiring ) && pModel->m_flGestureCycle >= 1.0f )
+	{
+		pModel->m_nGestureSeq = RobotSequence( pModel, k.attack );  // the minigun keeps firing
 		pModel->m_flGestureCycle = 0.0f;
 	}
 	if ( pModel->m_nGestureSeq >= 0 && pModel->m_flGestureCycle < 1.0f )
@@ -2271,26 +2420,44 @@ static void UpdateRobot( RobotState &r, const proto::RaidRobot &in, float dt )
 	}
 	const double flNow = Plat_FloatTime();
 
-	// Demoknight's shield charge: Minecraft sends it running far faster than a walk.
-	if ( r.kind == 2 )
+	// Demoknight's shield charge: Minecraft's server says when one starts.
+	if ( r.kind == 2 && rose( proto::kRobotCharge ) )
 	{
-		const bool bShield = flSpeed > 6.0f * UNITS_PER_BLOCK && bGround;
-		if ( bShield && !r.bShieldCharge )
-		{
-			RobotSound( "DemoCharge.Charging", pos );
-			RobotVoice( k, bGiant, "BattleCry", k.nBattleCry, pos );
-		}
-		r.bShieldCharge = bShield;
+		RobotSound( "DemoCharge.Charging", pos );
+		RobotVoice( k, bGiant, "BattleCry", k.nBattleCry, pos );
 	}
-	// Giant Heavy's minigun: winds up while hunting, fires on each ravager attack.
+	// Bowman's Huntsman.
+	if ( r.kind == 1 && rose( proto::kRobotSwing ) )
+		RobotSound( "Weapon_CompoundBow.Single", pos );
+	// Giant Heavy's minigun: winds up while hunting; firing, the gun loop, muzzle flash and
+	// tracers at the player.
 	if ( r.kind == 5 )
 	{
 		if ( rose( proto::kRobotAggressive ) )
 			RobotSound( "MVM.GiantHeavyGunWindUp", pos );
-		else if ( ( was & proto::kRobotAggressive ) && !( f & proto::kRobotAggressive ) )
+		if ( rose( proto::kRobotFiring ) )
+		{
+			if ( r.pWeapon && !r.pMuzzle )
+				r.pMuzzle = r.pWeapon->ParticleProp()->Create( "muzzle_minigun_constant", PATTACH_POINT_FOLLOW, "muzzle" );
+		}
+		else if ( ( was & proto::kRobotFiring ) && !( f & proto::kRobotFiring ) )
+		{
 			RobotSound( "MVM.GiantHeavyGunWindDown", pos );
-		if ( rose( proto::kRobotRam ) )
-			RobotSound( "MVM.GiantHeavyGunFire", pos );
+			if ( r.pWeapon && r.pMuzzle )
+				r.pWeapon->ParticleProp()->StopEmission( r.pMuzzle );
+			r.pMuzzle = NULL;
+		}
+		if ( ( f & proto::kRobotFiring ) && r.pWeapon && pLocal && flNow >= r.flNextTracer )
+		{
+			r.flNextTracer = flNow + 0.08;
+			Vector vecMuzzle;
+			QAngle angMuzzle;
+			const int iMuzzle = r.pWeapon->LookupAttachment( "muzzle" );
+			if ( iMuzzle <= 0 || !r.pWeapon->GetAttachment( iMuzzle, vecMuzzle, angMuzzle ) )
+				vecMuzzle = pos + Vector( 0, 0, in.height * UNITS_PER_BLOCK * 0.6f );
+			const Vector vecEnd = pLocal->WorldSpaceCenter() + Vector( RandomFloat( -24, 24 ), RandomFloat( -24, 24 ), RandomFloat( -24, 24 ) );
+			UTIL_ParticleTracer( "bullet_tracer01_blue", vecMuzzle, vecEnd );
+		}
 	}
 	if ( rose( proto::kRobotHurt ) )
 	{
@@ -2362,6 +2529,12 @@ static void UpdateRobots()
 			{
 				if ( !s_Robots[ i ].bSeen )
 				{
+					if ( s_Robots[ i ].kind == proto::kRobotKindJar && s_Robots[ i ].pModel && s_Robots[ i ].hModel.Get() == s_Robots[ i ].pModel )
+					{
+						// The jar broke: TF2's Jarate splash.
+						DispatchParticleEffect( "peejar_impact", s_Robots[ i ].vecLast, QAngle( 0, 0, 0 ) );
+						RobotSound( "Jar.Explode", s_Robots[ i ].vecLast );
+					}
 					ReleaseRobot( s_Robots[ i ] );
 					s_Robots.Remove( i );
 				}
@@ -2369,6 +2542,31 @@ static void UpdateRobots()
 		}
 	}
 	UpdateRobotGibs( dt );
+
+	// The Giant Heavy's minigun loop, while any live, drawn Giant Heavy fires (one loop for all).
+	// An engine ambient loop, stopped for sure when the last one stops or dies.
+	static const char *kMinigunLoop = "mvm/giant_heavy/giant_heavy_gunfire.wav";
+	static bool s_bMinigun;
+	bool bFiring = false;
+	FOR_EACH_VEC( s_Robots, i )
+	{
+		const RobotState &r = s_Robots[ i ];
+		if ( r.kind == 5 && !r.bDead && r.pModel && ( r.flags & proto::kRobotFiring ) )
+			bFiring = true;
+	}
+	if ( bFiring != s_bMinigun )
+	{
+		s_bMinigun = bFiring;
+		if ( bFiring )
+		{
+			enginesound->PrecacheSound( kMinigunLoop, true );
+			enginesound->EmitAmbientSound( kMinigunLoop, 0.8f );
+		}
+		else
+		{
+			enginesound->EmitAmbientSound( kMinigunLoop, 0.0f, PITCH_NORM, SND_STOP );
+		}
+	}
 }
 
 // ---- Far objects behind Minecraft blocks (protocol FarObjects / FarHidden) -------------------
@@ -3027,6 +3225,10 @@ void FortCraft_OnRenderStart()
 	if ( s_bHaveOrigin )
 		PollMobHits();
 	PollUiEvents( pPlayer );
+	// Raider robots keep moving while the merc is dead or respawning (Alex, 2026-10-11: they
+	// froze until you were back), so they're updated before the alive check below.
+	if ( s_bHaveOrigin )
+		UpdateRobots();
 	if ( !pPlayer->IsAlive() || pPlayer->GetTeamNumber() < FIRST_GAME_TEAM )
 		return;
 
@@ -3108,7 +3310,6 @@ void FortCraft_OnRenderStart()
 
 	WriteProjectiles();
 	UpdateFarOcclusion( pPlayer );
-	UpdateRobots();
 
 	LinkLog( "sample=%llu tick=%d alpha=%.3f sent=(%.4f,%.4f,%.4f) yaw=%.2f tf2=(%.1f,%.1f,%.1f) speed=%.0f onGround=%d\n",
 		(unsigned long long)s_nSample, gpGlobals->tickcount, gpGlobals->interpolation_amount, x, y, z, yaw,

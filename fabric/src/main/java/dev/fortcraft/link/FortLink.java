@@ -23,7 +23,7 @@ import java.util.Locale;
  */
 public final class FortLink {
 	public static final int MAGIC = 0x46524346;  // "FCRF"
-	public static final int VERSION = 64;
+	public static final int VERSION = 65;
 	/** Windows: a named page-file mapping. Linux: a file in /dev/shm (RAM), which TF2 maps too. */
 	public static final boolean WINDOWS = System.getProperty("os.name", "").toLowerCase(Locale.ROOT).startsWith("windows");
 	public static final String NAME = System.getenv().getOrDefault("FORTCRAFT_LINK", WINDOWS ? "Local\\FortCraft_v1" : "/dev/shm/FortCraft_v1");
@@ -502,6 +502,15 @@ public final class FortLink {
 		}
 		shm.set(JAVA_INT, 0x5E604, count);
 		INT.setRelease(shm, 0x5E600, ((seq + 1) | 1) + 1);  // even: done
+	}
+
+	private static int playerJarate;
+
+	/** PlayerJarate @0x62200 (v65): one more witch Jarate hit on the player. */
+	public static synchronized void writePlayerJarate() {
+		if (shm != null) {
+			INT.setRelease(shm, 0x62200, ++playerJarate);
+		}
 	}
 
 	/** RobotOccluders @0x5F100 (v64): seq, count, then up to 512 boxes of 6 floats (blocks in front of far robots). */

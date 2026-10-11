@@ -926,6 +926,11 @@ public final class Combat {
 	private static int raidFrames;
 	private static volatile int lastRaidState, lastRaidWave;
 
+	/** True while a village raid near the player is under way (damage to the player is halved). */
+	public static boolean raidUnderWay() {
+		return lastRaidState == 1;
+	}
+
 	private static void blast(Minecraft minecraft, Vec3 centre, float reportedRadius, float baseDamage, int flags) {
 		if ((flags & (JARATE | MILK | GAS)) != 0) {
 			splash(minecraft, centre, reportedRadius, flags);

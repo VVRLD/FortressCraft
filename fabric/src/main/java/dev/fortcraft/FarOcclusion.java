@@ -45,6 +45,10 @@ public final class FarOcclusion {
 		Vec3 eye = minecraft.gameRenderer.mainCamera().position();
 		Vec3 look = Vec3.directionFromRotation(0, minecraft.gameRenderer.mainCamera().yRot());
 		Vec3 side = new Vec3(-look.z, 0, look.x);
+		// Beyond Minecraft's render distance, or where its chunks aren't loaded, there's no world
+		// to hide things behind: rays there hit nothing. So buildings and stickies left far away
+		// (you died, or went home) showed through hills and walls (Alex, 2026-10-11). Hide them.
+		double farthest = minecraft.options.getEffectiveRenderDistance() * 16.0;
 		int n = 0, wet = 0;
 		for (FortLink.FarObject o : objects) {
 			Vec3 centre = new Vec3(o.x(), o.y(), o.z());
@@ -54,6 +58,12 @@ public final class FarOcclusion {
 				wetSurface[wet++] = surface;
 			}
 			if (centre.distanceTo(eye) <= DEPTH_LAYER_BLOCKS) {
+				continue;
+			}
+			if (centre.distanceTo(eye) > farthest || !minecraft.level.hasChunkAt(BlockPos.containing(centre))) {
+				if (n < hidden.length) {
+					hidden[n++] = o.ent();
+				}
 				continue;
 			}
 			double r = Math.min(o.radius(), 3.0) * 0.8;

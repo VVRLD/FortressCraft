@@ -5,6 +5,10 @@ import java.util.HashMap;
 import java.util.HashSet;
 import java.util.Map;
 import java.util.Set;
+import java.util.concurrent.ConcurrentHashMap;
+import net.minecraft.world.entity.projectile.arrow.AbstractArrow;
+import net.minecraft.world.entity.projectile.arrow.Arrow;
+import net.minecraft.world.item.ItemStack;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.server.IntegratedServer;
 import net.minecraft.core.BlockPos;
@@ -50,14 +54,19 @@ import net.minecraft.world.phys.Vec3;
  * captain), Bowmen shoot faster (Quick Charge III crossbows), and Demoknights shield-charge at
  * their target. Far robots are hidden behind blocks properly: the blocks in front of them go to
  * TF2's depth layer (RobotOccluders).
+ *
+ * Round 3 (Alex, 2026-10-11): Demoknights charge only every 12-18 s and TF2 hears the real
+ * charge (not every fast run); every melee hit and shot is told to TF2 as an attack, so robots
+ * swing; Bowmen fire extra arrows; the Giant Heavy fires its minigun (half a heart a time while
+ * it sees you); witches throw Jarate (TF2 draws the jar and covers you in Jarate).
  */
 public final class Robots {
-	public static final int NONE = 0, BOWMAN = 1, DEMOKNIGHT = 2, MEDIC = 3, SCOUT = 4, GIANT_HEAVY = 5, JARATE = 6;
+	public static final int NONE = 0, BOWMAN = 1, DEMOKNIGHT = 2, MEDIC = 3, SCOUT = 4, GIANT_HEAVY = 5, JARATE = 6, JAR = 7;
 
 	// Flags for TF2 (protocol kRobot*).
 	private static final int DEAD = 1, HURT = 2, GROUND = 4, SWING = 8, CHARGING = 16, CASTING = 32,
 		CELEBRATING = 64, AGGRESSIVE = 128, RAM = 256, ROAR = 512, HIDDEN = 1024, CAPTAIN = 2048, DRINKING = 4096,
-		GIANT = 8192;
+		GIANT = 8192, CHARGE = 16384, FIRING = 32768;
 
 	private static final int MAX = 64;
 	private static final double RANGE = 64.0;
@@ -74,12 +83,29 @@ public final class Robots {
 	private static final String INIT_TAG = "fortcraft_robot";
 	private static final double GIANT_SCALE = 1.75;
 	private static final Map<Integer, Long> chargeReadyAt = new HashMap<>();
+	private static final Map<Integer, Long> nextArrowAt = new HashMap<>();
+	private static final Map<Integer, Long> nextMinigunAt = new HashMap<>();
+	// Shared by Minecraft's server thread (writes) and the render thread (reads): same game, same
+	// entity ids. Times are System.nanoTime().
+	private static final Map<Integer, Long> attackedAt = new ConcurrentHashMap<>();
+	private static final Map<Integer, Long> chargeUntil = new ConcurrentHashMap<>();
+	private static final Map<Integer, Long> firingUntil = new ConcurrentHashMap<>();
+	/** Snowballs that are witches' Jarate jars (TF2 draws them; their hit covers the player). */
+	public static final Set<Integer> JARS = ConcurrentHashMap.newKeySet();
+
+	/** A melee hit, a shot or a throw by this mob (server): TF2 plays its attack gesture. */
+	public static void noteAttack(int id) {
+		attackedAt.put(id, System.nanoTime());
+	}
 
 	private Robots() {
 	}
 
 	/** Which robot TF2 draws for this mob, or NONE. */
 	public static int kindOf(Entity e) {
+		if (JARS.contains(e.getId())) {
+			return JAR;
+		}
 		if (!(e instanceof Raider) && !(e instanceof Mob)) {
 			return NONE;
 		}
@@ -111,9 +137,10 @@ public final class Robots {
 			occluderBlocks.clear();
 			occluderCount = 0;
 		}
-		if (frame % 10 == 0) {
+		if (frame % 3 == 0) {
 			serverTick(minecraft);
 		}
+		long nanos = System.nanoTime();
 		Vec3 eye = minecraft.gameRenderer.mainCamera().position();
 		AABB area = minecraft.player.getBoundingBox().inflate(RANGE);
 		int n = 0;
@@ -121,7 +148,24 @@ public final class Robots {
 			if (n >= MAX) {
 				break;
 			}
-			LivingEntity mob = (LivingEntity) e;
+			if (!(e instanceof LivingEntity mob)) {
+				// A Jarate jar in flight: just where it is and which way it flies.
+				Vec3 at = e.getPosition(pt);
+				ids[n] = e.getId();
+				kinds[n] = (byte) JAR;
+				flags[n] = 0;
+				int o = n * 8;
+				values[o] = (float) at.x;
+				values[o + 1] = (float) at.y;
+				values[o + 2] = (float) at.z;
+				values[o + 3] = e.getYRot();
+				values[o + 4] = e.getYRot();
+				values[o + 5] = e.getXRot();
+				values[o + 6] = e.getBbHeight();
+				values[o + 7] = e.getBbWidth();
+				n++;
+				continue;
+			}
 			Vec3 pos = mob.getPosition(pt);
 			int f = 0;
 			if (mob.isDeadOrDying()) {
@@ -133,8 +177,17 @@ public final class Robots {
 			if (mob.onGround() || mob.isPassenger()) {
 				f |= GROUND;
 			}
-			if (mob.isSwinging()) {
+			Long attacked = attackedAt.get(mob.getId());
+			if (mob.isSwinging() || (attacked != null && nanos - attacked < 250_000_000L)) {
 				f |= SWING;
+			}
+			Long charge = chargeUntil.get(mob.getId());
+			if (charge != null && nanos < charge) {
+				f |= CHARGE;
+			}
+			Long firing = firingUntil.get(mob.getId());
+			if (firing != null && nanos < firing) {
+				f |= FIRING;
 			}
 			if (mob instanceof Pillager p && p.isChargingCrossbow()) {
 				f |= CHARGING;
@@ -263,9 +316,21 @@ public final class Robots {
 				}
 				if (mob instanceof Vindicator) {
 					shieldCharge(mob, now);
+				} else if (mob instanceof Pillager) {
+					extraArrow(level, mob, now);
+				} else if (mob instanceof Ravager) {
+					minigun(level, mob, now);
 				}
 			}
-			chargeReadyAt.keySet().removeIf(id -> level.getEntity(id) == null);
+			if ((now & 63) == 0) {
+				chargeReadyAt.keySet().removeIf(id -> level.getEntity(id) == null);
+				nextArrowAt.keySet().removeIf(id -> level.getEntity(id) == null);
+				nextMinigunAt.keySet().removeIf(id -> level.getEntity(id) == null);
+				attackedAt.keySet().removeIf(id -> level.getEntity(id) == null);
+				chargeUntil.keySet().removeIf(id -> level.getEntity(id) == null);
+				firingUntil.keySet().removeIf(id -> level.getEntity(id) == null);
+				JARS.removeIf(id -> level.getEntity(id) == null);
+			}
 		});
 	}
 
@@ -307,9 +372,9 @@ public final class Robots {
 	}
 
 	/**
-	 * Demoknights shield-charge like TF2's: with a target 4-16 blocks away in sight, a burst of
-	 * speed straight at it for 1.5 s, then a 6-10 s cooldown. TF2 sees the speed and plays the
-	 * charge sound.
+	 * Demoknights shield-charge like TF2's: with a target 6-16 blocks away in sight, a burst of
+	 * speed straight at it for 1.5 s, then a 12-18 s cooldown (Alex: they spammed it). TF2 is told
+	 * the charge itself (CHARGE), not guessing from speed, and plays the charge sound once.
 	 */
 	private static void shieldCharge(Mob mob, long now) {
 		LivingEntity target = mob.getTarget();
@@ -317,11 +382,57 @@ public final class Robots {
 			return;
 		}
 		double distance = mob.distanceTo(target);
-		if (distance < 4.0 || distance > 16.0 || !mob.hasLineOfSight(target)) {
+		if (distance < 6.0 || distance > 16.0 || !mob.hasLineOfSight(target)) {
 			return;
 		}
-		chargeReadyAt.put(mob.getId(), now + 120 + mob.getRandom().nextInt(80));
-		mob.addEffect(new MobEffectInstance(MobEffects.SPEED, 30, 5, false, false));
+		chargeReadyAt.put(mob.getId(), now + 240 + mob.getRandom().nextInt(120));
+		chargeUntil.put(mob.getId(), System.nanoTime() + 1_500_000_000L);
+		mob.addEffect(new MobEffectInstance(MobEffects.SPEED, 30, 3, false, false));
 		mob.lookAt(target, 360.0f, 360.0f);
+	}
+
+	/**
+	 * Bowmen fire more often (Alex): besides their own crossbow shots, an arrow every 1.5-2.5 s
+	 * at a target in sight within 24 blocks.
+	 */
+	private static void extraArrow(ServerLevel level, Mob mob, long now) {
+		LivingEntity target = mob.getTarget();
+		if (target == null || !target.isAlive()) {
+			return;
+		}
+		Long next = nextArrowAt.get(mob.getId());
+		if (next == null) {
+			nextArrowAt.put(mob.getId(), now + 20);
+			return;
+		}
+		if (now < next || mob.distanceTo(target) > 24.0 || !mob.hasLineOfSight(target)) {
+			return;
+		}
+		nextArrowAt.put(mob.getId(), now + 30 + mob.getRandom().nextInt(20));
+		Arrow arrow = new Arrow(level, mob, new ItemStack(Items.ARROW), mob.getMainHandItem().copy());
+		arrow.pickup = AbstractArrow.Pickup.DISALLOWED;
+		double dx = target.getX() - mob.getX(), dz = target.getZ() - mob.getZ();
+		double dy = target.getY(0.3333) - arrow.getY();
+		arrow.shoot(dx, dy + Math.sqrt(dx * dx + dz * dz) * 0.2, dz, 1.6f, 6.0f);
+		level.addFreshEntity(arrow);
+		mob.lookAt(target, 360.0f, 360.0f);
+		noteAttack(mob.getId());
+	}
+
+	/**
+	 * The Giant Heavy's minigun (Alex: "the massive robots dont shoot"): while it sees its target
+	 * within 16 blocks it fires, half a heart every half second, and TF2 shows the gun firing.
+	 */
+	private static void minigun(ServerLevel level, Mob mob, long now) {
+		LivingEntity target = mob.getTarget();
+		if (target == null || !target.isAlive() || mob.distanceTo(target) > 16.0 || !mob.hasLineOfSight(target)) {
+			return;
+		}
+		firingUntil.put(mob.getId(), System.nanoTime() + 400_000_000L);
+		if (now < nextMinigunAt.getOrDefault(mob.getId(), 0L)) {
+			return;
+		}
+		nextMinigunAt.put(mob.getId(), now + 10);
+		target.hurtServer(level, level.damageSources().mobAttack(mob), 1.0f);
 	}
 }
