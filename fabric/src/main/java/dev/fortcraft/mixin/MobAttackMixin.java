@@ -17,6 +17,13 @@ import org.spongepowered.asm.mixin.injection.callback.CallbackInfoReturnable;
 public abstract class MobAttackMixin {
 	@Inject(method = "doHurtTarget", at = @At("HEAD"))
 	private void fortcraft$attack(ServerLevel level, Entity target, CallbackInfoReturnable<Boolean> cir) {
-		Robots.noteAttack(((Mob) (Object) this).getId());
+		Mob self = (Mob) (Object) this;
+		Robots.noteAttack(self.getId());
+		Robots.critPending = Robots.rollCrit(self);  // robots' melee can crit too
+	}
+
+	@Inject(method = "doHurtTarget", at = @At("RETURN"))
+	private void fortcraft$attackDone(ServerLevel level, Entity target, CallbackInfoReturnable<Boolean> cir) {
+		Robots.critPending = false;
 	}
 }

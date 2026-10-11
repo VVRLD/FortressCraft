@@ -14,7 +14,7 @@
 namespace fortcraft { namespace proto
 {
 	static constexpr std::uint32_t kMagic = 0x46524346;  // "FCRF"
-	static constexpr std::uint32_t kVersion = 65;
+	static constexpr std::uint32_t kVersion = 69;
 	static constexpr wchar_t       kMappingName[] = L"Local\\FortCraft_v1";
 	// Linux: a file in RAM that Minecraft creates and both sides map (same bytes as on Windows).
 	static constexpr char          kMappingPathPosix[] = "/dev/shm/FortCraft_v1";
@@ -331,8 +331,16 @@ namespace fortcraft { namespace proto
 		std::uint32_t valid;      // 1 while the textures below exist
 		std::uint32_t generation; // bumps when the textures are re-created (resize): reopen them
 		std::uint64_t handle[2];  // Direct3D 9Ex shared handles (A8R8G8B8, D3DPOOL_DEFAULT)
+		// v66: the graphics chip TF2 draws on (PCI vendor id, adapter LUID; 0 if unknown).
+		// Minecraft opens the textures on the same chip, and only uses this path if its own
+		// OpenGL runs on that chip too: on laptops with two (integrated + dedicated) the games can
+		// end up on different ones, where shared textures come through empty or fail.
+		std::uint32_t vendorId;
+		std::uint32_t luidLow;
+		std::int32_t  luidHigh;
+		std::uint32_t pad;
 	};
-	static_assert(sizeof(OverlayGpu) == 0x28, "FortCraft protocol layout");
+	static_assert(sizeof(OverlayGpu) == 0x38, "FortCraft protocol layout");
 	static_assert(kOffOverlayPixels + 2 * kOverlaySlotBytes <= kMappingBytes, "FortCraft protocol layout");
 
 	// ---- TF2 -> Minecraft shots @0x40000 ---------------------------------------------------
@@ -375,8 +383,13 @@ namespace fortcraft { namespace proto
 	{
 		float amount;            // Minecraft damage points (2 = one heart)
 		float fromX, fromY, fromZ; // where it came from, Minecraft coordinates (for direction)
+		std::uint32_t kind;        // v68: kHurt*, so TF2's resistances (MvM upgrades) apply
 	};
-	static_assert(sizeof(Hurt) == 16, "FortCraft protocol layout");
+	// Explosions (creepers, TNT, robot rockets) count as TF2 blast damage, arrows and other
+	// projectiles (and robot gunfire) as bullets, fire and lava as fire; kHurtCrit is a critical
+	// hit (from a robot): half of it is the crit bonus, which crit resistance reduces.
+	static constexpr std::uint32_t kHurtBlast = 1, kHurtBullet = 2, kHurtFire = 4, kHurtCrit = 8;
+	static_assert(sizeof(Hurt) == 20, "FortCraft protocol layout");
 
 	struct Hurts
 	{
@@ -902,6 +915,9 @@ namespace fortcraft { namespace proto
 		std::uint32_t wave;
 		std::uint32_t totalWaves;
 		std::uint32_t alive;
+		// v69: living raiders for TF2's MvM wave panel: [kind] normal, [16 + kind] giant ([16] is
+		// the Tank), [32 + kind] boss.
+		std::uint8_t  kindCounts[48];
 	};
 	static_assert(kOffRaidState >= kOffFarHidden + sizeof(FarHidden), "FortCraft protocol layout");
 	static_assert(kOffRaidState + sizeof(RaidState) <= kOffOverlayPixels, "FortCraft protocol layout");
@@ -919,16 +935,25 @@ namespace fortcraft { namespace proto
 		kRobotCharge = 16384,   // v65: Demoknight shield-charging (Minecraft's server started it)
 		kRobotFiring = 32768;   // v65: Giant Heavy's minigun firing
 	// v65: kind 7 is not a robot but a Jarate jar a witch threw (TF2 draws the jar, then the splash).
-	static constexpr std::uint8_t kRobotKindJar = 7;
+	// v67: kinds 8-10 are projectiles too (Bowman arrow, Soldier rocket, Demoman pipe); robots
+	// 11 Soldier, 12 Demoman, 13 Sniper, 14 Spy, 15 full-size Scout.
+	static constexpr std::uint8_t kRobotKindJar = 7, kRobotKindArrow = 8, kRobotKindRocket = 9, kRobotKindPipe = 10;
+	// v67: RaidRobot.extra.
+	// kRobotExBoss on a rocket or pipe: a crit shot. v69: burning, Jarate, Mad Milk; kind 16: the Tank.
+	static constexpr std::uint8_t kRobotExUber = 1, kRobotExCloaked = 2, kRobotExBoss = 4, kRobotExHealing = 8,
+		kRobotExBurning = 16, kRobotExJarated = 32, kRobotExMilked = 64;
+	static constexpr std::uint8_t kRobotKindTank = 16;
 	struct RaidRobot
 	{
 		std::int32_t  id;     // Minecraft entity id
 		std::uint8_t  kind;   // 1 Bowman, 2 Demoknight, 3 Medic, 4 Scout, 5 Giant Heavy, 6 Jarate Sniper
-		std::uint8_t  pad;
+		std::uint8_t  extra;  // v67: kRobotEx*
 		std::uint16_t flags;  // kRobot*; kRobotHidden: far and behind Minecraft's blocks
 		float x, y, z;                  // feet, Minecraft blocks
 		float bodyYaw, headYaw, pitch;  // Minecraft degrees
 		float height, width;            // hitbox, blocks
+		std::int32_t  target; // v67: the robot a Medic heals (its id), else 0
+		std::int32_t  pad;
 	};
 	struct RaidRobots
 	{
@@ -936,7 +961,7 @@ namespace fortcraft { namespace proto
 		std::uint32_t count;
 		RaidRobot     robots[kMaxRaidRobots];
 	};
-	static_assert(sizeof(RaidRobot) == 40, "FortCraft protocol layout");
+	static_assert(sizeof(RaidRobot) == 48, "FortCraft protocol layout");
 	static_assert(kOffRaidRobots >= kOffRaidState + sizeof(RaidState), "FortCraft protocol layout");
 	static_assert(kOffRaidRobots + sizeof(RaidRobots) <= kOffOverlayPixels, "FortCraft protocol layout");
 
@@ -944,7 +969,7 @@ namespace fortcraft { namespace proto
 	// TF2's depth layer only has the blocks near the player, so robots further away showed through
 	// walls. Minecraft casts rays from the camera to points over each far robot and sends the
 	// blocks they hit; TF2 draws them into depth too. Seqlock like MobBoxes.
-	static constexpr std::uint64_t kOffRobotOccluders = 0x5F100;
+	static constexpr std::uint64_t kOffRobotOccluders = 0x5F300;  // v67 (was 0x5F100)
 	static constexpr std::uint32_t kMaxRobotOccluders = 512;
 	struct RobotOccluders
 	{
@@ -957,7 +982,7 @@ namespace fortcraft { namespace proto
 
 	// ---- Minecraft -> TF2: the player was hit by a witch's Jarate (v65) ------------------------
 	// A counter; each time it goes up TF2's server covers the player in Jarate (8 s).
-	static constexpr std::uint64_t kOffPlayerJarate = 0x62200;
+	static constexpr std::uint64_t kOffPlayerJarate = 0x62400;  // v67 (was 0x62200)
 	struct PlayerJarate
 	{
 		std::uint32_t count;

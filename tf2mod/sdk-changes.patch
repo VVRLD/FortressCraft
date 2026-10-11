@@ -720,6 +720,46 @@ index 20070cf..e97cd3d 100644
  //-----------------------------------------------------------------------------
  // Purpose: 
  //-----------------------------------------------------------------------------
+diff --git a/src/game/client/tf/tf_hud_mann_vs_machine_status.cpp b/src/game/client/tf/tf_hud_mann_vs_machine_status.cpp
+index f676e97..4f274e1 100644
+--- a/src/game/client/tf/tf_hud_mann_vs_machine_status.cpp
++++ b/src/game/client/tf/tf_hud_mann_vs_machine_status.cpp
+@@ -17,6 +17,7 @@
+ #include "c_tf_mvm_boss_progress_user.h"
+ #include "usermessages.h"
+ 
++#include "../../../../../my-passthrough/tf2mod/fortcraft_link.h"
+ // memdbgon must be the last include file in a .cpp file!!!
+ #include "tier0/memdbgon.h"
+ 
+@@ -431,7 +432,8 @@ void CWaveStatusPanel::ApplySchemeSettings( IScheme *pScheme )
+ //-----------------------------------------------------------------------------
+ void CWaveStatusPanel::OnTick( void )
+ {	
+-	if ( !TFGameRules() || !TFGameRules()->IsMannVsMachineMode() )
++	// FortCraft: also shown during a Minecraft village raid.
++	if ( !TFGameRules() || !( TFGameRules()->IsMannVsMachineMode() || FortCraft_RaidHudActive() ) )
+ 		return;
+ 
+ 	if ( !TFObjectiveResource() )
+@@ -1780,7 +1782,7 @@ bool CTFHudMannVsMachineStatus::ShouldDraw( void )
+ {
+ 	// Don't draw in freezecam
+ 	C_TFPlayer *pPlayer = CTFPlayer::GetLocalTFPlayer();
+-	if ( !pPlayer || pPlayer->GetObserverMode() == OBS_MODE_FREEZECAM || !TFGameRules()->IsMannVsMachineMode() )
++	if ( !pPlayer || pPlayer->GetObserverMode() == OBS_MODE_FREEZECAM || !( TFGameRules()->IsMannVsMachineMode() || FortCraft_RaidHudActive() ) )
+ 	{
+ 		return false;
+ 	}
+@@ -1791,7 +1793,7 @@ bool CTFHudMannVsMachineStatus::ShouldDraw( void )
+ //-----------------------------------------------------------------------------
+ void CTFHudMannVsMachineStatus::OnTick( void )
+ {	
+-	if ( !TFGameRules() || !TFGameRules()->IsMannVsMachineMode() )
++	if ( !TFGameRules() || !( TFGameRules()->IsMannVsMachineMode() || FortCraft_RaidHudActive() ) )
+ 		return;
+ 
+ 	if ( m_pVictoryContainer->IsVisible() )
 diff --git a/src/game/client/tf/tf_hud_menu_eureka_teleport.h b/src/game/client/tf/tf_hud_menu_eureka_teleport.h
 index c02f10a..777465b 100644
 --- a/src/game/client/tf/tf_hud_menu_eureka_teleport.h
@@ -1569,7 +1609,7 @@ index 2c86d52..cc7b936 100644
  
  	int GetBaseTurnRate( void );
 diff --git a/src/game/server/tf/tf_player.cpp b/src/game/server/tf/tf_player.cpp
-index c030951..07f41f4 100644
+index c030951..7c02b7d 100644
 --- a/src/game/server/tf/tf_player.cpp
 +++ b/src/game/server/tf/tf_player.cpp
 @@ -6,6 +6,8 @@
@@ -1647,7 +1687,7 @@ index c030951..07f41f4 100644
  	// Update timers.
  	UpdateTimers();
  
-@@ -2935,6 +2980,51 @@ void CTFPlayer::PrecacheTFPlayer()
+@@ -2935,6 +2980,74 @@ void CTFPlayer::PrecacheTFPlayer()
  	// Precache the player models and gibs.
  	PrecachePlayerModels();
  
@@ -1661,13 +1701,35 @@ index c030951..07f41f4 100644
 +			"models/weapons/c_models/c_targe/c_targe.mdl", "models/weapons/c_models/c_medigun/c_medigun.mdl",
 +			"models/weapons/c_models/c_bat.mdl", "models/weapons/c_models/urinejar.mdl",
 +			"models/weapons/c_models/c_minigun/c_minigun.mdl",
++			// Round 4: Soldier, Demoman, Sniper, Spy and Scout robots, and robot projectiles.
++			"models/weapons/c_models/c_rocketlauncher/c_rocketlauncher.mdl", "models/weapons/c_models/c_grenadelauncher/c_grenadelauncher.mdl",
++			"models/weapons/c_models/c_sniperrifle/c_sniperrifle.mdl", "models/weapons/c_models/c_knife/c_knife.mdl",
++			"models/weapons/c_models/c_scattergun.mdl", "models/weapons/w_models/w_arrow.mdl", "models/weapons/w_models/w_rocket.mdl",
++			"models/weapons/w_models/w_grenade_grenadelauncher.mdl", "models/bots/boss_bot/boss_tank.mdl",
 +		};
 +		for ( int i = 0; i < ARRAYSIZE( kRobotWeapons ); ++i )
 +			PrecacheModel( kRobotWeapons[ i ] );
 +		struct RobotVoice { const char *pszClass; int nPain, nBattleCry, nCheers; };
 +		static const RobotVoice kRobotVoices[] = {
 +			{ "Sniper", 4, 6, 8 }, { "Demoman", 7, 7, 8 }, { "Medic", 8, 6, 6 }, { "Scout", 8, 5, 6 }, { "Heavy", 5, 6, 8 },
++			{ "Soldier", 8, 6, 6 }, { "Spy", 4, 4, 8 },
 +		};
++		static const char *kRobotSounds[] = {
++			"Weapon_RPG.Single", "Weapon_GrenadeLauncher.Single", "Weapon_SniperRifle.Single", "Weapon_Scatter_Gun.Single",
++			"Weapon_Knife.Miss", "Player.Spy_Cloak", "Player.Spy_UnCloak", "BaseExplosionEffect.Sound", "MVM.GiantSoldierRocketShoot",
++			"TFPlayer.InvulnerableOn", "Weapon_Arrow.ImpactConcrete", "MVM.GiantSoldierStep", "MVM.TankStart", "MVM.TankExplodes",
++		};
++		for ( int i = 0; i < ARRAYSIZE( kRobotSounds ); ++i )
++			PrecacheScriptSound( kRobotSounds[ i ] );
++		PrecacheParticleSystem( "rockettrail" );
++		PrecacheParticleSystem( "pipebombtrail_blue" );
++		PrecacheParticleSystem( "ExplosionCore_MidAir" );
++		PrecacheParticleSystem( "medicgun_beam_blue" );
++		PrecacheParticleSystem( "burningplayer_blue" );
++		PrecacheParticleSystem( "peejar_drips" );
++		PrecacheParticleSystem( "peejar_drips_milk" );
++		PrecacheParticleSystem( "critical_rocket_blue" );
++		PrecacheParticleSystem( "critical_pipe_blue" );
 +		PrecacheScriptSound( "MVM.GiantHeavyGunWindUp" );
 +		PrecacheScriptSound( "MVM.GiantHeavyGunWindDown" );
 +		PrecacheScriptSound( "MVM.GiantHeavyGunFire" );
@@ -1681,7 +1743,8 @@ index c030951..07f41f4 100644
 +		{
 +			const RobotVoice &v = kRobotVoices[ i ];
 +			// Normal robots' lines and, for classes that have them, giants' (M_MVM_).
-+			const bool bMighty = V_strcmp( v.pszClass, "Heavy" ) == 0 || V_strcmp( v.pszClass, "Demoman" ) == 0 || V_strcmp( v.pszClass, "Scout" ) == 0;
++			const bool bMighty = V_strcmp( v.pszClass, "Heavy" ) == 0 || V_strcmp( v.pszClass, "Demoman" ) == 0 || V_strcmp( v.pszClass, "Scout" ) == 0
++				|| V_strcmp( v.pszClass, "Soldier" ) == 0;
 +			for ( int nGiant = 0; nGiant <= ( bMighty ? 1 : 0 ); ++nGiant )
 +			{
 +				const char *pszPrefix = nGiant ? "M_" : "";
@@ -1699,7 +1762,7 @@ index c030951..07f41f4 100644
  	// Precache the player sounds.
  	PrecacheScriptSound( "Player.Spawn" );
  	PrecacheScriptSound( "TFPlayer.Pain" );
-@@ -3944,6 +4034,10 @@ void CTFPlayer::Spawn()
+@@ -3944,6 +4057,10 @@ void CTFPlayer::Spawn()
  	}
  
  	SetContextThink( &CTFPlayer::PostSpawnThink, gpGlobals->curtime + 0.1f, "PostSpawnThink" );
@@ -1710,7 +1773,7 @@ index c030951..07f41f4 100644
  }
  
  //-----------------------------------------------------------------------------
-@@ -6976,6 +7070,18 @@ void CTFPlayer::HandleCommand_JoinClass( const char *pClassName, bool bAllowSpaw
+@@ -6976,6 +7093,18 @@ void CTFPlayer::HandleCommand_JoinClass( const char *pClassName, bool bAllowSpaw
  		return;
  	}
  
@@ -1729,7 +1792,7 @@ index c030951..07f41f4 100644
  	// We can respawn instantly if:
  	//	- We're dead, and we're past the required post-death time
  	//	- We're inside a respawn room of our own team
-@@ -7518,6 +7624,27 @@ bool CTFPlayer::ClientCommand( const CCommand &args )
+@@ -7518,6 +7647,27 @@ bool CTFPlayer::ClientCommand( const CCommand &args )
  		}
  		return true;
  	}
@@ -1757,7 +1820,7 @@ index c030951..07f41f4 100644
  	else if ( FStrEq( pcmd, "stop_taunt" ) )
  	{
  		if( m_Shared.GetTauntIndex() == TAUNT_LONG && !m_Shared.InCond( TF_COND_HALLOWEEN_KART ) )
-@@ -8662,7 +8789,7 @@ CTFPlayer *CTFPlayer::TeamFortress_GetDisguiseTarget( int nTeam, int nClass )
+@@ -8662,7 +8812,7 @@ CTFPlayer *CTFPlayer::TeamFortress_GetDisguiseTarget( int nTeam, int nClass )
  //-----------------------------------------------------------------------------
  float DamageForce( const Vector &size, float damage, float scale )
  { 
@@ -1766,7 +1829,7 @@ index c030951..07f41f4 100644
  	
  	if ( force > 1000.0 )
  	{
-@@ -8813,7 +8940,18 @@ int CTFPlayer::OnTakeDamage( const CTakeDamageInfo &inputInfo )
+@@ -8813,7 +8963,18 @@ int CTFPlayer::OnTakeDamage( const CTakeDamageInfo &inputInfo )
  	CTFWeaponBase *pWeapon = dynamic_cast< CTFWeaponBase * >( inputInfo.GetWeapon() );
  
  	if ( GetFlags() & FL_GODMODE )
@@ -1785,7 +1848,7 @@ index c030951..07f41f4 100644
  
  	if ( IsInCommentaryMode() )
  		return 0;
-@@ -8980,6 +9118,24 @@ int CTFPlayer::OnTakeDamage( const CTakeDamageInfo &inputInfo )
+@@ -8980,6 +9141,24 @@ int CTFPlayer::OnTakeDamage( const CTakeDamageInfo &inputInfo )
  				bHitEnemy = true;
  			}
  		}
@@ -1810,7 +1873,7 @@ index c030951..07f41f4 100644
  
  /*
  		// no fall damage in space
-@@ -21998,17 +22154,20 @@ CON_COMMAND_F( currency_give, "Have some in-game money.", FCVAR_CHEAT )
+@@ -21998,17 +22177,20 @@ CON_COMMAND_F( currency_give, "Have some in-game money.", FCVAR_CHEAT )
  //-----------------------------------------------------------------------------
  void CTFPlayer::AddCurrency( int nAmount )
  {
@@ -2543,7 +2606,7 @@ index d4229ac..4d73e8e 100644
  	
  	// Remove by default.  Fixes this entity living forever on things like doors.
 diff --git a/src/game/shared/tf/tf_weapon_flamethrower.cpp b/src/game/shared/tf/tf_weapon_flamethrower.cpp
-index 65810b2..234ae2b 100644
+index 65810b2..5dd53b1 100644
 --- a/src/game/shared/tf/tf_weapon_flamethrower.cpp
 +++ b/src/game/shared/tf/tf_weapon_flamethrower.cpp
 @@ -4,6 +4,8 @@
@@ -2582,12 +2645,23 @@ index 65810b2..234ae2b 100644
  	int nDash = 0;
  	CALL_ATTRIB_HOOK_INT( nDash, airblast_dashes );
  
-@@ -2963,6 +2969,9 @@ void CTFFlameEntity::FlameThink( void )
+@@ -2963,6 +2969,20 @@ void CTFFlameEntity::FlameThink( void )
  		// remove the flame if it hits the world
  		if ( bHitWorld )
  		{
 +			// FortCraft: the flame reached Minecraft's world (a block or a mob): set it alight there.
 +			FortCraft_ReportFire( trWorld.endpos, 24.0f, true );
++			// FortCraft: a flame that reaches a Minecraft mob burns it for the flame's own damage, as
++			// it would a TF2 player, so the flamethrower hurts at TF2's rate (Alex, 2026-10-11: it
++			// only set them alight).
++			Vector vecFlameDir = GetAbsOrigin() - m_vecPrevPos;
++			const float flFlameStep = VectorNormalize( vecFlameDir );
++			if ( flFlameStep > 0.0f && FortCraft_MobBeforeBlocks( m_vecPrevPos, GetAbsOrigin(), WorldAlignMins(), WorldAlignMaxs() ) )
++			{
++				const float flFlameDist = ( trWorld.endpos - m_vecInitialPos ).Length();
++				float flFlameDamage = m_flDmgAmount * RemapValClamped( flFlameDist, tf_flamethrower_maxdamagedist.GetFloat() / 2, tf_flamethrower_maxdamagedist.GetFloat(), 1.0f, 0.70f );
++				FortCraft_ReportShot( m_vecPrevPos, vecFlameDir, flFlameStep + 64.0f, MAX( flFlameDamage, 1.0f ), ( m_iDmgType & DMG_CRITICAL ) ? FC_CRIT : 0 );
++			}
 +
  			if ( tf_debug_flamethrower.GetInt() )
  			{

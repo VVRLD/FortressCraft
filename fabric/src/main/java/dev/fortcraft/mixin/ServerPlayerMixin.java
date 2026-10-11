@@ -69,12 +69,32 @@ public abstract class ServerPlayerMixin {
 		if (source.is(net.minecraft.world.damagesource.DamageTypes.WITHER)) {
 			self.removeEffect(net.minecraft.world.effect.MobEffects.WITHER);
 		}
+		// Robots are kept weak (Alex, 2026-10-11: "not an insta kill"): their hits do 60%.
+		net.minecraft.world.entity.Entity attacker = source.getEntity();
+		if (attacker != null && dev.fortcraft.Robots.isRobot(attacker)) {
+			send *= 0.6f;
+		}
 		// Raids are easier: everything hurts half as much while one is under way (Alex, 2026-10-11).
 		if (Combat.raidUnderWay()) {
 			send *= 0.5f;
 		}
+		// What kind of hit, so the MvM upgrades' resistances apply (Alex, 2026-10-11): explosions are
+		// blast, arrows and other projectiles (and robot gunfire) bullets, fire and lava fire.
+		int kind = 0;
+		if (source.is(DamageTypeTags.IS_EXPLOSION)) {
+			kind |= 1;
+		} else if (source.is(DamageTypeTags.IS_PROJECTILE)) {
+			kind |= 2;
+		}
+		if (source.is(DamageTypeTags.IS_FIRE)) {
+			kind |= 4;
+		}
+		if (dev.fortcraft.Robots.critPending) {
+			kind |= 8;  // a robot's crit: double damage, half of it the crit bonus
+			send *= 2.0f;
+		}
 		Vec3 from = source.getSourcePosition() != null ? source.getSourcePosition() : self.position();
-		FortLink.writeHurt(send, from.x, from.y, from.z);
+		FortLink.writeHurt(send, from.x, from.y, from.z, kind);
 		FortCraft.LOG.info("FortCraft: {} hit the player for {} Minecraft health; sent to TF2", source.getMsgId(),
 			String.format("%.1f", send));
 	}

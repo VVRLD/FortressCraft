@@ -6,39 +6,41 @@ import java.util.HashSet;
 import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
-import net.minecraft.world.entity.projectile.arrow.AbstractArrow;
-import net.minecraft.world.entity.projectile.arrow.Arrow;
-import net.minecraft.world.item.ItemStack;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.server.IntegratedServer;
 import net.minecraft.core.BlockPos;
+import net.minecraft.core.registries.BuiltInRegistries;
 import net.minecraft.core.registries.Registries;
 import net.minecraft.server.level.ServerLevel;
 import net.minecraft.world.effect.MobEffectInstance;
 import net.minecraft.world.effect.MobEffects;
-import net.minecraft.world.entity.ai.attributes.AttributeInstance;
-import net.minecraft.world.entity.ai.attributes.Attributes;
-import net.minecraft.world.entity.monster.illager.Vindicator;
-import net.minecraft.world.entity.monster.illager.Evoker;
-import net.minecraft.world.item.Items;
-import net.minecraft.world.item.enchantment.Enchantments;
-import net.minecraft.world.level.ClipContext;
-import net.minecraft.world.level.block.state.BlockState;
-import net.minecraft.world.phys.BlockHitResult;
-import net.minecraft.world.phys.HitResult;
-import net.minecraft.world.phys.shapes.CollisionContext;
-import net.minecraft.world.phys.shapes.VoxelShape;
-import net.minecraft.core.registries.BuiltInRegistries;
 import net.minecraft.world.entity.Entity;
+import net.minecraft.world.entity.EquipmentSlot;
 import net.minecraft.world.entity.LivingEntity;
 import net.minecraft.world.entity.Mob;
+import net.minecraft.world.entity.ai.attributes.AttributeInstance;
+import net.minecraft.world.entity.ai.attributes.Attributes;
 import net.minecraft.world.entity.monster.Ravager;
 import net.minecraft.world.entity.monster.Witch;
 import net.minecraft.world.entity.monster.illager.Pillager;
 import net.minecraft.world.entity.monster.illager.SpellcasterIllager;
+import net.minecraft.world.entity.monster.illager.Vindicator;
+import net.minecraft.world.entity.player.Player;
+import net.minecraft.world.entity.projectile.arrow.AbstractArrow;
+import net.minecraft.world.entity.projectile.arrow.Arrow;
+import net.minecraft.world.entity.projectile.throwableitemprojectile.Snowball;
 import net.minecraft.world.entity.raid.Raider;
+import net.minecraft.world.item.ItemStack;
+import net.minecraft.world.item.Items;
+import net.minecraft.world.item.enchantment.Enchantments;
+import net.minecraft.world.level.ClipContext;
+import net.minecraft.world.level.block.state.BlockState;
 import net.minecraft.world.phys.AABB;
+import net.minecraft.world.phys.BlockHitResult;
+import net.minecraft.world.phys.HitResult;
 import net.minecraft.world.phys.Vec3;
+import net.minecraft.world.phys.shapes.CollisionContext;
+import net.minecraft.world.phys.shapes.VoxelShape;
 
 /**
  * Raiders as Mann vs. Machine robots (Alex, 2026-10-11): "native TF2 MvM robots, but instead of
@@ -46,34 +48,56 @@ import net.minecraft.world.phys.Vec3;
  * waves and damage); Minecraft stops drawing them and TF2 draws a robot in each one's place, with
  * TF2's own run, attack and flinch animations, robot voices and footsteps, and gibs on death.
  *
- * Pillager = Bowman (Sniper robot, Huntsman), vindicator = Demoknight, evoker = Medic robot,
- * vex = small Scout robot with a bat, ravager = Giant Heavy (minigun), witch = Jarate Sniper.
+ * Round 1: pillager = Bowman (Sniper robot, Huntsman), vindicator = Demoknight, evoker = Medic
+ * robot, vex = small Scout robot with a bat, ravager = Giant Heavy (minigun), witch = Jarate
+ * Sniper.
  *
- * Round 2 (Alex, 2026-10-11: "make them more like tf2"): some raiders become giants (scaled up,
- * more health, slower, like MvM's giants; more of them in later raid waves and every raid
- * captain), Bowmen shoot faster (Quick Charge III crossbows), and Demoknights shield-charge at
- * their target. Far robots are hidden behind blocks properly: the blocks in front of them go to
- * TF2's depth layer (RobotOccluders).
+ * Round 2: some raiders become giants (scaled up, more health, slower, like MvM's giants; more of
+ * them in later raid waves and every raid captain), Bowmen shoot faster (Quick Charge III), and
+ * Demoknights shield-charge. Far robots are hidden behind blocks properly: the blocks in front of
+ * them go to TF2's depth layer (RobotOccluders).
  *
- * Round 3 (Alex, 2026-10-11): Demoknights charge only every 12-18 s and TF2 hears the real
- * charge (not every fast run); every melee hit and shot is told to TF2 as an attack, so robots
- * swing; Bowmen fire extra arrows; the Giant Heavy fires its minigun (half a heart a time while
- * it sees you); witches throw Jarate (TF2 draws the jar and covers you in Jarate).
+ * Round 3: Demoknights charge only every 12-18 s and TF2 hears the real charge; every melee hit
+ * and shot is told to TF2 as an attack, so robots swing; Bowmen fire extra arrows; the Giant
+ * Heavy fires its minigun; witches throw Jarate.
+ *
+ * Round 4 (Alex, 2026-10-11: more enemy types, keep them weakish, more aggressive):
+ * - pillagers are Bowmen, Soldiers (rockets), Demomen (grenades) or Snipers (rifle shots);
+ *   vindicators are Demoknights, Spies (cloaked until close) or full-size Scouts (scattergun);
+ * - Medics heal hurt robots near them and sometimes Ubercharge (both immune for 6 s);
+ * - the last wave's captain is a boss: a huge Giant Soldier;
+ * - every robot goes for a player it can see within 32 blocks, giants and Spies hit even when
+ *   Minecraft's own attack doesn't reach;
+ * - Bowman arrows are drawn as TF2 arrows, rockets and pipes as TF2's, with explosions.
+ * Robots do 60% damage (ServerPlayerMixin), and half again during raids.
+ *
+ * Round 5 (Alex, 2026-10-11): more Medics (some pillagers are Medics too), more Soldier and
+ * Demoman giants and fewer giant Demoknights, the last wave's boss is a Sergeant Crits-style
+ * Giant Soldier or a Major Bomber-style Giant Demoman, and the last wave brings a Tank (a
+ * ravager TF2 draws as MvM's tank). Earlier waves get more extra robots. Robot rockets and pipes
+ * can crit (decided when fired, drawn with crit trails). TF2 is told when a robot burns or wears
+ * Jarate / Mad Milk, and shows it on the robot. Wave counts go to TF2 by kind, giant and boss.
  */
 public final class Robots {
-	public static final int NONE = 0, BOWMAN = 1, DEMOKNIGHT = 2, MEDIC = 3, SCOUT = 4, GIANT_HEAVY = 5, JARATE = 6, JAR = 7;
+	public static final int NONE = 0, BOWMAN = 1, DEMOKNIGHT = 2, MEDIC = 3, SCOUT = 4, GIANT_HEAVY = 5, JARATE = 6, JAR = 7,
+		ARROW = 8, ROCKET = 9, PIPE = 10, SOLDIER = 11, DEMOMAN = 12, SNIPER = 13, SPY = 14, SCOUT_FULL = 15, TANK = 16;
 
 	// Flags for TF2 (protocol kRobot*).
 	private static final int DEAD = 1, HURT = 2, GROUND = 4, SWING = 8, CHARGING = 16, CASTING = 32,
 		CELEBRATING = 64, AGGRESSIVE = 128, RAM = 256, ROAR = 512, HIDDEN = 1024, CAPTAIN = 2048, DRINKING = 4096,
 		GIANT = 8192, CHARGE = 16384, FIRING = 32768;
+	// Extra flags (protocol kRobotEx*).
+	// EX_BOSS on a rocket or pipe: a crit shot. v69: burning, Jarate, Mad Milk.
+	private static final int EX_UBER = 1, EX_CLOAKED = 2, EX_BOSS = 4, EX_HEALING = 8, EX_BURNING = 16, EX_JARATED = 32, EX_MILKED = 64;
 
 	private static final int MAX = 64;
 	private static final double RANGE = 64.0;
 	private static final double DEPTH_LAYER_BLOCKS = 10.0;  // TF2's depth boxes hide nearer ones
 	private static final int[] ids = new int[MAX];
 	private static final byte[] kinds = new byte[MAX];
+	private static final byte[] extras = new byte[MAX];
 	private static final short[] flags = new short[MAX];
+	private static final int[] targets = new int[MAX];
 	private static final float[] values = new float[MAX * 8];
 	private static final int MAX_OCCLUDERS = 512;
 	private static final float[] occluders = new float[MAX_OCCLUDERS * 6];
@@ -81,17 +105,60 @@ public final class Robots {
 	private static long frame;
 	private static int occluderCount;
 	private static final String INIT_TAG = "fortcraft_robot";
-	private static final double GIANT_SCALE = 1.75;
+	private static final String KIND_TAG = "fortcraft_kind_";
+	private static final String BOSS_TAG = "fortcraft_boss";
+	private static final double GIANT_SCALE = 1.75, BOSS_SCALE = 2.2;
+
+	// Server thread only.
 	private static final Map<Integer, Long> chargeReadyAt = new HashMap<>();
-	private static final Map<Integer, Long> nextArrowAt = new HashMap<>();
+	private static final Map<Integer, Long> nextShotAt = new HashMap<>();
 	private static final Map<Integer, Long> nextMinigunAt = new HashMap<>();
+	private static final Map<Integer, Long> nextMoveAt = new HashMap<>();
+	private static final Map<Integer, Long> nextMeleeAt = new HashMap<>();
+	private static final Map<Integer, Long> nextHealAt = new HashMap<>();
+	private static final Map<Integer, Long> uberReadyAt = new HashMap<>();
+
 	// Shared by Minecraft's server thread (writes) and the render thread (reads): same game, same
 	// entity ids. Times are System.nanoTime().
 	private static final Map<Integer, Long> attackedAt = new ConcurrentHashMap<>();
 	private static final Map<Integer, Long> chargeUntil = new ConcurrentHashMap<>();
 	private static final Map<Integer, Long> firingUntil = new ConcurrentHashMap<>();
+	private static final Map<Integer, Long> uberUntil = new ConcurrentHashMap<>();
+	private static final Map<Integer, Integer> healing = new ConcurrentHashMap<>();  // medic -> patient
+	private static final Map<Integer, Integer> variant = new ConcurrentHashMap<>();  // robot kind chosen for a mob
+	private static final Set<Integer> cloaked = ConcurrentHashMap.newKeySet();
+	private static final Set<Integer> bosses = ConcurrentHashMap.newKeySet();
 	/** Snowballs that are witches' Jarate jars (TF2 draws them; their hit covers the player). */
 	public static final Set<Integer> JARS = ConcurrentHashMap.newKeySet();
+	/** Snowballs that are Soldier rockets and Demoman pipes (TF2 draws them; they explode). */
+	public static final Set<Integer> ROCKETS = ConcurrentHashMap.newKeySet();
+	public static final Set<Integer> PIPES = ConcurrentHashMap.newKeySet();
+	/** Rockets and pipes that crit (decided when fired, so TF2 can draw the crit trail). */
+	private static final Set<Integer> CRIT_SHOTS = ConcurrentHashMap.newKeySet();
+
+	/**
+	 * Set on Minecraft's server thread while a robot's hit that is a critical one is being dealt
+	 * (ServerPlayerMixin doubles it and tells TF2, so crit resistance applies).
+	 */
+	public static volatile boolean critPending;
+
+	/** Robots crit 10% of the time; the boss (Sergeant Crits-style) always. */
+	public static boolean rollCrit(Entity attacker) {
+		if (!isRobot(attacker)) {
+			return false;
+		}
+		return bosses.contains(attacker.getId()) || attacker.getRandom().nextFloat() < 0.1f;
+	}
+
+	/** A robot's hit on a target, maybe a crit. */
+	private static void robotHit(ServerLevel level, LivingEntity target, net.minecraft.world.damagesource.DamageSource source, Entity attacker, float damage) {
+		critPending = rollCrit(attacker);
+		try {
+			target.hurtServer(level, source, damage);
+		} finally {
+			critPending = false;
+		}
+	}
 
 	/** A melee hit, a shot or a throw by this mob (server): TF2 plays its attack gesture. */
 	public static void noteAttack(int id) {
@@ -101,13 +168,27 @@ public final class Robots {
 	private Robots() {
 	}
 
-	/** Which robot TF2 draws for this mob, or NONE. */
+	/** Which robot (or robot projectile) TF2 draws for this entity, or NONE. */
 	public static int kindOf(Entity e) {
-		if (JARS.contains(e.getId())) {
+		int id = e.getId();
+		if (JARS.contains(id)) {
 			return JAR;
 		}
-		if (!(e instanceof Raider) && !(e instanceof Mob)) {
+		if (ROCKETS.contains(id)) {
+			return ROCKET;
+		}
+		if (PIPES.contains(id)) {
+			return PIPE;
+		}
+		if (e instanceof AbstractArrow a) {
+			return a.getOwner() instanceof Pillager ? ARROW : NONE;  // Bowman arrows: TF2's Huntsman arrows
+		}
+		if (!(e instanceof Mob)) {
 			return NONE;
+		}
+		Integer chosen = variant.get(id);
+		if (chosen != null) {
+			return chosen;
 		}
 		return switch (BuiltInRegistries.ENTITY_TYPE.getKey(e.getType()).getPath()) {
 			case "pillager" -> BOWMAN;
@@ -120,15 +201,21 @@ public final class Robots {
 		};
 	}
 
-	/** True while TF2 draws this mob as a robot (so Minecraft doesn't draw it). */
+	/** True while TF2 draws this entity (so Minecraft doesn't draw it). */
 	public static boolean drawnByTf2(Entity e) {
 		return Combat.linked && kindOf(e) != NONE;
+	}
+
+	/** True for robots (not their projectiles): their hits on the player are softened. */
+	public static boolean isRobot(Entity e) {
+		int k = e == null ? NONE : kindOf(e);
+		return k != NONE && k != JAR && k != ARROW && k != ROCKET && k != PIPE;
 	}
 
 	/** Once per Minecraft frame while TF2 is linked: the robots near the player to TF2. */
 	public static void tick(Minecraft minecraft) {
 		if (minecraft.level == null || minecraft.player == null) {
-			FortLink.writeRobots(ids, kinds, flags, values, 0);
+			FortLink.writeRobots(ids, kinds, extras, flags, targets, values, 0);
 			return;
 		}
 		float pt = minecraft.getDeltaTracker().getGameTimeDeltaPartialTick(false);
@@ -149,11 +236,13 @@ public final class Robots {
 				break;
 			}
 			if (!(e instanceof LivingEntity mob)) {
-				// A Jarate jar in flight: just where it is and which way it flies.
+				// A projectile in flight: where it is (TF2 turns it along its path).
 				Vec3 at = e.getPosition(pt);
 				ids[n] = e.getId();
-				kinds[n] = (byte) JAR;
+				kinds[n] = (byte) kindOf(e);
+				extras[n] = (byte) (CRIT_SHOTS.contains(e.getId()) ? EX_BOSS : 0);
 				flags[n] = 0;
+				targets[n] = 0;
 				int o = n * 8;
 				values[o] = (float) at.x;
 				values[o + 1] = (float) at.y;
@@ -167,6 +256,7 @@ public final class Robots {
 				continue;
 			}
 			Vec3 pos = mob.getPosition(pt);
+			int id = mob.getId();
 			int f = 0;
 			if (mob.isDeadOrDying()) {
 				f |= DEAD;
@@ -177,15 +267,15 @@ public final class Robots {
 			if (mob.onGround() || mob.isPassenger()) {
 				f |= GROUND;
 			}
-			Long attacked = attackedAt.get(mob.getId());
+			Long attacked = attackedAt.get(id);
 			if (mob.isSwinging() || (attacked != null && nanos - attacked < 250_000_000L)) {
 				f |= SWING;
 			}
-			Long charge = chargeUntil.get(mob.getId());
+			Long charge = chargeUntil.get(id);
 			if (charge != null && nanos < charge) {
 				f |= CHARGE;
 			}
-			Long firing = firingUntil.get(mob.getId());
+			Long firing = firingUntil.get(id);
 			if (firing != null && nanos < firing) {
 				f |= FIRING;
 			}
@@ -220,6 +310,30 @@ public final class Robots {
 			if (mob.getScale() > 1.3f) {
 				f |= GIANT;
 			}
+			int x = 0;
+			Long uber = uberUntil.get(id);
+			if (uber != null && nanos < uber) {
+				x |= EX_UBER;
+			}
+			if (cloaked.contains(id)) {
+				x |= EX_CLOAKED;
+			}
+			if (bosses.contains(id)) {
+				x |= EX_BOSS;
+			}
+			Integer patient = healing.get(id);
+			if (patient != null) {
+				x |= EX_HEALING;
+			}
+			if (mob.isOnFire()) {
+				x |= EX_BURNING;
+			}
+			if (Combat.isJarated(mob)) {
+				x |= EX_JARATED;
+			}
+			if (Combat.isMilked(mob)) {
+				x |= EX_MILKED;
+			}
 			// Far robots behind Minecraft's blocks: TF2 has no depth for them there.
 			boolean hidden = false;
 			Vec3 middle = pos.add(0, mob.getBbHeight() * 0.5, 0);
@@ -233,9 +347,11 @@ public final class Robots {
 			} else if (occlude && middle.distanceTo(eye) > DEPTH_LAYER_BLOCKS - 2) {
 				addOccluders(minecraft, eye, pos, mob.getBbWidth(), mob.getBbHeight());
 			}
-			ids[n] = mob.getId();
+			ids[n] = id;
 			kinds[n] = (byte) kindOf(mob);
+			extras[n] = (byte) x;
 			flags[n] = (short) f;
+			targets[n] = patient != null ? patient : 0;
 			int o = n * 8;
 			values[o] = (float) pos.x;
 			values[o + 1] = (float) pos.y;
@@ -247,7 +363,7 @@ public final class Robots {
 			values[o + 7] = mob.getBbWidth();
 			n++;
 		}
-		FortLink.writeRobots(ids, kinds, flags, values, n);
+		FortLink.writeRobots(ids, kinds, extras, flags, targets, values, n);
 		if (occlude) {
 			FortLink.writeRobotOccluders(occluders, occluderCount);
 		}
@@ -291,10 +407,7 @@ public final class Robots {
 		}
 	}
 
-	/**
-	 * On Minecraft's built-in server, a few times a second: new raiders become MvM robots once
-	 * (giants, faster Bowmen), and Demoknights shield-charge.
-	 */
+	/** On Minecraft's built-in server, about 20 times a second: what the robots do. */
 	private static void serverTick(Minecraft minecraft) {
 		IntegratedServer server = minecraft.getSingleplayerServer();
 		if (server == null || minecraft.level == null || minecraft.player == null) {
@@ -309,55 +422,120 @@ public final class Robots {
 			}
 			AABB area = new AABB(at, at).inflate(96.0);
 			long now = level.getGameTime();
-			for (Mob mob : level.getEntitiesOfClass(Mob.class, area, m -> kindOf(m) != NONE && m.isAlive())) {
+			for (Mob mob : level.getEntitiesOfClass(Mob.class, area, m -> m.isAlive() && isRobot(m))) {
 				if (!mob.entityTags().contains(INIT_TAG)) {
 					mob.addTag(INIT_TAG);
 					becomeRobot(level, mob);
+				} else if (!variant.containsKey(mob.getId())) {
+					restoreVariant(mob);  // a world loaded again: its kind is in its tags
 				}
-				if (mob instanceof Vindicator) {
-					shieldCharge(mob, now);
-				} else if (mob instanceof Pillager) {
-					extraArrow(level, mob, now);
-				} else if (mob instanceof Ravager) {
-					minigun(level, mob, now);
+				hunt(level, mob);
+				switch (kindOf(mob)) {
+					case DEMOKNIGHT -> {
+						shieldCharge(mob, now);
+						giantMelee(level, mob, now);
+					}
+					case BOWMAN -> extraArrow(level, mob, now);
+					case GIANT_HEAVY -> minigun(level, mob, now);
+					case SOLDIER -> {
+						keepRange(mob, now, 14.0);
+						launch(level, mob, now, ROCKET);
+					}
+					case DEMOMAN -> {
+						keepRange(mob, now, 12.0);
+						launch(level, mob, now, PIPE);
+					}
+					case SNIPER -> {
+						keepRange(mob, now, 24.0);
+						hitscan(level, mob, now, 40.0, 3.0f, 60, 80);
+					}
+					case SCOUT_FULL -> hitscan(level, mob, now, 8.0, 2.0f, 25, 15);
+					case SPY -> spy(level, mob, now);
+					case MEDIC -> medic(level, mob, now);
+					default -> {
+					}
 				}
 			}
 			if ((now & 63) == 0) {
-				chargeReadyAt.keySet().removeIf(id -> level.getEntity(id) == null);
-				nextArrowAt.keySet().removeIf(id -> level.getEntity(id) == null);
-				nextMinigunAt.keySet().removeIf(id -> level.getEntity(id) == null);
-				attackedAt.keySet().removeIf(id -> level.getEntity(id) == null);
-				chargeUntil.keySet().removeIf(id -> level.getEntity(id) == null);
-				firingUntil.keySet().removeIf(id -> level.getEntity(id) == null);
-				JARS.removeIf(id -> level.getEntity(id) == null);
+				for (Map<Integer, ?> map : java.util.List.of(chargeReadyAt, nextShotAt, nextMinigunAt, nextMoveAt, nextMeleeAt, nextHealAt,
+					uberReadyAt, attackedAt, chargeUntil, firingUntil, uberUntil, healing, variant)) {
+					map.keySet().removeIf(id -> level.getEntity(id) == null);
+				}
+				for (Set<Integer> set : java.util.List.of(cloaked, bosses, JARS, ROCKETS, PIPES, CRIT_SHOTS)) {
+					set.removeIf(id -> level.getEntity(id) == null);
+				}
 			}
 		});
 	}
 
-	/** Once per raider: maybe a giant (like MvM's), and Bowmen get Quick Charge III crossbows. */
+	/**
+	 * Once per raider: which robot it is, maybe a giant (like MvM's), and the last wave's captain
+	 * is the boss. The kind is kept in the mob's tags, so it survives saving the world.
+	 */
 	private static void becomeRobot(ServerLevel level, Mob mob) {
+		var raid = mob instanceof Raider r ? r.getCurrentRaid() : null;
+		int wave = raid != null ? raid.getGroupsSpawned() : 0;
+		boolean lastWave = raid != null && wave >= raid.getNumGroups(level.getDifficulty());
+		boolean captain = mob instanceof Raider r && r.isCaptain();
+		double roll = mob.getRandom().nextDouble();
 		int kind = kindOf(mob);
-		int wave = mob instanceof Raider r && r.getCurrentRaid() != null ? r.getCurrentRaid().getGroupsSpawned() : 0;
-		double chance = switch (kind) {
-			case DEMOKNIGHT -> 0.12 + 0.06 * wave;  // Giant Demoknights, more in later waves
-			case BOWMAN -> 0.05 + 0.03 * wave;      // Giant Bowmen
-			case MEDIC -> 0.25;                     // Giant Medics
-			default -> 0.0;                         // the ravager is always a Giant Heavy
-		};
-		boolean giant = mob.getRandom().nextDouble() < chance || (mob instanceof Raider r && r.isCaptain());
-		if (giant && kind != SCOUT && kind != JARATE && kind != GIANT_HEAVY) {
-			setBase(mob.getAttribute(Attributes.SCALE), GIANT_SCALE);
-			AttributeInstance health = mob.getAttribute(Attributes.MAX_HEALTH);
-			if (health != null) {
-				health.setBaseValue(health.getBaseValue() * 4.0);
-				mob.setHealth(mob.getMaxHealth());
-			}
-			AttributeInstance speed = mob.getAttribute(Attributes.MOVEMENT_SPEED);
-			if (speed != null) {
-				speed.setBaseValue(speed.getBaseValue() * 0.7);
-			}
+		if (mob instanceof Pillager) {
+			kind = roll < 0.3 ? BOWMAN : roll < 0.52 ? SOLDIER : roll < 0.72 ? DEMOMAN : roll < 0.88 ? SNIPER : MEDIC;
+		} else if (mob instanceof Vindicator) {
+			kind = roll < 0.55 ? DEMOKNIGHT : roll < 0.75 ? SPY : SCOUT_FULL;
+		}
+		boolean boss = captain && lastWave;
+		if (boss) {
+			// The last wave's boss: Sergeant Crits (a huge Giant Soldier) or Major Bomber (a huge
+			// Giant Demoman), both always critting.
+			kind = mob.getRandom().nextBoolean() ? SOLDIER : DEMOMAN;
+		}
+		if (kind == TANK) {
+			// MvM's Tank: huge, tough and slow; it rams whatever is in its way.
+			setBase(mob.getAttribute(Attributes.SCALE), 2.0);
+			scale(mob.getAttribute(Attributes.MAX_HEALTH), 5.0);
+			mob.setHealth(mob.getMaxHealth());
+			scale(mob.getAttribute(Attributes.MOVEMENT_SPEED), 0.6);
 			setBase(mob.getAttribute(Attributes.KNOCKBACK_RESISTANCE), 1.0);
-			FortCraft.LOG.info("FortCraft: raider {} ({}) is a giant robot (wave {})", mob.getId(), kind, wave);
+			mob.addTag(KIND_TAG + kind);
+			FortCraft.LOG.info("FortCraft: raider {} is the Tank (wave {})", mob.getId(), wave);
+			return;
+		}
+		variant.put(mob.getId(), kind);
+		mob.addTag(KIND_TAG + kind);
+
+		// Robots that don't use the crossbow or axe put it away (TF2 draws their own weapon).
+		if (kind == SOLDIER || kind == DEMOMAN || kind == SNIPER || kind == SPY || kind == SCOUT_FULL || (kind == MEDIC && mob instanceof Pillager)) {
+			mob.setItemSlot(EquipmentSlot.MAINHAND, ItemStack.EMPTY);
+		}
+		setBase(mob.getAttribute(Attributes.FOLLOW_RANGE), 48.0);
+		if (kind == SCOUT_FULL || kind == SPY) {
+			scale(mob.getAttribute(Attributes.MOVEMENT_SPEED), kind == SCOUT_FULL ? 1.4 : 1.15);
+			scale(mob.getAttribute(Attributes.MAX_HEALTH), 0.6);
+			mob.setHealth(mob.getMaxHealth());
+		}
+
+		// Giants (Alex: more Soldier and Demoman giants, fewer giant Demoknights), more each wave.
+		double giantRoll = mob.getRandom().nextDouble();
+		double chance = switch (kind) {
+			case SOLDIER, DEMOMAN -> 0.10 + 0.06 * wave;
+			case DEMOKNIGHT -> 0.03 + 0.02 * wave;
+			case BOWMAN -> 0.04 + 0.02 * wave;
+			case MEDIC -> 0.15;
+			default -> 0.0;
+		};
+		boolean giant = boss || giantRoll < chance || (captain && (kind == BOWMAN || kind == SOLDIER || kind == DEMOMAN));
+		if (giant && kind != SCOUT && kind != JARATE && kind != GIANT_HEAVY && kind != SPY && kind != SNIPER) {
+			setBase(mob.getAttribute(Attributes.SCALE), boss ? BOSS_SCALE : GIANT_SCALE);
+			scale(mob.getAttribute(Attributes.MAX_HEALTH), boss ? 10.0 : 4.0);
+			mob.setHealth(mob.getMaxHealth());
+			scale(mob.getAttribute(Attributes.MOVEMENT_SPEED), 0.7);
+			setBase(mob.getAttribute(Attributes.KNOCKBACK_RESISTANCE), 1.0);
+			if (boss) {
+				bosses.add(mob.getId());
+				mob.addTag(BOSS_TAG);
+			}
+			FortCraft.LOG.info("FortCraft: raider {} is a {} robot {} (wave {})", mob.getId(), boss ? "boss" : "giant", kind, wave);
 		}
 		if (kind == BOWMAN && mob.getMainHandItem().is(Items.CROSSBOW)) {
 			// The Huntsman fires much faster than a crossbow reloads.
@@ -365,9 +543,72 @@ public final class Robots {
 		}
 	}
 
+	private static void restoreVariant(Mob mob) {
+		for (String tag : mob.entityTags()) {
+			if (tag.startsWith(KIND_TAG)) {
+				try {
+					variant.put(mob.getId(), Integer.parseInt(tag.substring(KIND_TAG.length())));
+				} catch (NumberFormatException ignored) {
+				}
+			}
+		}
+		if (mob.entityTags().contains(BOSS_TAG)) {
+			bosses.add(mob.getId());
+		}
+	}
+
 	private static void setBase(AttributeInstance attribute, double value) {
 		if (attribute != null) {
 			attribute.setBaseValue(value);
+		}
+	}
+
+	private static void scale(AttributeInstance attribute, double factor) {
+		if (attribute != null) {
+			attribute.setBaseValue(attribute.getBaseValue() * factor);
+		}
+	}
+
+	/** More aggressive (Alex): a robot with no player to fight goes for one it sees within 32 blocks. */
+	private static void hunt(ServerLevel level, Mob mob) {
+		if (mob.getTarget() instanceof Player p && p.isAlive()) {
+			return;
+		}
+		Player player = level.getNearestPlayer(mob, 32.0);
+		if (player != null && !player.isCreative() && !player.isSpectator() && mob.hasLineOfSight(player)) {
+			mob.setTarget(player);
+		}
+	}
+
+	/** Ranged robots without a Minecraft attack walk to within range of their target. */
+	private static void keepRange(Mob mob, long now, double range) {
+		LivingEntity target = mob.getTarget();
+		if (target == null || now < nextMoveAt.getOrDefault(mob.getId(), 0L)) {
+			return;
+		}
+		nextMoveAt.put(mob.getId(), now + 20);
+		double d = mob.distanceTo(target);
+		if (d > range * 0.8 || !mob.hasLineOfSight(target)) {
+			mob.getNavigation().moveTo(target, 1.0);
+		} else if (d < range * 0.4) {
+			mob.getNavigation().stop();
+		}
+		mob.getLookControl().setLookAt(target);
+	}
+
+	/**
+	 * Giant Demoknights didn't attack (Alex): Minecraft's melee reach is worked out for a normal
+	 * size. A giant (or Spy) right next to its target hits it once a second.
+	 */
+	private static void giantMelee(ServerLevel level, Mob mob, long now) {
+		LivingEntity target = mob.getTarget();
+		if (target == null || (mob.getScale() < 1.3f && kindOf(mob) != SPY) || now < nextMeleeAt.getOrDefault(mob.getId(), 0L)) {
+			return;
+		}
+		double reach = mob.getBbWidth() * 0.5 + target.getBbWidth() * 0.5 + 1.2;
+		if (mob.distanceTo(target) <= reach) {
+			nextMeleeAt.put(mob.getId(), now + 20);
+			mob.doHurtTarget(level, target);
 		}
 	}
 
@@ -400,15 +641,15 @@ public final class Robots {
 		if (target == null || !target.isAlive()) {
 			return;
 		}
-		Long next = nextArrowAt.get(mob.getId());
+		Long next = nextShotAt.get(mob.getId());
 		if (next == null) {
-			nextArrowAt.put(mob.getId(), now + 20);
+			nextShotAt.put(mob.getId(), now + 20);
 			return;
 		}
 		if (now < next || mob.distanceTo(target) > 24.0 || !mob.hasLineOfSight(target)) {
 			return;
 		}
-		nextArrowAt.put(mob.getId(), now + 30 + mob.getRandom().nextInt(20));
+		nextShotAt.put(mob.getId(), now + 30 + mob.getRandom().nextInt(20));
 		Arrow arrow = new Arrow(level, mob, new ItemStack(Items.ARROW), mob.getMainHandItem().copy());
 		arrow.pickup = AbstractArrow.Pickup.DISALLOWED;
 		double dx = target.getX() - mob.getX(), dz = target.getZ() - mob.getZ();
@@ -433,6 +674,200 @@ public final class Robots {
 			return;
 		}
 		nextMinigunAt.put(mob.getId(), now + 10);
-		target.hurtServer(level, level.damageSources().mobAttack(mob), 1.0f);
+		robotHit(level, target, level.damageSources().mobProjectile(mob, mob), mob, 1.0f);
+	}
+
+	/**
+	 * Soldier rockets and Demoman pipes: a projectile Minecraft doesn't draw (TF2 draws the rocket
+	 * or pipe), every 2.5-3.5 s at a target in sight within 24 blocks; it explodes where it hits
+	 * (SnowballMixin, {@link #blast}). The boss fires every 1.5-2 s.
+	 */
+	private static void launch(ServerLevel level, Mob mob, long now, int what) {
+		LivingEntity target = mob.getTarget();
+		if (target == null || !target.isAlive()) {
+			return;
+		}
+		Long next = nextShotAt.get(mob.getId());
+		if (next == null) {
+			nextShotAt.put(mob.getId(), now + 30);
+			return;
+		}
+		if (now < next || mob.distanceTo(target) > 24.0 || !mob.hasLineOfSight(target)) {
+			return;
+		}
+		boolean boss = bosses.contains(mob.getId());
+		nextShotAt.put(mob.getId(), now + (boss ? 30 + mob.getRandom().nextInt(10) : 50 + mob.getRandom().nextInt(20)));
+		Snowball shot = new Snowball(level, mob, new ItemStack(Items.SNOWBALL));
+		shot.setPos(mob.getX(), mob.getEyeY() - 0.2, mob.getZ());
+		double dx = target.getX() - mob.getX(), dz = target.getZ() - mob.getZ();
+		double dy = target.getY(0.5) - shot.getY();
+		if (rollCrit(mob)) {
+			CRIT_SHOTS.add(shot.getId());
+		}
+		if (what == ROCKET) {
+			shot.setNoGravity(true);
+			shot.shoot(dx, dy, dz, 1.2f, 2.0f);
+			ROCKETS.add(shot.getId());
+		} else {
+			shot.shoot(dx, dy + Math.sqrt(dx * dx + dz * dz) * 0.2, dz, 1.0f, 3.0f);
+			PIPES.add(shot.getId());
+		}
+		level.addFreshEntity(shot);
+		mob.lookAt(target, 360.0f, 360.0f);
+		noteAttack(mob.getId());
+	}
+
+	/**
+	 * A rocket or pipe going off: everything living within 2.5 blocks but robots takes up to 4
+	 * damage (6 from the boss), less further out. Kept weak on purpose (Alex: "not an insta kill").
+	 */
+	public static void blast(ServerLevel level, Entity projectile, Vec3 at) {
+		Entity owner = projectile instanceof Snowball s ? s.getOwner() : null;
+		boolean boss = owner != null && bosses.contains(owner.getId());
+		double radius = boss ? 3.5 : 2.5;
+		float damage = boss ? 6.0f : 4.0f;
+		for (LivingEntity e : level.getEntitiesOfClass(LivingEntity.class, new AABB(at, at).inflate(radius), x -> x.isAlive() && !isRobot(x))) {
+			double d = e.position().add(0, e.getBbHeight() * 0.5, 0).distanceTo(at);
+			if (d > radius) {
+				continue;
+			}
+			float dealt = (float) (damage * (1.0 - 0.5 * d / radius));
+			critPending = CRIT_SHOTS.contains(projectile.getId());
+			try {
+				e.hurtServer(level, level.damageSources().explosion(projectile, owner), dealt);
+			} finally {
+				critPending = false;
+			}
+		}
+	}
+
+	/** Sniper rifle and Scout scattergun: hitscan at a target in sight within range. */
+	private static void hitscan(ServerLevel level, Mob mob, long now, double range, float damage, int every, int jitter) {
+		LivingEntity target = mob.getTarget();
+		if (target == null || !target.isAlive()) {
+			return;
+		}
+		Long next = nextShotAt.get(mob.getId());
+		if (next == null) {
+			nextShotAt.put(mob.getId(), now + every / 2);
+			return;
+		}
+		if (now < next || mob.distanceTo(target) > range || !mob.hasLineOfSight(target)) {
+			return;
+		}
+		nextShotAt.put(mob.getId(), now + every + mob.getRandom().nextInt(jitter));
+		mob.lookAt(target, 360.0f, 360.0f);
+		robotHit(level, target, level.damageSources().mobProjectile(mob, mob), mob, damage);
+		noteAttack(mob.getId());
+	}
+
+	/** Spies stay cloaked until 5 blocks from their target, then stab (melee, giants' rule too). */
+	private static void spy(ServerLevel level, Mob mob, long now) {
+		LivingEntity target = mob.getTarget();
+		boolean cloak = target == null || mob.distanceTo(target) > 5.0;
+		if (cloak) {
+			cloaked.add(mob.getId());
+		} else {
+			cloaked.remove(mob.getId());
+		}
+		giantMelee(level, mob, now);
+	}
+
+	/**
+	 * Medics heal: the most hurt robot within 10 blocks they can see, a heart a second, walking
+	 * after it. When it or the Medic drops under 40% health, they Ubercharge: both immune for
+	 * 6 s, then 30 s before the next one.
+	 */
+	private static void medic(ServerLevel level, Mob mob, long now) {
+		Mob patient = null;
+		float worst = 1.0f;
+		for (Mob other : level.getEntitiesOfClass(Mob.class, mob.getBoundingBox().inflate(10.0), m -> m != mob && m.isAlive() && isRobot(m))) {
+			float part = other.getHealth() / other.getMaxHealth();
+			if (part < worst && mob.hasLineOfSight(other)) {
+				worst = part;
+				patient = other;
+			}
+		}
+		if (patient == null) {
+			healing.remove(mob.getId());
+			return;
+		}
+		healing.put(mob.getId(), patient.getId());
+		if (now >= nextHealAt.getOrDefault(mob.getId(), 0L)) {
+			nextHealAt.put(mob.getId(), now + 10);
+			patient.heal(1.0f);
+			if (mob.distanceTo(patient) > 5.0) {
+				mob.getNavigation().moveTo(patient, 1.0);
+			}
+		}
+		boolean low = worst < 0.4f || mob.getHealth() / mob.getMaxHealth() < 0.4f;
+		if (low && now >= uberReadyAt.getOrDefault(mob.getId(), 0L)) {
+			uberReadyAt.put(mob.getId(), now + 600);
+			long until = System.nanoTime() + 6_000_000_000L;
+			for (Mob m : new Mob[] { mob, patient }) {
+				m.addEffect(new MobEffectInstance(MobEffects.RESISTANCE, 120, 4, false, false));
+				uberUntil.put(m.getId(), until);
+			}
+			FortCraft.LOG.info("FortCraft: Medic robot {} Ubercharged {}", mob.getId(), patient.getId());
+		}
+	}
+
+	/**
+	 * A few more robots each raid wave (Alex: "maybe more mobs"): 1 + wave / 2 (at most 4)
+	 * pillagers or vindicators join the wave where its raiders are, and become robots like the
+	 * rest (so some are Soldiers, Spies, Scouts...).
+	 */
+	public static void reinforce(ServerLevel level, net.minecraft.world.entity.raid.Raid raid, int wave) {
+		BlockPos at = raid.getCenter();
+		for (Raider r : raid.getAllRaiders()) {
+			if (r.isAlive()) {
+				at = r.blockPosition();
+				break;
+			}
+		}
+		boolean lastWave = wave >= raid.getNumGroups(level.getDifficulty());
+		// Busier waves before the last (Alex: "more chaotic"): 2 + wave extra robots (at most 6);
+		// the last wave gets 2 and the Tank.
+		int extra = lastWave ? 2 : Math.min(2 + wave, 6);
+		if (lastWave) {
+			Raider tank = net.minecraft.world.entity.EntityTypes.RAVAGER.create(level, net.minecraft.world.entity.EntitySpawnReason.EVENT);
+			if (tank != null) {
+				variant.put(tank.getId(), TANK);
+				raid.joinRaid(level, wave, tank, at, false);
+			}
+		}
+		for (int i = 0; i < extra; i++) {
+			Raider raider = level.getRandom().nextBoolean()
+				? net.minecraft.world.entity.EntityTypes.PILLAGER.create(level, net.minecraft.world.entity.EntitySpawnReason.EVENT)
+				: net.minecraft.world.entity.EntityTypes.VINDICATOR.create(level, net.minecraft.world.entity.EntitySpawnReason.EVENT);
+			if (raider == null) {
+				continue;
+			}
+			raid.joinRaid(level, wave, raider, at.offset(level.getRandom().nextInt(5) - 2, 0, level.getRandom().nextInt(5) - 2), false);
+		}
+		FortCraft.LOG.info("FortCraft: raid wave {}: {} extra robots", wave, extra);
+	}
+
+	/**
+	 * Raider counts for TF2's MvM wave panel, from a raid's living raiders: slot = kind (normal),
+	 * 16 + kind (giant; 16 itself is the Tank), 32 + kind (boss).
+	 */
+	public static byte[] countKinds(Iterable<? extends Entity> raiders) {
+		byte[] counts = new byte[48];
+		for (Entity e : raiders) {
+			if (!e.isAlive()) {
+				continue;
+			}
+			int k = kindOf(e);
+			if (k <= 0 || k > 16) {
+				continue;
+			}
+			int slot = k == TANK ? 16 : bosses.contains(e.getId()) ? 32 + k
+				: e instanceof LivingEntity l && l.getScale() > 1.3f ? 16 + k : k;
+			if (slot < 48 && counts[slot] < 127) {
+				counts[slot]++;
+			}
+		}
+		return counts;
 	}
 }

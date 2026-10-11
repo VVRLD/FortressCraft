@@ -13,6 +13,9 @@
 #                           (try this if TF2 freezes or the weapon/HUD never appears while hidden)
 #   -fortcraft_no_overlay   no weapon/HUD copy at all
 # Steam must be running and signed in; TF2 and Source SDK Base 2013 Multiplayer must be installed.
+# If the system can't load TF2's engine by itself (Steam Deck), it runs inside Steam's Linux
+# Runtime 3.0 (sniper). FORTCRAFT_STEAM_RUNTIME=1 always does, =0 never does. See
+# logs/tf2_libraries.txt for what was found.
 set -euo pipefail
 
 HERE=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
@@ -69,8 +72,63 @@ python3 "$HERE/tf2_graphics.py" "$GAME/mod_tf/cfg/fortcraft_graphics.cfg" \
 SHORTLOGS="/tmp/fortcraft-logs-$(id -u)"
 ln -sfn "$LOGS" "$SHORTLOGS"
 
+# TF2's engine comes from Steam's "Source SDK Base 2013 Multiplayer" (app 243750): the launcher
+# below runs its hl2.sh. On a Steam Deck (2026-10-11) it failed with "Unable to load module
+# engine.so!": the engine needs libraries from Steam's Linux Runtime, which SteamOS doesn't have
+# outside it. So: find the SDK Base and the "sniper" runtime in Steam's libraries, check that
+# engine.so's libraries can all be found, and if not, run inside the runtime.
+steam_libraries() {
+	local root
+	for root in "$HOME/.steam/steam" "$HOME/.local/share/Steam" "$HOME/.var/app/com.valvesoftware.Steam/.local/share/Steam"; do
+		[[ -d "$root/steamapps" ]] || continue
+		echo "$root"
+		grep -o '"path"[[:space:]]*"[^"]*"' "$root/steamapps/libraryfolders.vdf" 2>/dev/null | sed 's/.*"\([^"]*\)"$/\1/'
+	done | awk '!seen[$0]++'
+}
+SDKBASE=""
+SNIPER=""
+while IFS= read -r lib; do
+	if [[ -z "$SDKBASE" && -f "$lib/steamapps/appmanifest_243750.acf" ]]; then
+		SDKBASE="$lib/steamapps/common/Source SDK Base 2013 Multiplayer"
+	fi
+	if [[ -z "$SNIPER" && -x "$lib/steamapps/common/SteamLinuxRuntime_sniper/run" ]]; then
+		SNIPER="$lib/steamapps/common/SteamLinuxRuntime_sniper"
+	fi
+done < <(steam_libraries)
+DIAG="$LOGS/tf2_libraries.txt"
+{
+	echo "Source SDK Base 2013 Multiplayer: ${SDKBASE:-not found}"
+	echo "Steam Linux Runtime 3.0 (sniper): ${SNIPER:-not found}"
+} > "$DIAG"
+if [[ -z "$SDKBASE" ]]; then
+	echo "Steam's \"Source SDK Base 2013 Multiplayer\" isn't installed. In Steam: Library, Tools,"
+	echo "install \"Source SDK Base 2013 Multiplayer\", then run this again."
+	exit 1
+fi
+ENGINE="$SDKBASE/bin/linux64/engine.so"
+if [[ ! -f "$ENGINE" ]]; then
+	echo "Missing $ENGINE."
+	echo "In Steam: right-click Source SDK Base 2013 Multiplayer, Properties, Installed Files,"
+	echo "Verify integrity of game files; then run this again."
+	exit 1
+fi
+MISSING=$(LD_LIBRARY_PATH="$SDKBASE/bin/linux64:$SDKBASE/bin" ldd "$ENGINE" 2>/dev/null | grep "not found" || true)
+echo "engine.so libraries missing outside Steam's runtime: ${MISSING:-none}" >> "$DIAG"
+RUNTIME=()
+if [[ -n "$MISSING" || "${FORTCRAFT_STEAM_RUNTIME:-}" == "1" ]] && [[ "${FORTCRAFT_STEAM_RUNTIME:-}" != "0" ]]; then
+	if [[ -z "$SNIPER" ]]; then
+		echo "TF2's engine needs libraries this system doesn't have:"
+		echo "$MISSING"
+		echo "Install Steam's \"Steam Linux Runtime 3.0 (sniper)\" (Library, Tools), then run this again."
+		exit 1
+	fi
+	RUNTIME=("$SNIPER/run" --)
+	echo "Running TF2 inside Steam's Linux Runtime ($SNIPER)"
+fi
+echo "Launch: ${RUNTIME[*]:-direct}" >> "$DIAG"
+
 cd "$GAME"
 echo "Starting TF2 (log: $GAME/mod_tf/console.log and $LOGS/tf2_stdout.log)"
-exec ./mod_tf_linux64 -novid -windowed -w 1280 -h 720 -insecure -condebug ${HIDE[@]+"${HIDE[@]}"} \
+exec ${RUNTIME[@]+"${RUNTIME[@]}"} ./mod_tf_linux64 -novid -windowed -w 1280 -h 720 -insecure -condebug ${HIDE[@]+"${HIDE[@]}"} \
 	-fortcraft_logs "$SHORTLOGS" "$@" +exec fortcraft_launch +map fortcraft_flat \
 	> "$LOGS/tf2_stdout.log" 2>&1

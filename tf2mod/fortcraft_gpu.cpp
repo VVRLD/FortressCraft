@@ -452,6 +452,34 @@ void FortCraftGpu_GiveUp()
 		Unhook();
 }
 
+bool FortCraftGpu_Adapter( uint32_t *pVendorId, uint32_t *pLuidLow, int32_t *pLuidHigh )
+{
+	*pVendorId = *pLuidLow = 0;
+	*pLuidHigh = 0;
+	if ( !s_pDevice )
+		return false;
+	D3DDEVICE_CREATION_PARAMETERS cp;
+	IDirect3D9 *pD3D = NULL;
+	if ( FAILED( s_pDevice->GetCreationParameters( &cp ) ) || FAILED( s_pDevice->GetDirect3D( &pD3D ) ) || !pD3D )
+		return false;
+	D3DADAPTER_IDENTIFIER9 id;
+	if ( SUCCEEDED( pD3D->GetAdapterIdentifier( cp.AdapterOrdinal, 0, &id ) ) )
+		*pVendorId = id.VendorId;
+	IDirect3D9Ex *pD3DEx = NULL;
+	if ( SUCCEEDED( pD3D->QueryInterface( __uuidof( IDirect3D9Ex ), (void **)&pD3DEx ) ) && pD3DEx )
+	{
+		LUID luid;
+		if ( SUCCEEDED( pD3DEx->GetAdapterLUID( cp.AdapterOrdinal, &luid ) ) )
+		{
+			*pLuidLow = luid.LowPart;
+			*pLuidHigh = luid.HighPart;
+		}
+		pD3DEx->Release();
+	}
+	pD3D->Release();
+	return *pVendorId != 0;
+}
+
 const char *FortCraftGpu_Error()
 {
 	return s_szError;
@@ -791,6 +819,12 @@ void FortCraftGpu_GetShared( uint64_t *pHandle0, uint64_t *pHandle1, uint32_t *p
 const char *FortCraftGpu_Error() { return "not built on Linux (Direct3D sharing is Windows-only)"; }
 const char *FortCraftGpu_HookInfo() { return "nothing"; }
 void FortCraftGpu_GiveUp() {}
+bool FortCraftGpu_Adapter( uint32_t *pVendorId, uint32_t *pLuidLow, int32_t *pLuidHigh )
+{
+	*pVendorId = *pLuidLow = 0;
+	*pLuidHigh = 0;
+	return false;
+}
 bool FortCraftGpu_Broken() { return false; }
 void FortCraftGpu_Survey( void ( * )( const char * ) ) {}
 #endif

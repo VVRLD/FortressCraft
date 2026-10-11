@@ -71,6 +71,9 @@ void FortCraft_ShowMobHit( const Vector &pos, int iDamage, bool bKilled );
 // Called by View_Render (cdll_client_int.cpp) once per frame: 2 if this frame captures an
 // overlay pair (draw the view twice, pass 0 over black then pass 1 over white), else 1 (pass -1).
 int FortCraft_OverlayDraws();
+
+// True while a Minecraft village raid is under way: TF2's MvM wave panel shows it (client).
+bool FortCraft_RaidHudActive();
 void FortCraft_SetOverlayPass( int pass );
 
 // Minecraft's brightness at the player's eyes (0..1; 1 when not linked). C_BaseEntity's colour

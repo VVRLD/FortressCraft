@@ -35,6 +35,8 @@
 #include "engine/IEngineSound.h"
 #include "bone_setup.h"
 #include "props_shared.h"
+#include "vgui_controls/Panel.h"
+#include "vgui/IScheme.h"
 #include "../protocol/fortcraft_protocol.h"
 #include "fortcraft_platform.h"
 
@@ -1588,6 +1590,8 @@ static void PublishGpuOverlay()
 		g.handle[ 1 ] = h1;
 		g.width = w;
 		g.height = h;
+		FortCraftGpu_Adapter( &g.vendorId, &g.luidLow, &g.luidHigh );
+		Msg( "FortCraft: TF2 draws on graphics chip vendor %04x (adapter %08x:%08x)\n", g.vendorId, (unsigned)g.luidHigh, g.luidLow );
 		*(volatile uint32_t *)&g.generation = gen;
 		Msg( "FortCraft: GPU overlay textures %ux%u (generation %u)\n", w, h, gen );
 	}
@@ -1816,6 +1820,8 @@ static void AutoJoin( C_TFPlayer *pPlayer )
 			// No rim light either: TF2 brightens model edges from the light around them, which
 			// left a white sheen along weapons (minigun barrel, 2026-10-10).
 			" r_rimlight 0;"
+			// The MvM wave panel during village raids lists every robot kind all the time.
+			" cl_mvm_wave_status_visible_during_wave 1;"
 			" mat_vsync 0; cl_ragdoll_physics_enable 0; cl_phys_props_enable 0; tf_particles_disable_weather 1\n" );
 
 		// The weapon was drawn pitch black: TF2 lights it from its map at the player's spot, and
@@ -1925,6 +1931,30 @@ static const RobotKind kRobotKinds[] = {
 	// 7: not a robot, a witch's Jarate jar in flight.
 	{ "models/weapons/c_models/urinejar.mdl", NULL, NULL, NULL, false, NULL, false, NULL, 0, 0, 0,
 		ACT_INVALID, ACT_INVALID, ACT_INVALID, ACT_INVALID, ACT_INVALID, ACT_INVALID },
+	// 8-10: projectiles: a Bowman's arrow, a Soldier's rocket, a Demoman's pipe.
+	{ "models/weapons/w_models/w_arrow.mdl", NULL, NULL, NULL, false, NULL, false, NULL, 0, 0, 0,
+		ACT_INVALID, ACT_INVALID, ACT_INVALID, ACT_INVALID, ACT_INVALID, ACT_INVALID },
+	{ "models/weapons/w_models/w_rocket.mdl", NULL, NULL, NULL, false, NULL, false, NULL, 0, 0, 0,
+		ACT_INVALID, ACT_INVALID, ACT_INVALID, ACT_INVALID, ACT_INVALID, ACT_INVALID },
+	{ "models/weapons/w_models/w_grenade_grenadelauncher.mdl", NULL, NULL, NULL, false, NULL, false, NULL, 0, 0, 0,
+		ACT_INVALID, ACT_INVALID, ACT_INVALID, ACT_INVALID, ACT_INVALID, ACT_INVALID },
+	// 11 Soldier (the boss is a huge one), 12 Demoman, 13 Sniper, 14 Spy, 15 full-size Scout.
+	{ "models/bots/soldier/bot_soldier.mdl", "models/weapons/c_models/c_rocketlauncher/c_rocketlauncher.mdl", NULL, "Soldier", false,
+		"models/bots/soldier_boss/bot_soldier_boss.mdl", true, "MVM.GiantSoldierStep", 8, 6, 6,
+		ACT_MP_STAND_PRIMARY, ACT_MP_RUN_PRIMARY, ACT_MP_AIRWALK_PRIMARY, ACT_MP_ATTACK_STAND_PRIMARY, ACT_INVALID, ACT_INVALID },
+	{ "models/bots/demo/bot_demo.mdl", "models/weapons/c_models/c_grenadelauncher/c_grenadelauncher.mdl", NULL, "Demoman", false,
+		"models/bots/demo_boss/bot_demo_boss.mdl", true, "MVM.GiantDemomanStep", 7, 7, 8,
+		ACT_MP_STAND_PRIMARY, ACT_MP_RUN_PRIMARY, ACT_MP_AIRWALK_PRIMARY, ACT_MP_ATTACK_STAND_PRIMARY, ACT_INVALID, ACT_INVALID },
+	{ "models/bots/sniper/bot_sniper.mdl", "models/weapons/c_models/c_sniperrifle/c_sniperrifle.mdl", NULL, "Sniper", false, NULL, false, "MVM.GiantSoldierStep", 4, 6, 8,
+		ACT_MP_STAND_PRIMARY, ACT_MP_RUN_PRIMARY, ACT_MP_AIRWALK_PRIMARY, ACT_MP_ATTACK_STAND_PRIMARY_DEPLOYED, ACT_MP_DEPLOYED_IDLE, ACT_MP_DEPLOYED_PRIMARY },
+	{ "models/bots/spy/bot_spy.mdl", "models/weapons/c_models/c_knife/c_knife.mdl", NULL, "Spy", false, NULL, false, "MVM.GiantSoldierStep", 4, 4, 8,
+		ACT_MP_STAND_MELEE, ACT_MP_RUN_MELEE, ACT_MP_AIRWALK_MELEE, ACT_MP_ATTACK_STAND_MELEE, ACT_INVALID, ACT_INVALID },
+	{ "models/bots/scout/bot_scout.mdl", "models/weapons/c_models/c_scattergun.mdl", NULL, "Scout", false,
+		"models/bots/scout_boss/bot_scout_boss.mdl", true, "MVM.GiantScoutStep", 8, 5, 6,
+		ACT_MP_STAND_PRIMARY, ACT_MP_RUN_PRIMARY, ACT_MP_AIRWALK_PRIMARY, ACT_MP_ATTACK_STAND_PRIMARY, ACT_INVALID, ACT_INVALID },
+	// 16: MvM's Tank (a ravager in the last raid wave). No voice, no steps.
+	{ "models/bots/boss_bot/boss_tank.mdl", NULL, NULL, NULL, true, "models/bots/boss_bot/boss_tank.mdl", false, NULL, 0, 0, 0,
+		ACT_INVALID, ACT_INVALID, ACT_INVALID, ACT_INVALID, ACT_INVALID, ACT_INVALID },
 };
 
 struct RobotState
@@ -1947,6 +1977,13 @@ struct RobotState
 	bool bAimingAtPlayer = false;
 	bool bGiant = false;     // the model made is the giant one
 	CNewParticleEffect *pMuzzle = NULL;  // Giant Heavy's minigun flash while firing
+	CNewParticleEffect *pBeam = NULL;    // Medic's healing beam
+	CNewParticleEffect *pBurn = NULL;    // on fire
+	CNewParticleEffect *pDrips = NULL;   // Jarate or Mad Milk
+	int nBeamTarget = 0;
+	float flCloak = 0.0f;                // Spy: 0 seen .. 1 cloaked
+	uint8_t extra = 0;                   // last frame's kRobotEx*
+	bool bTrail = false;                 // projectile: trail started
 	double flNextTracer = 0.0;
 	bool bDead = false;
 	bool bSeen = false;      // in this frame's list
@@ -1981,7 +2018,7 @@ static void RobotSound( const char *pszName, const Vector &pos )
 // "Sniper.MVM_PainSharp03", "Heavy.M_MVM_BattleCry05" ...
 static void RobotVoice( const RobotKind &k, bool bGiant, const char *pszLine, int nCount, const Vector &pos )
 {
-	if ( nCount <= 0 )
+	if ( nCount <= 0 || !k.pszVoice )
 		return;
 	RobotSound( VarArgs( "%s.%sMVM_%s%02d", k.pszVoice, bGiant && k.bMighty ? "M_" : "", pszLine, RandomInt( 1, nCount ) ), pos );
 }
@@ -2018,6 +2055,9 @@ static void ReleaseRobot( RobotState &r )
 	r.pWeapon = r.pExtra = NULL;
 	r.pModel = NULL;
 	r.pMuzzle = NULL;  // went with the weapon
+	r.pBeam = NULL;
+	r.pBurn = r.pDrips = NULL;
+	r.bTrail = false;
 }
 
 static int RobotSequence( C_BaseAnimating *pModel, Activity act )
@@ -2175,17 +2215,23 @@ static void UpdateRobot( RobotState &r, const proto::RaidRobot &in, float dt )
 	{
 		// Dead: voice, gibs (and a giant's explosion), and the robot is gone.
 		r.bDead = true;
-		if ( r.pModel )
+		if ( r.pModel && k.pszVoice )
 			RobotSound( VarArgs( "%s.%sMVM_Death", k.pszVoice, bGiant && k.bMighty ? "M_" : "" ), pos );
-		if ( bGiant )
+		if ( r.kind == proto::kRobotKindTank )
+		{
+			RobotSound( "MVM.TankExplodes", pos );
+			DispatchParticleEffect( "ExplosionCore_MidAir", pos + Vector( 0, 0, 60 ), QAngle( 0, 0, 0 ) );
+		}
+		else if ( bGiant )
 			RobotSound( r.kind == 5 ? "MVM.GiantHeavyExplodes" : "MVM.GiantCommonExplodes", pos );
 		RobotGibs( r );
 		ReleaseRobot( r );
 		return;
 	}
-	if ( r.kind == proto::kRobotKindJar )
+	if ( r.kind >= proto::kRobotKindJar && r.kind <= proto::kRobotKindPipe )
 	{
-		// A Jarate jar: the jar model, tumbling along Minecraft's snowball path.
+		// A projectile: the jar tumbles; arrows, rockets and pipes point along their path, rockets
+		// and pipes trail smoke.
 		if ( !r.pModel )
 		{
 			if ( modelinfo->GetModelIndex( k.pszModel ) == -1 )
@@ -2199,10 +2245,27 @@ static void UpdateRobot( RobotState &r, const proto::RaidRobot &in, float dt )
 			}
 			r.hModel = r.pModel;
 			r.pModel->m_nSkin = 1;
+			r.vecLast = pos;
+			r.flFacing = AngleNormalize( -in.bodyYaw - 90.0f );
 		}
+		if ( !r.bTrail && ( r.kind == proto::kRobotKindRocket || r.kind == proto::kRobotKindPipe ) )
+		{
+			r.bTrail = true;
+			const bool bCrit = ( in.extra & proto::kRobotExBoss ) != 0;
+			r.pModel->ParticleProp()->Create( r.kind == proto::kRobotKindRocket ? ( bCrit ? "critical_rocket_blue" : "rockettrail" )
+				: ( bCrit ? "critical_pipe_blue" : "pipebombtrail_blue" ), PATTACH_ABSORIGIN_FOLLOW );
+		}
+		const Vector vecFlown = pos - r.vecLast;
+		QAngle angles = r.pModel->GetAbsAngles();
+		if ( r.kind == proto::kRobotKindJar )
+			angles = QAngle( fmodf( (float)Plat_FloatTime() * 720.0f, 360.0f ), AngleNormalize( -in.bodyYaw - 90.0f ), 0 );
+		else if ( vecFlown.LengthSqr() > 0.25f )
+			VectorAngles( vecFlown, angles );
+		if ( r.kind == proto::kRobotKindPipe )
+			angles.z = fmodf( (float)Plat_FloatTime() * 540.0f, 360.0f );  // pipes spin
 		r.vecLast = pos;
-		r.pModel->SetAbsOrigin( pos + Vector( 0, 0, 4 ) );
-		r.pModel->SetAbsAngles( QAngle( fmodf( (float)Plat_FloatTime() * 720.0f, 360.0f ), AngleNormalize( -in.bodyYaw - 90.0f ), 0 ) );
+		r.pModel->SetAbsOrigin( pos + Vector( 0, 0, r.kind == proto::kRobotKindJar ? 4.0f : 0.0f ) );
+		r.pModel->SetAbsAngles( angles );
 		return;
 	}
 	if ( r.pModel && r.bGiant != bGiant )
@@ -2234,6 +2297,8 @@ static void UpdateRobot( RobotState &r, const proto::RaidRobot &in, float dt )
 			return;
 		}
 		Msg( "FortCraft: raider %d drawn as robot %s\n", r.id, pszModel );
+		if ( r.kind == proto::kRobotKindTank )
+			RobotSound( "MVM.TankStart", pos );
 		r.bGiant = bGiant;
 		if ( bGiant )
 			RobotVoice( k, true, "BattleCry", k.nBattleCry, pos );
@@ -2253,7 +2318,9 @@ static void UpdateRobot( RobotState &r, const proto::RaidRobot &in, float dt )
 	// Size: the robot as tall as the mob's hitbox (TF2's players are 82 units tall); giants
 	// a bit bigger still.
 	float flScale = in.height * UNITS_PER_BLOCK / 82.0f;
-	if ( k.bAlwaysGiant )
+	if ( r.kind == proto::kRobotKindTank )
+		flScale = in.height * UNITS_PER_BLOCK / 160.0f;  // the Tank's model is about 160 units tall
+	else if ( k.bAlwaysGiant )
 		flScale = MAX( flScale, 1.75f );  // MvM's giants are 1.75x
 	if ( fabsf( pModel->GetModelScale() - flScale ) > 0.01f )
 		pModel->SetModelScale( flScale );
@@ -2270,7 +2337,10 @@ static void UpdateRobot( RobotState &r, const proto::RaidRobot &in, float dt )
 	const bool bGround = ( f & proto::kRobotGround ) != 0;
 	const bool bCharging = ( f & proto::kRobotCharging ) != 0;
 	// Drawn bow (Bowman) or spun-up minigun (Giant Heavy hunting).
-	const bool bDeployed = r.kind == 1 ? bCharging : r.kind == 5 ? ( f & proto::kRobotAggressive ) != 0 : false;
+	const bool bDeployed = r.kind == 1 ? bCharging : ( r.kind == 5 || r.kind == 13 ) ? ( f & proto::kRobotAggressive ) != 0 : false;
+	// Ubercharged robots glow in MvM's blue Uber skin.
+	const bool bUber = ( in.extra & proto::kRobotExUber ) != 0;
+	pModel->m_nSkin = bUber ? 3 : 1;
 
 	// Facing: Minecraft yaw 0 faces south (+Z), TF2 yaw 0 faces east (+X). Robots look at the
 	// player (Alex): within 24 blocks the head and aim follow you, and one standing still, or
@@ -2408,7 +2478,7 @@ static void UpdateRobot( RobotState &r, const proto::RaidRobot &in, float dt )
 	}
 
 	// Sounds.
-	if ( bGround && bMoving )
+	if ( bGround && bMoving && r.kind != proto::kRobotKindTank )
 	{
 		r.flStepUnits += flSpeed * dt;
 		const float flStride = ( bGiant ? 1.0f : 0.9f ) * UNITS_PER_BLOCK * MAX( flScale, 0.5f );
@@ -2429,6 +2499,101 @@ static void UpdateRobot( RobotState &r, const proto::RaidRobot &in, float dt )
 	// Bowman's Huntsman.
 	if ( r.kind == 1 && rose( proto::kRobotSwing ) )
 		RobotSound( "Weapon_CompoundBow.Single", pos );
+	// Round 4's robots: their weapon sound on each shot; Sniper and Scout shots trace to you.
+	if ( rose( proto::kRobotSwing ) )
+	{
+		const bool bBoss = ( in.extra & proto::kRobotExBoss ) != 0;
+		if ( r.kind == 11 )
+			RobotSound( bGiant || bBoss ? "MVM.GiantSoldierRocketShoot" : "Weapon_RPG.Single", pos );
+		else if ( r.kind == 12 )
+			RobotSound( "Weapon_GrenadeLauncher.Single", pos );
+		else if ( r.kind == 14 )
+			RobotSound( "Weapon_Knife.Miss", pos );
+		else if ( ( r.kind == 13 || r.kind == 15 ) && pLocal )
+		{
+			RobotSound( r.kind == 13 ? "Weapon_SniperRifle.Single" : "Weapon_Scatter_Gun.Single", pos );
+			Vector vecMuzzle = pos + Vector( 0, 0, in.height * UNITS_PER_BLOCK * 0.7f );
+			QAngle angMuzzle;
+			const int iMuzzle = r.pWeapon ? r.pWeapon->LookupAttachment( "muzzle" ) : 0;
+			if ( iMuzzle > 0 )
+				r.pWeapon->GetAttachment( iMuzzle, vecMuzzle, angMuzzle );
+			const int nPellets = r.kind == 15 ? 4 : 1;
+			for ( int i = 0; i < nPellets; ++i )
+			{
+				const Vector vecEnd = pLocal->WorldSpaceCenter() + Vector( RandomFloat( -20, 20 ), RandomFloat( -20, 20 ), RandomFloat( -20, 20 ) );
+				UTIL_ParticleTracer( "bullet_tracer01_blue", vecMuzzle, vecEnd );
+			}
+		}
+	}
+	// Uber starting.
+	if ( bUber && !( r.extra & proto::kRobotExUber ) )
+		RobotSound( "TFPlayer.InvulnerableOn", pos );
+	// Spy: fades out while cloaked, back in to stab.
+	if ( r.kind == 14 )
+	{
+		const bool bCloaked = ( in.extra & proto::kRobotExCloaked ) != 0;
+		if ( bCloaked != ( ( r.extra & proto::kRobotExCloaked ) != 0 ) )
+			RobotSound( bCloaked ? "Player.Spy_Cloak" : "Player.Spy_UnCloak", pos );
+		r.flCloak = Approach( bCloaked ? 1.0f : 0.0f, r.flCloak, dt );
+		C_BaseAnimating *spyParts[ 2 ] = { pModel, r.pWeapon };
+		for ( int i = 0; i < 2; ++i )
+		{
+			if ( !spyParts[ i ] )
+				continue;
+			spyParts[ i ]->SetRenderMode( r.flCloak > 0.0f ? kRenderTransColor : kRenderNormal );
+			spyParts[ i ]->SetRenderColorA( (byte)( 255.0f * ( 1.0f - r.flCloak ) ) );
+			if ( r.flCloak >= 0.99f )
+				spyParts[ i ]->AddEffects( EF_NODRAW );
+		}
+	}
+	// Medic: the healing beam to its patient.
+	if ( r.kind == 3 )
+	{
+		C_BaseAnimating *pPatient = NULL;
+		if ( ( in.extra & proto::kRobotExHealing ) && in.target )
+		{
+			FOR_EACH_VEC( s_Robots, i )
+			{
+				if ( s_Robots[ i ].id == in.target && s_Robots[ i ].pModel && s_Robots[ i ].hModel.Get() == s_Robots[ i ].pModel && !s_Robots[ i ].bDead )
+					pPatient = s_Robots[ i ].pModel;
+			}
+		}
+		const int nWant = pPatient ? in.target : 0;
+		if ( nWant != r.nBeamTarget || ( !pPatient && r.pBeam ) )
+		{
+			if ( r.pBeam && r.pWeapon )
+				r.pWeapon->ParticleProp()->StopEmission( r.pBeam );
+			r.pBeam = NULL;
+			r.nBeamTarget = nWant;
+			if ( pPatient && r.pWeapon )
+			{
+				r.pBeam = r.pWeapon->ParticleProp()->Create( "medicgun_beam_blue", PATTACH_POINT_FOLLOW, "muzzle" );
+				if ( r.pBeam )
+					r.pWeapon->ParticleProp()->AddControlPoint( r.pBeam, 1, pPatient, PATTACH_ABSORIGIN_FOLLOW, NULL, Vector( 0, 0, 50 ) );
+			}
+		}
+	}
+	// On fire, or wearing Jarate / Mad Milk: TF2's own effects on the robot (Alex: Jarate and
+	// fire didn't seem to work on them; Minecraft's own fire and drips aren't drawn for robots).
+	const bool bBurning = ( in.extra & proto::kRobotExBurning ) != 0;
+	if ( bBurning && !r.pBurn )
+		r.pBurn = pModel->ParticleProp()->Create( "burningplayer_blue", PATTACH_ABSORIGIN_FOLLOW );
+	else if ( !bBurning && r.pBurn )
+	{
+		pModel->ParticleProp()->StopEmission( r.pBurn );
+		r.pBurn = NULL;
+	}
+	const uint8_t nDrip = in.extra & ( proto::kRobotExJarated | proto::kRobotExMilked );
+	if ( nDrip != ( r.extra & ( proto::kRobotExJarated | proto::kRobotExMilked ) ) )
+	{
+		if ( r.pDrips )
+			pModel->ParticleProp()->StopEmission( r.pDrips );
+		r.pDrips = NULL;
+		if ( nDrip )
+			r.pDrips = pModel->ParticleProp()->Create( ( nDrip & proto::kRobotExJarated ) ? "peejar_drips" : "peejar_drips_milk",
+				PATTACH_ABSORIGIN_FOLLOW, INVALID_PARTICLE_ATTACHMENT, Vector( 0, 0, in.height * UNITS_PER_BLOCK * 0.7f ) );
+	}
+	r.extra = in.extra;
 	// Giant Heavy's minigun: winds up while hunting; firing, the gun loop, muzzle flash and
 	// tracers at the player.
 	if ( r.kind == 5 )
@@ -2480,6 +2645,136 @@ static void UpdateRobot( RobotState &r, const proto::RaidRobot &in, float dt )
 	r.flags = f;
 }
 
+// ---- MvM wave panel during village raids (Alex, 2026-10-11) -----------------------------------
+// Like MvM's: "WAVE 2 / 5", a bar of how much of the wave is left, and an icon with a count for
+// each kind of robot still alive. Shown while a raid is under way, gone after.
+static const char *const kRaidIcons[ 16 ] = {
+	NULL, "hud/leaderboard_class_sniper_bow", "hud/leaderboard_class_demoknight", "hud/leaderboard_class_medic",
+	"hud/leaderboard_class_scout_bat", "hud/leaderboard_class_heavy_giant", "hud/leaderboard_class_sniper_jarate", NULL,
+	NULL, NULL, NULL, "hud/leaderboard_class_soldier", "hud/leaderboard_class_demo", "hud/leaderboard_class_sniper",
+	"hud/leaderboard_class_spy", "hud/leaderboard_class_scout",
+};
+
+class CFortCraftRaidPanel : public vgui::Panel
+{
+	DECLARE_CLASS_SIMPLE( CFortCraftRaidPanel, vgui::Panel );
+public:
+	CFortCraftRaidPanel() : BaseClass( NULL, "FortCraftRaidPanel" )
+	{
+		SetParent( enginevgui->GetPanel( PANEL_CLIENTDLL ) );
+		SetMouseInputEnabled( false );
+		SetKeyBoardInputEnabled( false );
+		SetPaintBackgroundEnabled( false );
+		SetVisible( false );
+		for ( int i = 0; i < 16; ++i )
+			m_nIcon[ i ] = -1;
+	}
+	uint32_t m_nWave = 0, m_nTotal = 0, m_nAlive = 0, m_nWaveMax = 1;
+	uint8_t m_nCounts[ 16 ] = {};
+
+	virtual void Paint() OVERRIDE
+	{
+		int sw, sh;
+		vgui::surface()->GetScreenSize( sw, sh );
+		const float s = sh / 480.0f;
+		int nKinds = 0;
+		for ( int k = 1; k < 16; ++k )
+			nKinds += ( kRaidIcons[ k ] && m_nCounts[ k ] ) ? 1 : 0;
+		const int icon = (int)( 18 * s ), gap = (int)( 4 * s );
+		const int w = MAX( (int)( 150 * s ), nKinds * ( icon + gap ) + gap * 3 ), h = (int)( 58 * s );
+		SetBounds( ( sw - w ) / 2, (int)( 6 * s ), w, h );
+
+		vgui::surface()->DrawSetColor( 40, 37, 34, 200 );
+		vgui::surface()->DrawFilledRect( 0, 0, w, h );
+		vgui::surface()->DrawSetColor( 117, 107, 94, 255 );
+		vgui::surface()->DrawOutlinedRect( 0, 0, w, h );
+
+		vgui::HScheme hScheme = vgui::scheme()->GetScheme( "ClientScheme" );
+		vgui::IScheme *pScheme = vgui::scheme()->GetIScheme( hScheme );
+		vgui::HFont font = pScheme ? pScheme->GetFont( "HudFontSmallBold", true ) : vgui::INVALID_FONT;
+		wchar_t wszTitle[ 64 ];
+		V_snwprintf( wszTitle, ARRAYSIZE( wszTitle ), L"WAVE %u / %u", m_nWave, m_nTotal );
+		int tw = 0, th = 0;
+		if ( font != vgui::INVALID_FONT )
+		{
+			vgui::surface()->GetTextSize( font, wszTitle, tw, th );
+			vgui::surface()->DrawSetTextFont( font );
+			vgui::surface()->DrawSetTextColor( 235, 226, 202, 255 );
+			vgui::surface()->DrawSetTextPos( ( w - tw ) / 2, (int)( 3 * s ) );
+			vgui::surface()->DrawPrintText( wszTitle, V_wcslen( wszTitle ) );
+		}
+
+		// How much of the wave is left.
+		const int barX = gap * 2, barY = (int)( 17 * s ), barW = w - gap * 4, barH = (int)( 6 * s );
+		vgui::surface()->DrawSetColor( 20, 20, 20, 220 );
+		vgui::surface()->DrawFilledRect( barX, barY, barX + barW, barY + barH );
+		const float flLeft = m_nWaveMax ? clamp( (float)m_nAlive / (float)m_nWaveMax, 0.0f, 1.0f ) : 0.0f;
+		vgui::surface()->DrawSetColor( 133, 163, 191, 255 );
+		vgui::surface()->DrawFilledRect( barX, barY, barX + (int)( barW * flLeft ), barY + barH );
+
+		// Robots still alive, by kind.
+		int x = ( w - nKinds * ( icon + gap ) + gap ) / 2;
+		const int iconY = barY + barH + (int)( 4 * s );
+		for ( int k = 1; k < 16; ++k )
+		{
+			if ( !kRaidIcons[ k ] || !m_nCounts[ k ] )
+				continue;
+			if ( m_nIcon[ k ] < 0 )
+			{
+				m_nIcon[ k ] = vgui::surface()->CreateNewTextureID();
+				vgui::surface()->DrawSetTextureFile( m_nIcon[ k ], kRaidIcons[ k ], true, false );
+			}
+			vgui::surface()->DrawSetTexture( m_nIcon[ k ] );
+			vgui::surface()->DrawSetColor( 255, 255, 255, 255 );
+			vgui::surface()->DrawTexturedRect( x, iconY, x + icon, iconY + icon );
+			if ( font != vgui::INVALID_FONT )
+			{
+				wchar_t wszCount[ 8 ];
+				V_snwprintf( wszCount, ARRAYSIZE( wszCount ), L"%d", m_nCounts[ k ] );
+				vgui::surface()->GetTextSize( font, wszCount, tw, th );
+				vgui::surface()->DrawSetTextColor( 235, 226, 202, 255 );
+				vgui::surface()->DrawSetTextPos( x + ( icon - tw ) / 2, iconY + icon + (int)( 1 * s ) );
+				vgui::surface()->DrawPrintText( wszCount, V_wcslen( wszCount ) );
+			}
+			x += icon + gap;
+		}
+	}
+
+private:
+	int m_nIcon[ 16 ];
+};
+static CFortCraftRaidPanel *s_pRaidPanel;
+
+bool FortCraft_RaidHudActive()
+{
+	return s_bLinked && s_pShm && At< proto::RaidState >( proto::kOffRaidState ).state == 1;
+}
+
+// Replaced by TF2's own MvM wave panel (FortCraft_RaidHudActive); kept for reference, unused.
+static void UpdateRaidPanel()
+{
+	const proto::RaidState &raid = At< proto::RaidState >( proto::kOffRaidState );
+	const bool bShow = s_bLinked && raid.state == 1 && raid.wave > 0;
+	if ( !s_pRaidPanel )
+	{
+		if ( !bShow )
+			return;
+		s_pRaidPanel = new CFortCraftRaidPanel();
+	}
+	if ( bShow )
+	{
+		if ( raid.wave != s_pRaidPanel->m_nWave )
+			s_pRaidPanel->m_nWaveMax = MAX( raid.alive, 1u );  // a new wave: its size
+		s_pRaidPanel->m_nWaveMax = MAX( s_pRaidPanel->m_nWaveMax, raid.alive );
+		s_pRaidPanel->m_nWave = raid.wave;
+		s_pRaidPanel->m_nTotal = raid.totalWaves;
+		s_pRaidPanel->m_nAlive = raid.alive;
+		memcpy( s_pRaidPanel->m_nCounts, raid.kindCounts, sizeof( s_pRaidPanel->m_nCounts ) );
+	}
+	if ( s_pRaidPanel->IsVisible() != bShow )
+		s_pRaidPanel->SetVisible( bShow );
+}
+
 static void UpdateRobots()
 {
 	static double s_flLast;
@@ -2529,11 +2824,25 @@ static void UpdateRobots()
 			{
 				if ( !s_Robots[ i ].bSeen )
 				{
-					if ( s_Robots[ i ].kind == proto::kRobotKindJar && s_Robots[ i ].pModel && s_Robots[ i ].hModel.Get() == s_Robots[ i ].pModel )
+					const RobotState &gone = s_Robots[ i ];
+					if ( gone.pModel && gone.hModel.Get() == gone.pModel )
 					{
-						// The jar broke: TF2's Jarate splash.
-						DispatchParticleEffect( "peejar_impact", s_Robots[ i ].vecLast, QAngle( 0, 0, 0 ) );
-						RobotSound( "Jar.Explode", s_Robots[ i ].vecLast );
+						if ( gone.kind == proto::kRobotKindJar )
+						{
+							// The jar broke: TF2's Jarate splash.
+							DispatchParticleEffect( "peejar_impact", gone.vecLast, QAngle( 0, 0, 0 ) );
+							RobotSound( "Jar.Explode", gone.vecLast );
+						}
+						else if ( gone.kind == proto::kRobotKindRocket || gone.kind == proto::kRobotKindPipe )
+						{
+							// A rocket or pipe went off.
+							DispatchParticleEffect( "ExplosionCore_MidAir", gone.vecLast, QAngle( 0, 0, 0 ) );
+							RobotSound( "BaseExplosionEffect.Sound", gone.vecLast );
+						}
+						else if ( gone.kind == proto::kRobotKindArrow )
+						{
+							RobotSound( "Weapon_Arrow.ImpactConcrete", gone.vecLast );
+						}
 					}
 					ReleaseRobot( s_Robots[ i ] );
 					s_Robots.Remove( i );

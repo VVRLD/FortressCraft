@@ -23,7 +23,7 @@ import java.util.Locale;
  */
 public final class FortLink {
 	public static final int MAGIC = 0x46524346;  // "FCRF"
-	public static final int VERSION = 65;
+	public static final int VERSION = 69;
 	/** Windows: a named page-file mapping. Linux: a file in /dev/shm (RAM), which TF2 maps too. */
 	public static final boolean WINDOWS = System.getProperty("os.name", "").toLowerCase(Locale.ROOT).startsWith("windows");
 	public static final String NAME = System.getenv().getOrDefault("FORTCRAFT_LINK", WINDOWS ? "Local\\FortCraft_v1" : "/dev/shm/FortCraft_v1");
@@ -388,6 +388,14 @@ public final class FortLink {
 		return shm.get(JAVA_INT, 0x30C);
 	}
 
+	/** OverlayGpu (v66): TF2's graphics chip: PCI vendor id, adapter LUID low and high (0 if unknown). */
+	public static int[] gpuOverlayAdapter() {
+		if (shm == null) {
+			return new int[3];
+		}
+		return new int[] { shm.get(JAVA_INT, 0x328), shm.get(JAVA_INT, 0x32C), shm.get(JAVA_INT, 0x330) };
+	}
+
 	public static int gpuOverlayGeneration() {
 		return (int) INT.getAcquire(shm, 0x314);
 	}
@@ -485,7 +493,7 @@ public final class FortLink {
 	 * RaidRobots @0x5E600 (v63): seq, count, then 40 bytes per raider TF2 draws as a robot: id,
 	 * kind (byte), pad, flags (short), then x, y, z, body yaw, head yaw, pitch, height, width.
 	 */
-	public static void writeRobots(int[] ids, byte[] kinds, short[] flags, float[] values, int count) {
+	public static void writeRobots(int[] ids, byte[] kinds, byte[] extras, short[] flags, int[] targets, float[] values, int count) {
 		if (shm == null) {
 			return;
 		}
@@ -493,12 +501,14 @@ public final class FortLink {
 		int seq = shm.get(JAVA_INT, 0x5E600);
 		INT.setRelease(shm, 0x5E600, (seq + 1) | 1);  // odd: writing
 		for (int i = 0; i < count; i++) {
-			long o = 0x5E608 + i * 40L;
+			long o = 0x5E608 + i * 48L;  // v67: 48 bytes (extra flags, Medic's patient)
 			shm.set(JAVA_INT, o, ids[i]);
 			shm.set(JAVA_BYTE, o + 4, kinds[i]);
-			shm.set(JAVA_BYTE, o + 5, (byte) 0);
+			shm.set(JAVA_BYTE, o + 5, extras[i]);
 			shm.set(JAVA_SHORT, o + 6, flags[i]);
 			MemorySegment.copy(values, i * 8, shm, JAVA_FLOAT, o + 8, 8);
+			shm.set(JAVA_INT, o + 40, targets[i]);
+			shm.set(JAVA_INT, o + 44, 0);
 		}
 		shm.set(JAVA_INT, 0x5E604, count);
 		INT.setRelease(shm, 0x5E600, ((seq + 1) | 1) + 1);  // even: done
@@ -506,24 +516,24 @@ public final class FortLink {
 
 	private static int playerJarate;
 
-	/** PlayerJarate @0x62200 (v65): one more witch Jarate hit on the player. */
+	/** PlayerJarate @0x62400 (v67; was 0x62200): one more witch Jarate hit on the player. */
 	public static synchronized void writePlayerJarate() {
 		if (shm != null) {
-			INT.setRelease(shm, 0x62200, ++playerJarate);
+			INT.setRelease(shm, 0x62400, ++playerJarate);
 		}
 	}
 
-	/** RobotOccluders @0x5F100 (v64): seq, count, then up to 512 boxes of 6 floats (blocks in front of far robots). */
+	/** RobotOccluders @0x5F300 (v67; was 0x5F100): seq, count, then up to 512 boxes of 6 floats (blocks in front of far robots). */
 	public static void writeRobotOccluders(float[] boxes, int count) {
 		if (shm == null) {
 			return;
 		}
 		count = Math.min(count, 512);
-		int seq = shm.get(JAVA_INT, 0x5F100);
-		INT.setRelease(shm, 0x5F100, (seq + 1) | 1);  // odd: writing
-		MemorySegment.copy(boxes, 0, shm, JAVA_FLOAT, 0x5F108, count * 6);
-		shm.set(JAVA_INT, 0x5F104, count);
-		INT.setRelease(shm, 0x5F100, ((seq + 1) | 1) + 1);  // even: done
+		int seq = shm.get(JAVA_INT, 0x5F300);
+		INT.setRelease(shm, 0x5F300, (seq + 1) | 1);  // odd: writing
+		MemorySegment.copy(boxes, 0, shm, JAVA_FLOAT, 0x5F308, count * 6);
+		shm.set(JAVA_INT, 0x5F304, count);
+		INT.setRelease(shm, 0x5F300, ((seq + 1) | 1) + 1);  // even: done
 	}
 
 	// MobBoxes @0x42000 (Minecraft -> TF2): seq, count, then up to 128 boxes of 6 floats.
@@ -760,11 +770,12 @@ public final class FortLink {
 	}
 
 	/** RaidState @0x5E500 (v61): state (0 none, 1 under way, 2 defended, 3 lost), wave, total waves, raiders alive. */
-	public static void writeRaidState(int state, int wave, int totalWaves, int alive) {
+	public static void writeRaidState(int state, int wave, int totalWaves, int alive, byte[] kindCounts) {
 		if (shm != null) {
 			shm.set(JAVA_INT, 0x5E504, wave);
 			shm.set(JAVA_INT, 0x5E508, totalWaves);
 			shm.set(JAVA_INT, 0x5E50C, alive);
+			MemorySegment.copy(kindCounts, 0, shm, JAVA_BYTE, 0x5E510, 48);  // v69: by kind, giant, boss
 			shm.set(JAVA_INT, 0x5E500, state);
 		}
 	}
@@ -843,16 +854,18 @@ public final class FortLink {
 	}
 
 	// Hurts @0x41000 (Minecraft -> TF2): count, then a ring of 32 x (amount, fromX, fromY, fromZ).
-	public static synchronized void writeHurt(float tf2Damage, double fromX, double fromY, double fromZ) {
+	/** kind (v68): 1 blast, 2 bullet, 4 fire, 8 crit (protocol kHurt*). */
+	public static synchronized void writeHurt(float tf2Damage, double fromX, double fromY, double fromZ, int kind) {
 		if (shm == null) {
 			return;
 		}
 		int count = shm.get(JAVA_INT, 0x41000);
-		long o = 0x41008 + Integer.remainderUnsigned(count, 32) * 16L;
+		long o = 0x41008 + Integer.remainderUnsigned(count, 32) * 20L;  // v68: 20 bytes
 		shm.set(JAVA_FLOAT, o, tf2Damage);
 		shm.set(JAVA_FLOAT, o + 4, (float) fromX);
 		shm.set(JAVA_FLOAT, o + 8, (float) fromY);
 		shm.set(JAVA_FLOAT, o + 12, (float) fromZ);
+		shm.set(JAVA_INT, o + 16, kind);
 		INT.setRelease(shm, 0x41000, count + 1);
 	}
 

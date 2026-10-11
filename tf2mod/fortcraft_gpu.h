@@ -35,6 +35,9 @@ const char *FortCraftGpu_HookInfo();
 // Stop waiting for TF2's device (put Direct3D's tables back).
 void FortCraftGpu_GiveUp();
 
+// The graphics chip TF2's device runs on (PCI vendor id and adapter LUID). False if unknown.
+bool FortCraftGpu_Adapter( uint32_t *pVendorId, uint32_t *pLuidLow, int32_t *pLuidHigh );
+
 // True if the GPU path failed after starting (e.g. shared textures couldn't be made).
 bool FortCraftGpu_Broken();
 

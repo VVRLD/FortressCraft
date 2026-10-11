@@ -7,7 +7,9 @@ file from `tools/collect_logs.sh` (see the end of this page).
 
 - A 64-bit Linux desktop (X11 or Wayland).
 - **Steam**, signed in and running, with **Team Fortress 2** and **Source SDK Base 2013
-  Multiplayer** installed (the SDK Base is free: Steam > Library > Tools).
+  Multiplayer** installed (the SDK Base is free: Steam > Library > Tools). On a Steam Deck or
+  any system where TF2's engine won't load on its own, also **Steam Linux Runtime 3.0 (sniper)**
+  (Library > Tools).
 - **git** and **podman**:
   - Ubuntu / Debian / Mint: `sudo apt install git podman`
   - Fedora: `sudo dnf install git podman`
@@ -55,6 +57,11 @@ files.
 - **See TF2's own window:** run `tools/run_tf2.sh visible` in one terminal, then
   `source tools/java25.sh && cd fabric && ./gradlew runClient` in another.
 - **Minecraft ignores the keyboard after starting:** click once inside its window.
+- **"Unable to load module engine.so!" (seen on a Steam Deck):** TF2's engine needs libraries
+  from Steam's Linux Runtime. Install **Steam Linux Runtime 3.0 (sniper)** (Steam > Library >
+  Tools) and run `tools/play.sh` again: it then starts TF2 inside that runtime by itself. What it
+  found is in `logs/tf2_libraries.txt`.
+- **Steam Deck:** set up and play from Desktop Mode, with Steam running.
 - **Report a problem:** run `tools/collect_logs.sh`. It writes
   `FortCraft-linux-logs-<date>.tar.gz` next to the FortCraft folder with the game logs and basic
   system facts (distro, X11/Wayland, GPU, Java and podman versions) — no saves or account details.

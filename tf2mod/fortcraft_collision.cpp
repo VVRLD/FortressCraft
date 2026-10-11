@@ -21,6 +21,7 @@
 #include "player_vs_environment/tf_upgrades.h"
 #include "tf_upgrades_shared.h"
 #include "entity_currencypack.h"
+#include "tf_objective_resource.h"
 #endif
 
 // memdbgon must be the last include file in a .cpp file!!!
@@ -1596,8 +1597,77 @@ void FortCraft_OnPlayerRespawn( CBaseEntity *pPlayer )
 }
 #endif
 
+// ---- TF2's own MvM wave panel during a village raid (Alex, 2026-10-11: "exactly like the native
+// tf2 one") ----------------------------------------------------------------------------------
+// The panel reads TF2's objective resource; here it's filled from Minecraft's raid: wave n of
+// total, how many robots the wave had, and each kind still alive, giants and bosses marked as
+// MvM's minibosses. Between waves (all dead, more to come) it says so. The client shows the panel
+// while a raid is under way (FortCraft_RaidHudActive).
+static void UpdateRaidHud()
+{
+	CTFObjectiveResource *pRes = TFObjectiveResource();
+	if ( !pRes || !s_pShm )
+		return;
+	static const char *const kNormal[ 17 ] = { NULL, "sniper_bow", "demoknight", "medic", "scout_bat", "heavy_giant", "sniper_jarate",
+		NULL, NULL, NULL, NULL, "soldier", "demo", "sniper", "spy", "scout", NULL };
+	static const char *const kGiant[ 17 ] = { "tank", "sniper_bow", "demoknight_giant", "medic_giant", "scout_bat", "heavy_giant",
+		"sniper_jarate", NULL, NULL, NULL, NULL, "soldier_giant", "demo_giant", "sniper", "spy", "scout_giant", NULL };
+	static uint32_t s_nWave, s_nWaveMax;
+	const proto::RaidState &raid = *(const proto::RaidState *)( s_pShm + proto::kOffRaidState );
+	int nSlot = 0;
+	int nAlive = 0;
+	pRes->ClearMannVsMachineWaveClassFlags();
+	if ( raid.state == 1 )
+	{
+		for ( int i = 0; i < 48 && nSlot < MVM_CLASS_TYPES_PER_WAVE_MAX_NEW; ++i )
+		{
+			const int nCount = raid.kindCounts[ i ];
+			if ( !nCount )
+				continue;
+			const int kind = i % 16;
+			// Bosses: Sergeant Crits (Soldier) and Major Bomber (Demoman); the Tank sits at 16.
+			const char *pszIcon = i < 16 ? kNormal[ kind ] : i < 32 ? kGiant[ kind ]
+				: ( kind == 11 ? "soldier_sergeant_crits" : kind == 12 ? "demo_bomber" : kGiant[ kind ] );
+			if ( !pszIcon )
+				continue;
+			unsigned int iFlags = i < 16 ? MVM_CLASS_FLAG_NORMAL : MVM_CLASS_FLAG_MINIBOSS;
+			if ( i >= 32 )
+				iFlags |= MVM_CLASS_FLAG_ALWAYSCRIT;
+			const string_t iszIcon = MAKE_STRING( pszIcon );
+			pRes->SetMannVsMachineWaveClassName( nSlot, iszIcon );
+			pRes->SetMannVsMachineWaveClassCount( nSlot, nCount );
+			pRes->AddMannVsMachineWaveClassFlags( nSlot, iFlags );
+			pRes->SetMannVsMachineWaveClassActive( iszIcon, true );
+			++nSlot;
+			nAlive += nCount;
+		}
+		if ( raid.wave != s_nWave )
+		{
+			s_nWave = raid.wave;
+			s_nWaveMax = 0;  // a new wave: its size is the most seen alive
+		}
+		s_nWaveMax = MAX( s_nWaveMax, (uint32_t)nAlive );
+	}
+	else
+	{
+		s_nWave = 0;
+		s_nWaveMax = 0;
+	}
+	for ( int i = nSlot; i < MVM_CLASS_TYPES_PER_WAVE_MAX_NEW; ++i )
+	{
+		pRes->SetMannVsMachineWaveClassName( i, NULL_STRING );
+		pRes->SetMannVsMachineWaveClassCount( i, 0 );
+	}
+	pRes->SetMannVsMachineMaxWaveCount( raid.state == 1 ? raid.totalWaves : 0 );
+	pRes->SetMannVsMachineWaveCount( raid.state == 1 ? raid.wave : 0 );
+	pRes->SetMannVsMachineWaveEnemyCount( MAX( (int)s_nWaveMax, 1 ) );
+	// All of this wave down and more to come: between waves (the panel shows the wave done).
+	pRes->SetMannVsMachineBetweenWaves( raid.state == 1 && nAlive == 0 && raid.wave < raid.totalWaves );
+}
+
 void FortCraft_ApplyMinecraftDamage( CBaseEntity *pPlayer )
 {
+	UpdateRaidHud();
 	// This existing server tick also retires the Medic presentation proxy when
 	// Minecraft clears its target or the link goes away, even after attack release.
 	FortCraft_MedicProxy();
@@ -1686,13 +1756,29 @@ void FortCraft_ApplyMinecraftDamage( CBaseEntity *pPlayer )
 		// Minecraft's player has 20 health: a hit takes the same share of this class's health.
 		const float damage = hurt.amount * pPlayer->GetMaxHealth() / 20.0f;
 		Vector from( ( hurt.fromX - 0.5f ) * s + anchor.x, -( hurt.fromZ - 0.5f ) * s + anchor.y, ( hurt.fromY + 60.0f ) * s + anchor.z );
-		CTakeDamageInfo info( GetWorldEntity(), GetWorldEntity(), damage, DMG_CLUB );
+		// The kind of hit (v68), so TF2's resistances apply: the MvM upgrades' blast, bullet, fire
+		// and crit resistance (Alex, 2026-10-11). Crits: half of it is the crit bonus.
+		int nType = DMG_CLUB;
+		if ( hurt.kind & proto::kHurtBlast )
+			nType = DMG_BLAST;
+		else if ( hurt.kind & proto::kHurtBullet )
+			nType = DMG_BULLET;
+		if ( hurt.kind & proto::kHurtFire )
+			nType = ( nType == DMG_CLUB ? 0 : nType ) | DMG_BURN;
+		if ( hurt.kind & proto::kHurtCrit )
+			nType |= DMG_CRITICAL;
+		CTakeDamageInfo info( GetWorldEntity(), GetWorldEntity(), damage, nType );
+		if ( hurt.kind & proto::kHurtCrit )
+		{
+			info.SetDamageBonus( damage * 0.5f );
+			info.SetCritType( CTakeDamageInfo::CRIT_FULL );
+		}
 		info.SetDamagePosition( from );
 		Vector force = pPlayer->WorldSpaceCenter() - from;
 		VectorNormalize( force );
 		info.SetDamageForce( force * damage * 50.0f );
 		pPlayer->TakeDamage( info );
-		Msg( "FortCraft: Minecraft hit the TF2 player for %.1f Minecraft health = %.0f TF2 damage\n", hurt.amount, damage );
+		Msg( "FortCraft: Minecraft hit the TF2 player for %.1f Minecraft health = %.0f TF2 damage (kind %u)\n", hurt.amount, damage, hurt.kind );
 	}
 }
 

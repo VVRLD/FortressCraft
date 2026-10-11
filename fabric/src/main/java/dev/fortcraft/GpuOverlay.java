@@ -15,8 +15,10 @@ import org.lwjgl.opengl.GL;
 import org.lwjgl.opengl.GL11C;
 import org.lwjgl.opengl.GL43C;
 import org.lwjgl.opengl.WGLNVDXInterop;
+import java.nio.ByteBuffer;
 import org.lwjgl.PointerBuffer;
 import org.lwjgl.system.MemoryStack;
+import org.lwjgl.system.MemoryUtil;
 
 /**
  * The fast overlay path: TF2 renders the finished weapon + HUD into Direct3D 9Ex textures it
@@ -24,6 +26,13 @@ import org.lwjgl.system.MemoryStack;
  * with NVIDIA's WGL_NV_DX_interop, and copy the newest one into the overlay texture on the GPU.
  * No pixels pass through the CPU. If any step isn't available, {@link #usable()} turns false
  * and the shared-memory path is used instead.
+ *
+ * Integrated graphics and laptops with two graphics chips (Alex, 2026-10-11: the fallback
+ * sometimes failed there): the path could half-work, so the overlay stayed blank and never fell
+ * back. Now (1) our Direct3D device is made on the chip TF2 draws on, and the path is refused if
+ * Minecraft's OpenGL runs on another chip; (2) if copying keeps failing, it gives up; (3) for the
+ * first 30 s it checks the frames really have something in them (TF2's HUD always does), and
+ * gives up if they stay empty. Giving up tells TF2 to send pixels through shared memory instead.
  */
 final class GpuOverlay {
 	private static final int D3D_SDK_VERSION = 32;
@@ -52,6 +61,11 @@ final class GpuOverlay {
 	private static final int[] glTex = new int[2];
 	private static final long[] interopObj = new long[2];
 	private static int width, height;
+	private static int copyFailures;
+	private static int framesSinceOpen;
+	private static int emptyChecks;
+	private static boolean contentSeen;
+	private static ByteBuffer probe;
 
 	private GpuOverlay() {
 	}
@@ -78,21 +92,94 @@ final class GpuOverlay {
 				open(gen, w, h, new long[] { handle0, handle1 });
 			}
 			if (interopObj[front] == 0 || !(target.getTexture() instanceof GlTexture gl)) {
-				return false;
+				return copyFailed("no texture to copy into");
 			}
 			try (MemoryStack stack = MemoryStack.stackPush()) {
 				PointerBuffer obj = stack.pointers(interopObj[front]);
 				if (!WGLNVDXInterop.wglDXLockObjectsNV(interopDevice, obj)) {
-					return false;
+					return copyFailed("locking TF2's texture failed");
+				}
+				// An error left over from Minecraft's own drawing isn't ours: clear those first.
+				for (int i = 0; i < 8 && GL11C.glGetError() != GL11C.GL_NO_ERROR; i++) {
 				}
 				GL43C.glCopyImageSubData(glTex[front], GL11C.GL_TEXTURE_2D, 0, 0, 0, 0, gl.glId(), GL11C.GL_TEXTURE_2D, 0, 0, 0, 0, w, h, 1);
+				int error = GL11C.glGetError();
 				WGLNVDXInterop.wglDXUnlockObjectsNV(interopDevice, obj);
+				// A friend's laptop logged 19,885 glCopyImageSubData errors and never fell back
+				// (Alex, 2026-10-11): an OpenGL error is a failed copy too.
+				if (error != GL11C.GL_NO_ERROR) {
+					return copyFailed("glCopyImageSubData error 0x" + Integer.toHexString(error));
+				}
+			}
+			copyFailures = 0;
+			if (!contentSeen && ++framesSinceOpen % 60 == 0 && !checkContent(gl.glId(), w, h)) {
+				return false;
 			}
 			return true;
 		} catch (Throwable t) {
 			fail("copy failed: " + t);
 			return false;
 		}
+	}
+
+	/** A copy that didn't happen: after 120 in a row (about 2 s), use the shared-memory path. */
+	private static boolean copyFailed(String why) {
+		if (++copyFailures >= 120) {
+			fail(why + ", 120 frames in a row");
+		}
+		return false;
+	}
+
+	/**
+	 * Once a second for the first 30 s after opening: does the frame have anything in it? TF2's
+	 * HUD always draws something, so 10 empty checks in a row mean the textures come through
+	 * blank (two graphics chips, a driver that can't share): use the shared-memory path.
+	 */
+	private static boolean checkContent(int glId, int w, int h) {
+		if (framesSinceOpen > 60 * 30) {
+			contentSeen = true;  // it worked long enough; stop checking
+			return true;
+		}
+		long bytes = (long) w * h * 4;
+		if (probe == null || probe.capacity() < bytes) {
+			if (probe != null) {
+				MemoryUtil.memFree(probe);
+			}
+			probe = MemoryUtil.memAlloc((int) bytes);
+		}
+		int previous = GL11C.glGetInteger(GL11C.GL_TEXTURE_BINDING_2D);
+		GL11C.glBindTexture(GL11C.GL_TEXTURE_2D, glId);
+		probe.clear();
+		GL11C.glGetTexImage(GL11C.GL_TEXTURE_2D, 0, GL11C.GL_RGBA, GL11C.GL_UNSIGNED_BYTE, probe);
+		GL11C.glBindTexture(GL11C.GL_TEXTURE_2D, previous);
+		for (long i = 3; i < bytes; i += 4 * 7) {  // every 7th pixel's alpha
+			if (probe.get((int) i) != 0) {
+				contentSeen = true;
+				emptyChecks = 0;
+				FortCraft.LOG.info("FortCraft: GPU overlay frames have content; GPU path confirmed");
+				return true;
+			}
+		}
+		if (++emptyChecks >= 10) {
+			fail("TF2's frames come through empty (10 checks in 10 s)");
+			return false;
+		}
+		return true;
+	}
+
+	/** PCI vendor id of the chip Minecraft's OpenGL runs on, from its vendor string; 0 if unknown. */
+	private static int glVendorId() {
+		String vendor = String.valueOf(GL11C.glGetString(GL11C.GL_VENDOR)).toLowerCase();
+		if (vendor.contains("nvidia")) {
+			return 0x10DE;
+		}
+		if (vendor.contains("intel")) {
+			return 0x8086;
+		}
+		if (vendor.contains("amd") || vendor.contains("ati")) {
+			return 0x1002;
+		}
+		return 0;
 	}
 
 	private static void init() {
@@ -113,6 +200,34 @@ final class GpuOverlay {
 				}
 				MemorySegment hwnd = (MemorySegment) desktop.invokeExact();
 
+				// The chip TF2 draws on: our device must be on the same one, and so must Minecraft's
+				// OpenGL, or shared textures don't work (laptops with two graphics chips).
+				int[] tf2 = FortLink.gpuOverlayAdapter();
+				int adapter = 0;
+				if (tf2[0] != 0) {
+					adapter = -1;
+					MethodHandle getCount = method(d3d, 4, FunctionDescriptor.of(JAVA_INT, ADDRESS));
+					MethodHandle getLuid = method(d3d, 21, FunctionDescriptor.of(JAVA_INT, ADDRESS, JAVA_INT, ADDRESS));
+					int count = (int) getCount.invokeExact(d3d);
+					MemorySegment luid = arena.allocate(8);
+					for (int i = 0; i < count && adapter < 0; i++) {
+						if ((int) getLuid.invokeExact(d3d, i, luid) >= 0 && luid.get(JAVA_INT, 0) == tf2[1] && luid.get(JAVA_INT, 4) == tf2[2]) {
+							adapter = i;
+						}
+					}
+					if (adapter < 0) {
+						release(d3d);
+						fail("TF2's graphics chip (vendor " + Integer.toHexString(tf2[0]) + ") isn't one Minecraft can open");
+						return;
+					}
+					int gl = glVendorId();
+					if (gl != 0 && gl != tf2[0]) {
+						release(d3d);
+						fail("Minecraft draws on graphics chip " + Integer.toHexString(gl) + " but TF2 on " + Integer.toHexString(tf2[0]));
+						return;
+					}
+				}
+
 				// D3DPRESENT_PARAMETERS (64 bytes on x64): a 1x1 windowed device, only for opening textures.
 				MemorySegment pp = arena.allocate(64);
 				pp.set(JAVA_INT, 0, 1);
@@ -123,7 +238,7 @@ final class GpuOverlay {
 				MemorySegment devOut = arena.allocate(ADDRESS);
 				MethodHandle createDeviceEx = method(d3d, D3D9EX_CREATE_DEVICE_EX,
 					FunctionDescriptor.of(JAVA_INT, ADDRESS, JAVA_INT, JAVA_INT, ADDRESS, JAVA_INT, ADDRESS, ADDRESS, ADDRESS));
-				hr = (int) createDeviceEx.invokeExact(d3d, 0, D3DDEVTYPE_HAL, hwnd,
+				hr = (int) createDeviceEx.invokeExact(d3d, adapter, D3DDEVTYPE_HAL, hwnd,
 					D3DCREATE_SOFTWARE_VERTEXPROCESSING | D3DCREATE_MULTITHREADED | D3DCREATE_FPU_PRESERVE | D3DCREATE_NOWINDOWCHANGES,
 					pp, MemorySegment.NULL, devOut);
 				release(d3d);
@@ -149,6 +264,9 @@ final class GpuOverlay {
 
 	private static void open(int gen, int w, int h, long[] handles) throws Throwable {
 		close();
+		framesSinceOpen = 0;
+		emptyChecks = 0;
+		copyFailures = 0;
 		generation = gen;
 		width = w;
 		height = h;

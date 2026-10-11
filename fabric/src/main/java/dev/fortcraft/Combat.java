@@ -914,12 +914,15 @@ public final class Combat {
 				FortLink.writeMobHit(pos.getX() + 0.5, pos.getY() + 0.5, pos.getZ() + 0.5, 0.0f, true, (1 << 7) | (500 << 16));
 				FortCraft.LOG.info("FortCraft: village raid defended, $500 reward");
 			}
+			if (state == 1 && wave > lastRaidWave && wave > 0) {
+				Robots.reinforce(level, raid, wave);  // a few more robots each wave (Alex: "more mobs")
+			}
 			if (state != lastRaidState || wave != lastRaidWave) {
 				lastRaidState = state;
 				lastRaidWave = wave;
 				FortCraft.LOG.info("FortCraft: village raid state {} wave {}/{} ({} raiders)", state, wave, total, alive);
 			}
-			FortLink.writeRaidState(state, wave, total, alive);
+			FortLink.writeRaidState(state, wave, total, alive, raid == null ? new byte[48] : Robots.countKinds(raid.getAllRaiders()));
 		});
 	}
 
