@@ -69,15 +69,8 @@ public abstract class ServerPlayerMixin {
 		if (source.is(net.minecraft.world.damagesource.DamageTypes.WITHER)) {
 			self.removeEffect(net.minecraft.world.effect.MobEffects.WITHER);
 		}
-		// Robots are kept weak (Alex, 2026-10-11: "not an insta kill"): their hits do 60%.
-		net.minecraft.world.entity.Entity attacker = source.getEntity();
-		if (attacker != null && dev.fortcraft.Robots.isRobot(attacker)) {
-			send *= 0.6f;
-		}
-		// Raids are easier: everything hurts half as much while one is under way (Alex, 2026-10-11).
-		if (Combat.raidUnderWay()) {
-			send *= 0.5f;
-		}
+		// Robots and raids hit at full strength (Alex, 2026-10-11: "let bots do 100% damage now").
+		// Earlier the same day robots did 60% and raids halved everything.
 		// What kind of hit, so the MvM upgrades' resistances apply (Alex, 2026-10-11): explosions are
 		// blast, arrows and other projectiles (and robot gunfire) bullets, fire and lava fire.
 		int kind = 0;

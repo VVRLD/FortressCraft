@@ -770,6 +770,26 @@ public final class Robots {
 		} else {
 			cloaked.remove(mob.getId());
 		}
+		// Backstab (Alex, 2026-10-11): right behind a player who's looking away, a Spy robot's
+		// stab is a critical one for a full Minecraft health bar, which kills any class.
+		if (target instanceof Player player && now >= nextMeleeAt.getOrDefault(mob.getId(), 0L)) {
+			double reach = mob.getBbWidth() * 0.5 + player.getBbWidth() * 0.5 + 1.2;
+			Vec3 look = player.getLookAngle().multiply(1, 0, 1);
+			Vec3 toSpy = mob.position().subtract(player.position()).multiply(1, 0, 1);
+			if (mob.distanceTo(player) <= reach && look.lengthSqr() > 1e-4 && toSpy.lengthSqr() > 1e-4
+				&& look.normalize().dot(toSpy.normalize()) < -0.3) {
+				nextMeleeAt.put(mob.getId(), now + 40);
+				noteAttack(mob.getId());
+				critPending = true;
+				try {
+					player.hurtServer(level, level.damageSources().mobAttack(mob), 20.0f);
+				} finally {
+					critPending = false;
+				}
+				FortCraft.LOG.info("FortCraft: Spy robot {} backstabbed the player", mob.getId());
+				return;
+			}
+		}
 		giantMelee(level, mob, now);
 	}
 

@@ -538,7 +538,7 @@ index 941823f..06af0c1 100644
  
  
 diff --git a/src/game/client/tf/player_vs_environment/c_tf_upgrades.cpp b/src/game/client/tf/player_vs_environment/c_tf_upgrades.cpp
-index f60e253..7da7cd4 100644
+index f60e253..0e2893e 100644
 --- a/src/game/client/tf/player_vs_environment/c_tf_upgrades.cpp
 +++ b/src/game/client/tf/player_vs_environment/c_tf_upgrades.cpp
 @@ -27,6 +27,8 @@
@@ -550,7 +550,17 @@ index f60e253..7da7cd4 100644
  #include "econ_ui.h"
  #include "econ_item_preset.h"
  #include "gc_clientsystem.h"
-@@ -295,6 +297,18 @@ void CUpgradeBuyPanel::UpdateImages( int nCurrentMoney )
+@@ -226,7 +228,8 @@ void CUpgradeBuyPanel::UpdateImages( int nCurrentMoney )
+ 
+ 	CMannVsMachineUpgrades *pMannVsMachineUpgrade = &( g_MannVsMachineUpgrades.m_Upgrades[ m_nUpgradeIndex ] );
+ 
+-	bool bSellAllowed = ( TFObjectiveResource()->GetMannVsMachineWaveCount() <= 1 || m_nPurchases > 0 );
++	// FortCraft: refunds any time, raid waves included (Alex, 2026-10-11).
++	bool bSellAllowed = ( TFObjectiveResource()->GetMannVsMachineWaveCount() <= 1 || m_nPurchases > 0 || FortCraft_Active() );
+ 
+ 	// we'll decided if it's enabled below
+ 	m_pIncrementButton->SetEnabled( false );
+@@ -295,6 +298,18 @@ void CUpgradeBuyPanel::UpdateImages( int nCurrentMoney )
  		}
  	}
  
@@ -569,7 +579,25 @@ index f60e253..7da7cd4 100644
  	V_strcpy_safe( m_szAttribName, pMannVsMachineUpgrade->szAttrib );
  }
  
-@@ -2152,8 +2166,52 @@ void CHudUpgradePanel::OnCommand( const char *command )
+@@ -1521,7 +1536,7 @@ void CHudUpgradePanel::UpdateButtonStates( int nCurrentMoney, int nUpgrade /*= 0
+ 			continue;
+ 		}
+ 
+-		bool bSellAllowed = ( TFObjectiveResource()->GetMannVsMachineWaveCount() <= 1 );
++		bool bSellAllowed = ( TFObjectiveResource()->GetMannVsMachineWaveCount() <= 1 || FortCraft_Active() );
+ 		bool bHideBottleHintText = true;
+ 
+ 		if ( m_iWeaponSlotBeingUpgraded == LOADOUT_POSITION_ACTION || ( TFGameRules() && TFGameRules()->GetUpgradeTier( nUpgrade ) ) )
+@@ -1848,7 +1863,7 @@ void CHudUpgradePanel::UpdateItemStatsLabel( void )
+ 
+ void CHudUpgradePanel::CancelUpgrades( void )
+ {
+-	bool bSellAllowed = ( TFObjectiveResource() ? TFObjectiveResource()->GetMannVsMachineWaveCount() <= 1 : true );
++	bool bSellAllowed = ( TFObjectiveResource() ? TFObjectiveResource()->GetMannVsMachineWaveCount() <= 1 : true ) || FortCraft_Active();
+ 
+ 	KeyValues *kv = new KeyValues( "MVM_Upgrade" );
+ 
+@@ -2152,8 +2167,52 @@ void CHudUpgradePanel::OnCommand( const char *command )
  	BaseClass::OnCommand( command );
  }
  
@@ -760,6 +788,29 @@ index f676e97..4f274e1 100644
  		return;
  
  	if ( m_pVictoryContainer->IsVisible() )
+diff --git a/src/game/client/tf/tf_hud_match_status.cpp b/src/game/client/tf/tf_hud_match_status.cpp
+index a1dc004..560fe30 100644
+--- a/src/game/client/tf/tf_hud_match_status.cpp
++++ b/src/game/client/tf/tf_hud_match_status.cpp
+@@ -26,6 +26,7 @@
+ #include "tf_hud_tournament.h"
+ #include "tf_classmenu.h"
+ #include "tf_rating_data.h"
++#include "../../../../../my-passthrough/tf2mod/fortcraft_link.h"
+ 
+ extern ConVar mp_winlimit;
+ extern ConVar mp_tournament_stopwatch;
+@@ -42,7 +43,9 @@ bool IsTakingAFreezecamScreenshot();
+ //-----------------------------------------------------------------------------
+ bool ShouldUseMatchHUD()
+ {
+-	if ( TFGameRules() && TFGameRules()->IsMannVsMachineMode() )
++	// FortCraft: not during a village raid either, where TF2's MvM wave panel takes the top of the
++	// screen (Alex, 2026-10-11: the match HUD's team bar covered it).
++	if ( TFGameRules() && ( TFGameRules()->IsMannVsMachineMode() || FortCraft_RaidHudActive() ) )
+ 		return false;
+ 
+ 	return tf_use_match_hud.GetBool();
 diff --git a/src/game/client/tf/tf_hud_menu_eureka_teleport.h b/src/game/client/tf/tf_hud_menu_eureka_teleport.h
 index c02f10a..777465b 100644
 --- a/src/game/client/tf/tf_hud_menu_eureka_teleport.h
@@ -772,6 +823,29 @@ index c02f10a..777465b 100644
  
  	virtual GameActionSet_t GetPreferredActionSet() { return IsActive() ? GAME_ACTION_SET_IN_GAME_HUD : GAME_ACTION_SET_NONE; }
  
+diff --git a/src/game/client/tf/tf_hud_objectivestatus.cpp b/src/game/client/tf/tf_hud_objectivestatus.cpp
+index 3f2869c..7b2bc17 100644
+--- a/src/game/client/tf/tf_hud_objectivestatus.cpp
++++ b/src/game/client/tf/tf_hud_objectivestatus.cpp
+@@ -36,6 +36,7 @@
+ #include "tf_hud_robot_destruction_status.h"
+ #include "tf_hud_passtime.h"
+ #include "c_tf_passtime_logic.h"
++#include "../../../../../my-passthrough/tf2mod/fortcraft_link.h"
+ 
+ void AddSubKeyNamed( KeyValues *pKeys, const char *pszName );
+ 
+@@ -339,5 +340,10 @@ bool CTFHudObjectiveStatus::ShouldDraw()
+ 	if ( TFGameRules() && TFGameRules()->ShowMatchSummary() )
+ 		return false;
+ 
++	// FortCraft: the map's objective / timer panel is empty in Minecraft; during a village raid
++	// it sat under the MvM wave panel as a blank box (Alex, 2026-10-11).
++	if ( FortCraft_RaidHudActive() )
++		return false;
++
+ 	return CHudElement::ShouldDraw();
+ }
 diff --git a/src/game/client/tf/tf_hud_target_id.cpp b/src/game/client/tf/tf_hud_target_id.cpp
 index 9f9a2db..61777d0 100644
 --- a/src/game/client/tf/tf_hud_target_id.cpp
@@ -1609,7 +1683,7 @@ index 2c86d52..cc7b936 100644
  
  	int GetBaseTurnRate( void );
 diff --git a/src/game/server/tf/tf_player.cpp b/src/game/server/tf/tf_player.cpp
-index c030951..7c02b7d 100644
+index c030951..684e74e 100644
 --- a/src/game/server/tf/tf_player.cpp
 +++ b/src/game/server/tf/tf_player.cpp
 @@ -6,6 +6,8 @@
@@ -1898,6 +1972,25 @@ index c030951..7c02b7d 100644
  	}	
  }
  
+@@ -22347,7 +22529,8 @@ void CTFPlayer::BeginPurchasableUpgrades( void )
+ {
+ 	m_nCanPurchaseUpgradesCount++;
+ 
+-	if ( TFObjectiveResource()->GetMannVsMachineWaveCount() > 1 )
++	// FortCraft: upgrades stay refundable during raid waves (Alex, 2026-10-11).
++	if ( TFObjectiveResource()->GetMannVsMachineWaveCount() > 1 && !FortCraft_Active() )
+ 	{
+ 		m_RefundableUpgrades.RemoveAll();
+ 	}
+@@ -22364,7 +22547,7 @@ void CTFPlayer::EndPurchasableUpgrades( void )
+ 
+ 	m_nCanPurchaseUpgradesCount--;
+ 
+-	if ( TFObjectiveResource()->GetMannVsMachineWaveCount() > 1 )
++	if ( TFObjectiveResource()->GetMannVsMachineWaveCount() > 1 && !FortCraft_Active() )
+ 	{
+ 		m_RefundableUpgrades.RemoveAll();
+ 	}
 diff --git a/src/game/server/tf/tf_player.h b/src/game/server/tf/tf_player.h
 index d2affa2..b38a5c6 100644
 --- a/src/game/server/tf/tf_player.h
@@ -2605,6 +2698,23 @@ index d4229ac..4d73e8e 100644
  	PlayImpactEffects( trace.endpos, false );
  	
  	// Remove by default.  Fixes this entity living forever on things like doors.
+diff --git a/src/game/shared/tf/tf_upgrades_shared.cpp b/src/game/shared/tf/tf_upgrades_shared.cpp
+index 459f6d9..b2264d6 100644
+--- a/src/game/shared/tf/tf_upgrades_shared.cpp
++++ b/src/game/shared/tf/tf_upgrades_shared.cpp
+@@ -94,6 +94,12 @@ void CMannVsMachineUpgradeManager::ParseUpgradeBlockForUIGroup( KeyValues *pKV,
+ 		m_Upgrades[ index ].flIncrement = pData->GetFloat( "increment" );
+ 		m_Upgrades[ index ].flCap = pData->GetFloat( "cap" );
+ 		m_Upgrades[ index ].nCost = pData->GetInt( "cost" );
++		// FortCraft: upgrades cost more than in MvM (Alex, 2026-10-11: "100-200 more expensive"):
++		// +100 up to 200, +150 up to 350, +200 above.
++		{
++			const int nBase = m_Upgrades[ index ].nCost;
++			m_Upgrades[ index ].nCost += nBase <= 200 ? 100 : nBase <= 350 ? 150 : 200;
++		}
+ 		m_Upgrades[ index ].nUIGroup = pData->GetInt( "ui_group", iDefaultUIGroup );
+ 		m_Upgrades[ index ].nQuality = pData->GetInt( "quality", MVM_UPGRADE_QUALITY_NORMAL );
+ 		m_Upgrades[ index ].nTier = pData->GetInt( "tier", 0 );
 diff --git a/src/game/shared/tf/tf_weapon_flamethrower.cpp b/src/game/shared/tf/tf_weapon_flamethrower.cpp
 index 65810b2..5dd53b1 100644
 --- a/src/game/shared/tf/tf_weapon_flamethrower.cpp

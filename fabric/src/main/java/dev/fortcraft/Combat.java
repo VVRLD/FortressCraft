@@ -546,7 +546,86 @@ public final class Combat {
 			if (target.getType() == HitResult.Type.BLOCK) {
 				breakMeleeBlock(minecraft, ((BlockHitResult) target).getBlockPos().immutable(), shot.tool());
 			}
+		} else if ((shot.flags() & CombatRules.SENTRY) == 0 && shot.weapon() != 0 && block.getType() == HitResult.Type.BLOCK) {
+			// A bullet, pellet or rifle shot that hit a block (not a mob): it wears the block down.
+			// Each bullet or pellet takes its share of a block. Stray shots in a fight broke too many
+			// blocks (Alex, 2026-10-11), so it takes 10-20 shots: shotguns and the sniper rifle 10,
+			// SMGs, pistols and the rest 15, miniguns 20 (4 bullets a shot). Explosives are separate
+			// and still break blocks at full strength.
+			int w = shot.weapon();
+			boolean shotgun = w >= TF_WEAPON_SHOTGUN_PRIMARY && w <= TF_WEAPON_SCATTERGUN;
+			int shots = shotgun || w == TF_WEAPON_SNIPERRIFLE ? 10 : w == TF_WEAPON_MINIGUN ? 20 : 15;
+			int bulletsPerShot = shotgun ? 10 : w == TF_WEAPON_MINIGUN ? 4 : 1;
+			shootBlock(minecraft, ((BlockHitResult) block).getBlockPos().immutable(), 1.0f / (shots * bulletsPerShot));
 		}
+	}
+
+	/**
+	 * Gunfire breaks blocks (Alex, 2026-10-11: "a smg takes like 6 shots to break, a shotgun takes 2
+	 * shots, a sniper takes 1 shot"). Each bullet, pellet or rifle shot that hits a block adds its
+	 * TF2 damage (after range falloff) to that block. The block breaks at 48 for stone, scaled by
+	 * its hardness (dirt, sand and glass sooner, wood and ores later, at most double). Cracks show
+	 * how close it is, and 30 s without a hit leaves it whole again. Melee keeps its own mining;
+	 * sentries, flames and explosions don't count. Survival drops the block; creative too.
+	 */
+	private static void shootBlock(Minecraft minecraft, BlockPos pos, float damage) {
+		IntegratedServer server = minecraft.getSingleplayerServer();
+		if (server == null || minecraft.level == null || minecraft.player == null || damage <= 0) {
+			return;
+		}
+		var dimension = minecraft.level.dimension();
+		UUID playerId = minecraft.player.getUUID();
+		server.execute(() -> {
+			ServerLevel level = server.getLevel(dimension);
+			ServerPlayer attacker = server.getPlayerList().getPlayer(playerId);
+			if (level == null || attacker == null || !level.isLoaded(pos)) {
+				return;
+			}
+			GameType mode = attacker.gameMode.getGameModeForPlayer();
+			if (mode != GameType.SURVIVAL && mode != GameType.CREATIVE) {
+				return;
+			}
+			var state = level.getBlockState(pos);
+			float hardness = state.getDestroySpeed(level, pos);
+			if (state.isAir() || hardness < 0) {
+				return;  // bedrock and the like
+			}
+			long now = System.nanoTime();
+			gunfireDamage.entrySet().removeIf(e -> {
+				if (now - e.getValue()[1] > GUNFIRE_RESET_NANOS) {
+					level.destroyBlockProgress(gunfireBreaker(e.getKey()), e.getKey(), -1);
+					return true;
+				}
+				return false;
+			});
+			// A stone-like block is 1.0; harder ones (ores, obsidian) take up to twice as long.
+			float needed = Math.max(1.0f, Math.min(hardness / 1.5f, 2.0f));
+			long[] entry = gunfireDamage.computeIfAbsent(pos, k -> new long[] { 0, now });
+			float total = Float.intBitsToFloat((int) entry[0]) + damage;
+			entry[0] = Float.floatToIntBits(total);
+			entry[1] = now;
+			if (total < needed) {
+				level.destroyBlockProgress(gunfireBreaker(pos), pos, Math.min(9, (int) (total * 10 / needed)));
+				return;
+			}
+			gunfireDamage.remove(pos);
+			level.destroyBlockProgress(gunfireBreaker(pos), pos, -1);
+			if (level.destroyBlock(pos, mode == GameType.SURVIVAL, attacker)) {
+				FortCraft.LOG.info("FortCraft: gunfire broke {} at {}", state.getBlock().getName().getString(), pos);
+			}
+		});
+	}
+
+	// TF2's ETFWeaponType: 12-16 are the shotguns and scatterguns.
+	private static final int TF_WEAPON_SHOTGUN_PRIMARY = 12, TF_WEAPON_SCATTERGUN = 16, TF_WEAPON_SNIPERRIFLE = 17, TF_WEAPON_MINIGUN = 18;
+
+	/** Server thread: block -> {damage so far (float bits), last hit (nanoTime)}. */
+	private static final Map<BlockPos, long[]> gunfireDamage = new java.util.HashMap<>();
+	private static final long GUNFIRE_RESET_NANOS = 30_000_000_000L;  // 30 s without a hit: whole again
+
+	/** A crack-drawing id per block (Minecraft draws one crack per breaker id). */
+	private static int gunfireBreaker(BlockPos pos) {
+		return -1000 - (pos.hashCode() & 0x3FFF);
 	}
 
 	/** The mob TF2's knife would hit from the camera now, if its back is turned (raised knife). */
