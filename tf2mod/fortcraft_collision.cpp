@@ -22,6 +22,7 @@
 #include "tf_upgrades_shared.h"
 #include "entity_currencypack.h"
 #include "tf_objective_resource.h"
+#include "tf_weaponbase_grenadeproj.h"
 #endif
 
 // memdbgon must be the last include file in a .cpp file!!!
@@ -679,7 +680,15 @@ void FortCraft_ReportWeaponShot( CTFWeaponBase *weapon, const Vector &src, const
 				CALL_ATTRIB_HOOK_INT_ON_OTHER( weapon, noScope, sniper_crit_no_scope );
 				if ( ( !fullCharge || rifle->IsFullyCharged() ) &&
 					( noScope || ( owner->GetFOV() < owner->GetDefaultFOV() && gpGlobals->curtime - owner->GetFOVTime() >= 0.2f ) ) )
+				{
 					flags |= FC_HEADSHOT;
+					// MvM Explosive Headshot upgrade (an attribute on the player, as in TF2's
+					// CTFSniperRifle::ExplosiveHeadShot): Minecraft blasts the mobs around a head hit.
+					int iExplosiveShot = 0;
+					CALL_ATTRIB_HOOK_INT_ON_OTHER( owner, iExplosiveShot, explosive_sniper_shot );
+					if ( iExplosiveShot > 0 )
+						flags |= (unsigned int)MIN( 15, iExplosiveShot ) << FC_EXPLOSIVE_SHIFT;
+				}
 			}
 			else if ( id == TF_WEAPON_REVOLVER )
 			{
@@ -693,7 +702,7 @@ void FortCraft_ReportWeaponShot( CTFWeaponBase *weapon, const Vector &src, const
 	FortCraft_ReportShot( src, dir, distance, damage, flags, weapon ? weapon->GetWeaponID() : 0, tool, headshotRange );
 }
 
-void FortCraft_ReportJar( const Vector &src, float radius, int nFlags )
+void FortCraft_ReportJar( const Vector &src, float radius, int nFlags, float flExplodeDamage )
 {
 	Vector anchor;
 	if ( radius <= 0 || !AnchorTF2( anchor ) ) return;
@@ -704,7 +713,7 @@ void FortCraft_ReportJar( const Vector &src, float radius, int nFlags )
 	e.y = ( src.z - anchor.z ) / scale - 60.0f;
 	e.z = -( src.y - anchor.y ) / scale + 0.5f;
 	e.radius = radius / scale;
-	e.damage = 0.0f;
+	e.damage = flExplodeDamage;
 	e.flags = nFlags;
 	*(volatile uint32_t *)&out.count = out.count + 1;
 }
@@ -1349,6 +1358,28 @@ static void ServerMobHits( CTFPlayer *pPlayer )
 				Msg( "FortCraft MvM: %s dropped $%d in %d bag(s)\n", ( hit.source & proto::kMobHitMoneyOnly ) ? "Minecraft XP" : "a kill", nMoney, nBags );
 			}
 		}
+		// Conniver's Kunai (TF2's "sanguisuge"): a backstab kill takes the victim's health, up to 3x
+		// the Spy's base maximum, as CTFKnife does for players (Alex, 2026-10-12). The hit's damage
+		// is the mob's health in TF2 points.
+		if ( hit.killed == 1 && ( hit.source & proto::kMobHitBackstab ) && pPlayer->IsAlive() && hit.damage > 0.0f )
+		{
+			CTFWeaponBase *pKnife = pPlayer->GetActiveTFWeapon();
+			int iSanguisuge = 0;
+			if ( pKnife )
+				CALL_ATTRIB_HOOK_INT_ON_OTHER( pKnife, iSanguisuge, sanguisuge );
+			if ( iSanguisuge > 0 )
+			{
+				const int iCap = ( pPlayer->GetMaxHealth() - pPlayer->GetRuneHealthBonus() ) * 3;
+				const int iNew = MIN( pPlayer->GetHealth() + (int)( hit.damage + 0.5f ), iCap );
+				const int iDelta = iNew - pPlayer->GetHealth();
+				if ( iDelta > 0 )
+				{
+					pPlayer->TakeHealth( iDelta, DMG_IGNORE_MAXHEALTH );
+					pPlayer->m_Shared.HealthKitPickupEffects( iDelta );
+					Msg( "FortCraft Kunai: backstab kill gave %d health (now %d)\n", iDelta, pPlayer->GetHealth() );
+				}
+			}
+		}
 		// TF2's own small ammo box / small health kit (Minecraft rolled the chance), dropped where
 		// the mob died.
 		if ( hit.killed == 1 && ( hit.source & ( proto::kMobHitDropAmmo | proto::kMobHitDropHealth ) ) && AnchorTF2( anchor ) )
@@ -1665,9 +1696,69 @@ static void UpdateRaidHud()
 	pRes->SetMannVsMachineBetweenWaves( raid.state == 1 && nAlive == 0 && raid.wave < raid.totalWaves );
 }
 
+#ifndef CLIENT_DLL
+// Thrown weapons TF2 only checks against players: the Flying Guillotine, the Wrap Assassin's
+// ornament and the Sandman's ball flew straight through Minecraft's mobs (Alex, 2026-10-12: "the
+// flying guillotine doesn't work"). Every server tick, the path each one flew since the last tick
+// is checked for a mob before any block; a hit becomes a shot at that mob (damage, crit, and the
+// Guillotine's and ornament's 5 s of bleeding), and the projectile goes away as it does on a player.
+static void ThrownMobHits()
+{
+	static const char *kClasses[] = { "tf_projectile_cleaver", "tf_projectile_ball_ornament", "tf_projectile_stun_ball" };
+	struct Thrown { EHANDLE hEnt; Vector vecPrev; };
+	static CUtlVector< Thrown > s_Last;
+	CUtlVector< Thrown > now;
+	for ( int c = 0; c < ARRAYSIZE( kClasses ); ++c )
+	{
+		CBaseEntity *pEnt = NULL;
+		while ( ( pEnt = gEntList.FindEntityByClassname( pEnt, kClasses[ c ] ) ) != NULL )
+		{
+			CTFWeaponBaseGrenadeProj *pProj = dynamic_cast< CTFWeaponBaseGrenadeProj * >( pEnt );
+			if ( !pProj || pEnt->IsMarkedForDeletion() )
+				continue;
+			const Vector cur = pEnt->GetAbsOrigin();
+			const Vector *pPrev = NULL;
+			for ( int i = 0; i < s_Last.Count() && !pPrev; ++i )
+			{
+				if ( s_Last[ i ].hEnt.Get() == pEnt )
+					pPrev = &s_Last[ i ].vecPrev;
+			}
+			if ( pPrev )
+			{
+				Vector dir = cur - *pPrev;
+				const float flDist = VectorNormalize( dir );
+				if ( flDist > 0.5f && FortCraft_MobBeforeBlocks( *pPrev, cur + dir * 12.0f, Vector( -3, -3, -3 ), Vector( 3, 3, 3 ) ) )
+				{
+					unsigned int flags = pProj->IsCritical() ? FC_CRIT : 0;
+					if ( c < 2 )
+						flags |= 5u << FC_BLEED_SHIFT;  // TF2's MakeBleed( ..., 5 ) for both
+					FortCraft_ReportShot( *pPrev, dir, MAX( flDist + 64.0f, 192.0f ), pProj->GetDamage(), flags,
+						pProj->GetWeaponID(), FC_GENERIC );
+					Msg( "FortCraft thrown mob hit: %s damage=%.0f%s\n", kClasses[ c ], pProj->GetDamage(),
+						( flags & FC_CRIT ) ? " (crit)" : "" );
+					pEnt->AddSolidFlags( FSOLID_NOT_SOLID );
+					pEnt->SetModelName( NULL_STRING );
+					UTIL_Remove( pEnt );
+					continue;
+				}
+			}
+			Thrown t;
+			t.hEnt = pEnt;
+			t.vecPrev = cur;
+			now.AddToTail( t );
+		}
+	}
+	s_Last.RemoveAll();
+	s_Last.AddVectorToTail( now );
+}
+#endif
+
 void FortCraft_ApplyMinecraftDamage( CBaseEntity *pPlayer )
 {
 	UpdateRaidHud();
+#ifndef CLIENT_DLL
+	ThrownMobHits();
+#endif
 	// This existing server tick also retires the Medic presentation proxy when
 	// Minecraft clears its target or the link goes away, even after attack release.
 	FortCraft_MedicProxy();

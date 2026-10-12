@@ -93,7 +93,8 @@ public final class Backpack {
 		if (!modDirOk) {
 			return "";
 		}
-		String file = "v3_" + id.replace(':', '_').replace('/', '_'); // v3: chest and block-variant icons
+		// v5 (2026-10-12): smaller again (64 px); v4: room for the item's name; v3: chest and block-variant icons
+		String file = "v5_" + id.replace(':', '_').replace('/', '_');
 		String material = "backpack/fortcraft/" + file;
 		Path dir = MOD_DIR.resolve("materials").resolve("backpack").resolve("fortcraft");
 		Path vtf = dir.resolve(file + "_large.vtf");
@@ -106,7 +107,7 @@ public final class Backpack {
 			return "";
 		}
 		Files.createDirectories(dir);
-		Files.write(vtf, vtf(argb, ICON_SIZE));
+		Files.write(vtf, vtf(pad(argb), ICON_SIZE));
 		String vmt = "\"UnlitGeneric\"\n{\n\t\"$baseTexture\" \"" + material + "_large\"\n\t\"$translucent\" 1\n"
 			+ "\t\"$vertexcolor\" 1\n\t\"$vertexalpha\" 1\n\t\"$no_fullbright\" 1\n\t\"$ignorez\" 1\n}\n";
 		Files.writeString(dir.resolve(file + "_large.vmt"), vmt, StandardCharsets.US_ASCII);
@@ -147,6 +148,13 @@ public final class Backpack {
 			candidates.add("textures/block/" + base + "_planks.png");
 			candidates.add("textures/block/" + base + "_side.png");
 		}
+		// Banners and carpets have no item picture of their own (they're drawn as models): use the
+		// wool of the same colour (Alex, 2026-10-12: TF2's default icon showed for them).
+		String colour = path.replaceFirst("_(wall_banner|banner|carpet)$", "");
+		if (!colour.equals(path)) {
+			candidates.add("textures/block/" + colour + "_wool.png");
+			candidates.add("textures/block/" + colour + "_block.png");  // moss carpet
+		}
 		for (String candidate : candidates) {
 			var resource = minecraft.getResourceManager().getResource(Identifier.fromNamespaceAndPath(key.getNamespace(), candidate));
 			if (resource.isEmpty()) {
@@ -167,6 +175,22 @@ public final class Backpack {
 			}
 		}
 		return null;
+	}
+
+	/**
+	 * The icon shrunk into a 64 x 64 square, centred and a little high, with clear space around:
+	 * full-size icons covered the item's name in TF2's tiles, and 80 still looked big (Alex,
+	 * 2026-10-12). 64 is 4 pixels per texel of a 16 x 16 Minecraft texture, so the pixel art stays even.
+	 */
+	private static int[] pad(int[] full) {
+		final int size = 64, left = (ICON_SIZE - size) / 2, top = 18;
+		int[] out = new int[ICON_SIZE * ICON_SIZE];
+		for (int y = 0; y < size; y++) {
+			for (int x = 0; x < size; x++) {
+				out[(top + y) * ICON_SIZE + left + x] = full[(y * ICON_SIZE / size) * ICON_SIZE + x * ICON_SIZE / size];
+			}
+		}
+		return out;
 	}
 
 	/** A readable chest tile using textures from the installed game, not a bundled asset. */

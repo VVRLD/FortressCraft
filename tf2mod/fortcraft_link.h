@@ -52,6 +52,20 @@ const char *FortCraft_LocalItemMenuLabel( unsigned long long itemID );
 // for the class you're playing (4; Engineer and Spy 6).
 const char *FortCraft_QuickSlotMenuLabel( unsigned long long itemID );
 void FortCraft_ToggleQuickSlot( unsigned long long itemID );
+// The loadout screen's Minecraft item tile (2026-10-12). Key: 4, 6 for Engineer, 5 for Spy; 0 while
+// not linked to Minecraft (no tile then). Item: what's on the key, as a backpack item (NULL if
+// nothing, or none left; then Name gives what was set, "" if nothing). Choices: Minecraft items in
+// the inventory that can go on the key (index n of Choice is what SetQuickSlot takes; -1 clears).
+class CEconItemView;
+int FortCraft_QuickSlotKey( int nClass );
+CEconItemView *FortCraft_QuickSlotItem( int nClass );
+const char *FortCraft_QuickSlotName( int nClass );
+int FortCraft_QuickSlotChoiceCount();
+const char *FortCraft_QuickSlotChoice( int n );  // NULL: skip this index
+CEconItemView *FortCraft_QuickSlotChoiceItem( int n );  // the same, as a backpack item
+void FortCraft_SetQuickSlot( int nClass, int n );
+// From TF2's item picker: a Minecraft item's id puts it on the key; any other id clears the key.
+void FortCraft_SetQuickSlotItem( int nClass, unsigned long long itemID );
 
 // Backpack phase C: Minecraft's craftable 2x2 recipes for TF2's crafting screen. The version
 // changes whenever Minecraft sends a new list; indexes are valid until then.

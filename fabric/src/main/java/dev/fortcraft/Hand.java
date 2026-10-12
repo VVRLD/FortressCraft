@@ -74,7 +74,7 @@ public final class Hand {
 			} else if (id.startsWith("use:")) {
 				useFromBackpack(minecraft, id.substring(4));
 			} else if (id.startsWith("quick:")) {
-				// The loadout's Minecraft item key (4; Engineer and Spy 6), Alex 2026-10-11. Running
+				// The loadout's Minecraft item key (4; Engineer 6, Spy 5), Alex 2026-10-11. Running
 				// out or a weapon key goes back to the weapon held before that key.
 				String item = id.substring(6);
 				quickFrom = WeaponSelection.previous();

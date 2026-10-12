@@ -30,10 +30,17 @@ public final class Tf2Menus {
 		MAIN_MENU = 25, CLOSE_ALL = 26, CONSOLE = 27, BACKPACK = 28;
 
 	private static final long OPEN_GRACE_NANOS = 1_500_000_000L;   // TF2 may take a moment to show a menu
-	private static final long CLOSE_DELAY_NANOS = 300_000_000L;
+	private static final long CLOSE_DELAY_NANOS = 200_000_000L;
 
 	private static boolean commaWas, periodWas, mWas, pWas, scoresDown;
 	private static long closedSince;
+	/**
+	 * After Esc, TF2 still reports its menu open for a moment while it closes it; Minecraft took
+	 * that for a new menu, freed the mouse again and kept it free ~2 s (Alex, 2026-10-12; log:
+	 * "Esc -> close", then "TF2 menu open" in the same second). Until TF2 reports the menu closed
+	 * (at most 1 s), an open menu doesn't take the mouse back.
+	 */
+	private static long ignoreOpenUntil;
 
 	private Tf2Menus() {
 	}
@@ -83,13 +90,22 @@ public final class Tf2Menus {
 			return;
 		}
 		refocus(minecraft);
-		if (cam.uiOpen() && free) {
+		if (!cam.uiOpen()) {
+			ignoreOpenUntil = 0;
+		}
+		if (cam.uiOpen() && free && System.nanoTime() >= ignoreOpenUntil) {
 			refocusSoon();
 			minecraft.gui.setScreen(new PassthroughScreen());
 			FortCraft.LOG.info("FortCraft: TF2 menu open; mouse and keys go to TF2");
 		} else if (screen instanceof PassthroughScreen s) {
 			long now = System.nanoTime();
-			if (cam.uiOpen() || now - s.openedAt < OPEN_GRACE_NANOS) {
+			// The grace is only for TF2 to show the menu: once it has, closing it (picking a class,
+			// leaving the loadout) gives the mouse back at once. It used to wait out the grace too,
+			// leaving the mouse free for about 2 s after a quick class change (Alex, 2026-10-12).
+			if (cam.uiOpen()) {
+				s.tf2Showed = true;
+			}
+			if (cam.uiOpen() || (!s.tf2Showed && now - s.openedAt < OPEN_GRACE_NANOS)) {
 				closedSince = 0;
 			} else if (closedSince == 0) {
 				closedSince = now;
@@ -164,6 +180,7 @@ public final class Tf2Menus {
 	public static final class PassthroughScreen extends Screen {
 		final long openedAt = System.nanoTime();
 		boolean closedByTf2;
+		boolean tf2Showed;  // TF2 has reported its menu open
 		private float lastX = -1, lastY = -1;
 		private double wheel;
 
@@ -310,6 +327,7 @@ public final class Tf2Menus {
 			if (!closedByTf2) {
 				FortLink.sendUiCommand(CLOSE_ALL);  // Esc: close TF2's menu too
 				FortCraft.LOG.info("FortCraft: Esc -> close TF2's menus");
+				ignoreOpenUntil = System.nanoTime() + 1_000_000_000L;
 			}
 			super.onClose();
 		}

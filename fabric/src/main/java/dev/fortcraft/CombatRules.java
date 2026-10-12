@@ -12,6 +12,14 @@ public final class CombatRules {
 	}
 
 	public static final int MELEE = 1, CRIT = 2, MINI = 4, HEADSHOT = 8, KNIFE = 16;
+	/** Shot bits 16-19: the shooter's MvM Explosive Headshot level (TF2 FC_EXPLOSIVE_SHIFT). */
+	public static final int EXPLOSIVE_SHIFT = 16;
+	/** Effect bits (not shot bits) for a hit: TF2 plays the Explosive Headshot / gas explosion there. */
+	public static final int EXPLOSIVE_HIT = 1 << 24, GAS_EXPLOSION = 1 << 25;
+
+	public static int explosiveHeadshotLevel(int flags) {
+		return (flags >>> EXPLOSIVE_SHIFT) & 0xF;
+	}
 	public static final int GENERIC = 0, SHOVEL = 1, PICKAXE = 2, AXE = 3, BLADE = 4;
 	private CombatRules() { }
 

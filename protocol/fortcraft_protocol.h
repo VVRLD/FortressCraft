@@ -14,7 +14,7 @@
 namespace fortcraft { namespace proto
 {
 	static constexpr std::uint32_t kMagic = 0x46524346;  // "FCRF"
-	static constexpr std::uint32_t kVersion = 69;
+	static constexpr std::uint32_t kVersion = 70;
 	static constexpr wchar_t       kMappingName[] = L"Local\\FortCraft_v1";
 	// Linux: a file in RAM that Minecraft creates and both sides map (same bytes as on Windows).
 	static constexpr char          kMappingPathPosix[] = "/dev/shm/FortCraft_v1";
@@ -992,6 +992,40 @@ namespace fortcraft { namespace proto
 		std::uint32_t pad;
 	};
 	static_assert(kOffPlayerJarate >= kOffRobotOccluders + sizeof(RobotOccluders), "FortCraft protocol layout");
+
+	// ---- Minecraft -> TF2: mobs the player killed, for TF2's kill feed (v70) -------------------
+	// Ring of the last 16, same scheme as Shots. name: the mob's name (robots: their TF2 class),
+	// UTF-8, zero-terminated. flags: kMobKill* below.
+	static constexpr std::uint64_t kOffMobKills = 0x62500;
+	static constexpr std::uint32_t kMaxMobKills = 16;
+	static constexpr std::uint32_t kMobKillSentry = 1, kMobKillCrit = 2, kMobKillBackstab = 4, kMobKillRobot = 8;
+	struct MobKill
+	{
+		char          name[56];
+		std::uint32_t flags;
+		std::uint32_t pad;
+	};
+	static_assert(sizeof(MobKill) == 64, "FortCraft protocol layout");
+	struct MobKills
+	{
+		std::uint32_t count;
+		std::uint32_t pad;
+		MobKill       ring[kMaxMobKills];
+	};
+	static_assert(kOffMobKills >= kOffPlayerJarate + 8, "FortCraft protocol layout");
+	static_assert(kOffMobKills + sizeof(MobKills) <= kOffOverlayPixels, "FortCraft protocol layout");
+
+	// ---- Minecraft -> TF2: room echo for TF2's sounds (v70) ------------------------------------
+	// preset: TF2's dsp_room preset for the space around the player (0 = none, outdoors; 8-10
+	// chamber, 14 water, 17-19 concrete, 23-25 cavern; small / medium / large). Minecraft's
+	// Acoustics measures it twice a second; TF2 sets dsp_room when it changes.
+	static constexpr std::uint64_t kOffRoomSound = 0x62A00;
+	struct RoomSound
+	{
+		std::uint32_t preset;
+		std::uint32_t seq;  // bumped with each new preset
+	};
+	static_assert(kOffRoomSound >= kOffMobKills + sizeof(MobKills), "FortCraft protocol layout");
 	// v51: MobHit source bit for money that isn't a kill (Minecraft's other XP: ores, furnaces,
 	// breeding, fishing...). Only the cash drop happens: no hit number, no on-kill effects.
 	static constexpr std::uint32_t kMobHitMoneyOnly = 1u << 7;
@@ -1007,6 +1041,13 @@ namespace fortcraft { namespace proto
 	static constexpr std::uint32_t kMobHitMilk = 1u << 11;
 	// v59: Explosion flags for a thrown jar's splash (no damage): Jarate, Mad Milk, Gas Passer.
 	static constexpr std::uint32_t kExplosionJarate = 1u << 6, kExplosionMilk = 1u << 7, kExplosionGas = 1u << 8;
+	// 2026-10-12: a Gas Passer splash with Explosion.damage > 0 (the MvM "explode on ignite"
+	// upgrade): the gassed mobs explode for that much TF2 damage.
+	// MobHit source bits for the effects TF2 plays at the mob: an MvM Explosive Headshot's
+	// blast (TF2's flash and sound), and an exploding gassed mob (Dragon's Fury burst, blast sound).
+	static constexpr std::uint32_t kMobHitExplosiveHeadshot = 1u << 12, kMobHitGasExplosion = 1u << 13;
+	// The hit was a backstab (the Conniver's Kunai takes the mob's health on a backstab kill).
+	static constexpr std::uint32_t kMobHitBackstab = 1u << 14;
 
 	// Minecraft damage = TF2 damage / kDamageScale (a rocket's 90 is 18 Minecraft health, nine
 	// hearts; a zombie has 20).

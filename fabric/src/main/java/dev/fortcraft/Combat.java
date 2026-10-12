@@ -532,6 +532,10 @@ public final class Combat {
 			shotDamage.merge(new ShotGroup(best, DAMAGE_SCALE, backstab, effects), shot.damage() * multiplier * falloff, Float::sum);
 			if (backstab || multiplier > 1) FortCraft.LOG.info("FortCraft: combat bonus={} weapon={} target={} multiplier={}",
 				backstab ? "backstab" : head ? "headshot" : multiplier == 3 ? "crit" : "mini", shot.weapon(), best.getName().getString(), multiplier);
+			int explosive = CombatRules.explosiveHeadshotLevel(shot.flags());
+			if (head && explosive > 0) {
+				explosiveHeadshot(minecraft, best, explosive);
+			}
 		} else if (melee) {
 			// Blocks you can walk through (cobwebs, grass, flowers) have no collision box, so the
 			// swing went straight through them (Alex, 2026-10-10: couldn't break cobwebs). Check
@@ -835,7 +839,7 @@ public final class Combat {
 	 * mini-crits for 10 s, Mad Milk heals you 60% of the damage you deal them for 10 s, Gas
 	 * Passer sets them on fire. Only mobs the splash can reach (no block in between).
 	 */
-	private static void splash(Minecraft minecraft, Vec3 centre, float radius, int flags) {
+	private static void splash(Minecraft minecraft, Vec3 centre, float radius, int flags, float explodeDamage) {
 		long until = System.nanoTime() + JAR_NANOS;
 		int n = 0;
 		for (Entity e : combatTargets(minecraft, new AABB(centre, centre).inflate(radius))) {
@@ -864,9 +868,58 @@ public final class Combat {
 						}
 					});
 				}
+				// MvM "explode on ignite" upgrade (Alex, 2026-10-12): the gas catches fire at once
+				// on mobs, so they explode at once, for TF2's 350 fire damage each.
+				if (explodeDamage > 0) {
+					hurt(minecraft, e, explodeDamage, DAMAGE_SCALE, false, CombatRules.GAS_EXPLOSION);
+				}
 			}
 		}
 		FortCraft.LOG.info("FortCraft: {} splashed {} mobs", (flags & JARATE) != 0 ? "Jarate" : (flags & MILK) != 0 ? "Mad Milk" : "Gas Passer", n);
+	}
+
+	/**
+	 * MvM Explosive Headshot (Alex, 2026-10-12), as TF2's CTFSniperRifle::ExplosiveHeadShot: a
+	 * headshot stuns (slows) the mob and blasts every other mob within 125 + 25 x level units that
+	 * it can see, for 130 + 20 x level damage, slowing them too.
+	 */
+	private static void explosiveHeadshot(Minecraft minecraft, Entity victim, int level) {
+		Vec3 centre = victim.getBoundingBox().getCenter();
+		float radius = (125.0f + 25.0f * level) / 48.0f;  // TF2 units per block
+		float damage = 130.0f + 20.0f * level;
+		int stunTicks = Math.round((1.0f + (level - 1) * 0.5f) * 20.0f);
+		float stun = Math.min(0.8f, 0.5f + (level - 1) * 0.15f);
+		slow(minecraft, victim, stunTicks, stun);
+		int n = 0;
+		for (Entity e : combatTargets(minecraft, new AABB(centre, centre).inflate(radius))) {
+			if (e == victim || !(e instanceof LivingEntity) || e.getBoundingBox().getCenter().distanceTo(centre) > radius
+				|| minecraft.level.clip(new ClipContext(centre, e.getBoundingBox().getCenter(), ClipContext.Block.COLLIDER,
+					ClipContext.Fluid.NONE, minecraft.player)).getType() != HitResult.Type.MISS) {
+				continue;
+			}
+			slow(minecraft, e, stunTicks, stun);
+			hurt(minecraft, e, damage, DAMAGE_SCALE, false, CombatRules.EXPLOSIVE_HIT);
+			n++;
+		}
+		FortCraft.LOG.info("FortCraft: explosive headshot level {} on {}: {} mobs blasted for {}", level,
+			victim.getName().getString(), n, damage);
+	}
+
+	/** TF2's movement stun on a mob: Slowness for that long (amount 0.5 = 50% slower). */
+	private static void slow(Minecraft minecraft, Entity clientMob, int ticks, float amount) {
+		IntegratedServer server = minecraft.getSingleplayerServer();
+		if (server == null || minecraft.level == null) {
+			return;
+		}
+		int id = clientMob.getId();
+		var dimension = minecraft.level.dimension();
+		int amplifier = Math.max(0, Math.round(amount / 0.15f) - 1);  // Slowness: 15% a level
+		server.execute(() -> {
+			ServerLevel level = server.getLevel(dimension);
+			if (level != null && level.getEntity(id) instanceof LivingEntity living) {
+				living.addEffect(new MobEffectInstance(MobEffects.SLOWNESS, ticks, amplifier, false, false));
+			}
+		});
 	}
 
 	/** Jarate and Mad Milk drip from the mobs wearing them (every half second). */
@@ -1015,7 +1068,7 @@ public final class Combat {
 
 	private static void blast(Minecraft minecraft, Vec3 centre, float reportedRadius, float baseDamage, int flags) {
 		if ((flags & (JARATE | MILK | GAS)) != 0) {
-			splash(minecraft, centre, reportedRadius, flags);
+			splash(minecraft, centre, reportedRadius, flags, baseDamage);
 			return;
 		}
 		if (reportedRadius <= 0) {
@@ -1294,8 +1347,18 @@ public final class Combat {
 				int ammo = killed && target instanceof LivingEntity dropper && dropsAmmo(dropper, level) ? 1 << 9 : 0;  // kMobHitDropAmmo
 				int health = killed && target instanceof LivingEntity eater && dropsHealth(eater) ? 1 << 10 : 0;  // kMobHitDropHealth
 				int milk = isMilked(target) ? 1 << 11 : 0;  // protocol kMobHitMilk
+				int special = ((effects & CombatRules.EXPLOSIVE_HIT) != 0 ? 1 << 12 : 0)  // kMobHitExplosiveHeadshot
+					| ((effects & CombatRules.GAS_EXPLOSION) != 0 ? 1 << 13 : 0)  // kMobHitGasExplosion
+					| (backstab ? 1 << 14 : 0);  // kMobHitBackstab
 				FortLink.writeMobHit(box.getCenter().x, box.maxY, box.getCenter().z, applied * scale, killed,
-					(effects & (CombatRules.SENTRY | CombatRules.CRIT | CombatRules.MINI)) | ammo | health | milk | (money << 16));
+					(effects & (CombatRules.SENTRY | CombatRules.CRIT | CombatRules.MINI)) | ammo | health | milk | special | (money << 16));
+				if (killed && !(target instanceof EndCrystal)) {
+					// TF2's kill feed: you - weapon icon - the mob (Alex, 2026-10-12).
+					String robot = Robots.killFeedName(target);
+					FortLink.writeMobKill(robot != null ? robot : target.getName().getString(),
+						((effects & CombatRules.SENTRY) != 0 ? 1 : 0) | ((effects & CombatRules.CRIT) != 0 ? 2 : 0)
+						| (backstab ? 4 : 0) | (robot != null ? 8 : 0));  // protocol kMobKill*
+				}
 				int bleed = CombatRules.bleedSeconds(effects);
 				if (bleed > 0 && !killed && target instanceof LivingEntity) {
 					Bleed.start(target.getId(), bleed);

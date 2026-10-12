@@ -199,9 +199,19 @@ final class GpuOverlay {
 		return 0;
 	}
 
-	/** Called when TF2 goes away: if that was during the 20 s trial, the GPU path stays off. */
-	public static void onGuestGone() {
-		if (state == 2 || trialPassed) {
+	/**
+	 * Called when TF2 stops answering: if its process really closed while the GPU overlay was in
+	 * its 20 s trial, the GPU path stays off. TF2 also stops answering for a few seconds while it
+	 * loads its map, before the GPU overlay has even opened; that turned the GPU path off for the
+	 * whole session and made it laggy (Alex, 2026-10-12), so a pause doesn't count.
+	 */
+	public static void onGuestGone(int pid) {
+		if (state != 1 || trialPassed || openedAt == 0) {
+			return;
+		}
+		boolean running = pid != 0 && ProcessHandle.of(pid).map(ProcessHandle::isAlive).orElse(false);
+		if (running) {
+			FortCraft.LOG.info("FortCraft: TF2 paused during the GPU overlay trial but is still running; keeping the GPU overlay");
 			return;
 		}
 		keepOff = true;

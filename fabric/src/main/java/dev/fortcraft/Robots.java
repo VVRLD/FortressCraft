@@ -206,6 +206,25 @@ public final class Robots {
 		return Combat.linked && kindOf(e) != NONE;
 	}
 
+	/** The kill feed's name for a robot ("Soldier", "Boss Demoman"...), or null if it isn't one. */
+	public static String killFeedName(Entity e) {
+		String name = switch (kindOf(e)) {
+			case BOWMAN -> "Bowman";
+			case DEMOKNIGHT -> "Demoknight";
+			case MEDIC -> "Medic";
+			case SCOUT, SCOUT_FULL -> "Scout";
+			case GIANT_HEAVY -> "Giant Heavy";
+			case JARATE -> "Jarate Sniper";
+			case SOLDIER -> "Soldier";
+			case DEMOMAN -> "Demoman";
+			case SNIPER -> "Sniper";
+			case SPY -> "Spy";
+			case TANK -> "Tank";
+			default -> null;
+		};
+		return name != null && bosses.contains(e.getId()) ? "Boss " + name : name;
+	}
+
 	/** True for robots (not their projectiles): their hits on the player are softened. */
 	public static boolean isRobot(Entity e) {
 		int k = e == null ? NONE : kindOf(e);

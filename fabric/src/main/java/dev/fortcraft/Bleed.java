@@ -20,6 +20,22 @@ public final class Bleed {
 	private Bleed() {
 	}
 
+	/**
+	 * The mob visibly bleeds in Minecraft too (Alex, 2026-10-12): red bits fall from it with each
+	 * bleed tick, on top of the red hurt flash the damage gives.
+	 */
+	private static void drip(Minecraft minecraft, LivingEntity mob) {
+		var blood = new net.minecraft.core.particles.BlockParticleOption(net.minecraft.core.particles.ParticleTypes.BLOCK,
+			net.minecraft.world.level.block.Blocks.REDSTONE_BLOCK.defaultBlockState());
+		var box = mob.getBoundingBox();
+		var random = mob.getRandom();
+		for (int i = 0; i < 8; i++) {
+			minecraft.level.addParticle(blood, box.minX + random.nextDouble() * box.getXsize(),
+				box.minY + box.getYsize() * (0.4 + random.nextDouble() * 0.5), box.minZ + random.nextDouble() * box.getZsize(),
+				0.0, -0.05, 0.0);
+		}
+	}
+
 	/** Called on Minecraft's integrated server when a bleeding weapon hits a mob. */
 	static synchronized void start(int entityId, int seconds) {
 		long now = System.nanoTime();
@@ -49,6 +65,7 @@ public final class Bleed {
 			if (now >= b[1]) {
 				b[1] += TICK_NANOS;
 				Combat.hurt(minecraft, target, TF2_DAMAGE_PER_TICK, 5.0f, false, 0);
+				drip(minecraft, living);
 			}
 		}
 	}

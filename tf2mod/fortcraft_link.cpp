@@ -38,6 +38,9 @@
 #include "props_shared.h"
 #include "vgui_controls/Panel.h"
 #include "vgui/IScheme.h"
+#include "vgui_controls/Frame.h"
+#include "confirm_dialog.h"
+#include "hud_basedeathnotice.h"
 #include "../protocol/fortcraft_protocol.h"
 #include "fortcraft_platform.h"
 
@@ -228,6 +231,7 @@ static proto::OverlayPose s_PairPose, s_WorkPose;
 // Movement (tf_gamemovement.cpp, both modules) sees it as IN_BULLRUSH on the command, a button
 // TF2 never uses, so the client's prediction and the server agree.
 static void QuickSlotPressed( int nSlot );  // the Minecraft item key (below)
+static bool QuickSlotHasItem( int nClass, int nSlot );
 static bool CreativeFlight( bool bJump )
 {
 	static bool s_bFlying, s_bWasJump, s_bAirborne;
@@ -339,6 +343,15 @@ bool FortCraft_ApplyInput( CUserCmd *pCmd )
 				pWeapon = pCandidate;
 		}
 		const int nClass = pPlayer->GetPlayerClass() ? pPlayer->GetPlayerClass()->GetClassIndex() : -1;
+		// Engineer's key 6 is also his toolbox slot (TF2 puts it in his hands only while he carries a
+		// building), so it never counted as empty and his Minecraft item never came out (Alex,
+		// 2026-10-12). A Minecraft item on the key wins over a toolbox, or the Spy's watch, there.
+		if ( pWeapon && QuickSlotHasItem( nClass, (int)in.weaponSlot ) && dynamic_cast< C_TFWeaponBase * >( pWeapon ) )
+		{
+			const int nId = static_cast< C_TFWeaponBase * >( pWeapon )->GetWeaponID();
+			if ( nId == TF_WEAPON_BUILDER || nId == TF_WEAPON_INVIS )
+				pWeapon = NULL;
+		}
 		const int nDesiredWeapon = pWeapon ? pWeapon->entindex() : -1;
 		if ( bNewSlot && !pWeapon )
 			QuickSlotPressed( (int)in.weaponSlot );  // the Minecraft item key
@@ -369,7 +382,13 @@ bool FortCraft_ApplyInput( CUserCmd *pCmd )
 				Msg( "FortCraft weapon active: slot=%d ent=%d\n", s_nLastSlot + 1, nDesiredWeapon );
 		}
 		else if ( s_bSwitchPending && pWeapon && !UiOpen() )
+		{
 			pCmd->weaponselect = pWeapon->entindex();
+			// TF2's server picks the weapon by name and subtype: all builders are
+			// "tf_weapon_builder", told apart by subtype (the Spy's sapper is 3). Without it the
+			// Spy's key 2 never brought out the sapper (Alex, 2026-10-12).
+			pCmd->weaponsubtype = pWeapon->GetSubType();
+		}
 	}
 	return true;
 }
@@ -614,10 +633,44 @@ static CHudUpgradePanel *UpgradePanel()
 	return pPanel && pPanel->IsVisible() ? pPanel : NULL;
 }
 
+// A TF2 pop-up dialog is showing (yes/no questions, message boxes, item and trade notices...).
+// TF2 can open these by itself, also in the middle of play (the one-time "HUD 3D character"
+// question on first spawn): with nobody able to click them, testers got stuck (Alex, 2026-10-12).
+// Any visible dialog of TF2's client counts as an open menu, so Minecraft frees the mouse for it.
+static bool DialogOpen()
+{
+	vgui::ISurface *pSurface = vgui::surface();
+	if ( !pSurface || !vgui::ipanel() )
+		return false;
+	static vgui::VPANEL s_LastDialog = 0;
+	vgui::VPANEL found = 0;
+	const char *pszName = "";
+	for ( int i = 0; i < pSurface->GetPopupCount() && !found; ++i )
+	{
+		vgui::VPANEL vp = pSurface->GetPopup( i );
+		if ( !vp || !vgui::ipanel()->IsFullyVisible( vp ) || !vgui::ipanel()->IsMouseInputEnabled( vp ) )
+			continue;
+		vgui::Panel *pPanel = vgui::ipanel()->GetPanel( vp, "ClientDLL" );
+		if ( pPanel && ( dynamic_cast< CConfirmDialog * >( pPanel ) || dynamic_cast< vgui::Frame * >( pPanel ) ) )
+		{
+			found = vp;
+			pszName = pPanel->GetName();
+		}
+	}
+	if ( found != s_LastDialog )
+	{
+		s_LastDialog = found;
+		if ( found )
+			Msg( "FortCraft: TF2 dialog '%s' is showing; it takes the mouse\n", pszName );
+	}
+	return found != 0;
+}
+
 // A TF2 menu that takes the mouse is open.
 static bool UiOpen()
 {
-	return ( enginevgui && enginevgui->IsGameUIVisible() ) || ( s_bUserMenu && ViewportMenuOpen() ) || UpgradePanel();
+	return ( enginevgui && enginevgui->IsGameUIVisible() ) || ( s_bUserMenu && ViewportMenuOpen() ) || UpgradePanel()
+		|| DialogOpen();
 }
 
 bool FortCraft_UiOpen()
@@ -1828,6 +1881,9 @@ static void AutoJoin( C_TFPlayer *pPlayer )
 			" r_rimlight 0;"
 			// The MvM wave panel during village raids lists every robot kind all the time.
 			" cl_mvm_wave_status_visible_during_wave 1;"
+			// TF2's one-time "HUD 3D character: keep it enabled?" question popped up mid-play,
+			// where testers couldn't answer it (2026-10-12): count it as answered (kept on).
+			" cl_hud_playerclass_playermodel_showed_confirm_dialog 1;"
 			" mat_vsync 0; cl_ragdoll_physics_enable 0; cl_phys_props_enable 0; tf_particles_disable_weather 1\n" );
 
 		// The weapon was drawn pitch black: TF2 lights it from its map at the player's spot, and
@@ -3284,8 +3340,8 @@ void FortCraft_EquipLocalItem( unsigned long long itemID )
 }
 
 // ---- The Minecraft item key (Alex, 2026-10-11) -----------------------------------------------
-// Each class can have one Minecraft item on a number key: 4, or 6 for the Engineer and Spy (whose
-// 4 and 5 are PDAs). Set from the backpack ("Put on key 4"); pressing the key pulls the item out
+// Each class can have one Minecraft item on a number key: 4, 6 for the Engineer (whose 4 and 5 are
+// PDAs) and 5 for the Spy (whose 4 is the disguise kit). Set from the backpack ("Put on key 4"); pressing the key pulls the item out
 // as "Equip to hand" does (food to eat, blocks, tools, potions...), and running out or a weapon
 // key goes back to the weapon you had. Saved in cfg/fortcraft_quickslots.txt.
 static KeyValues *s_pQuickSlots;
@@ -3300,9 +3356,11 @@ static KeyValues *QuickSlots()
 	return s_pQuickSlots;
 }
 
+// 0-based. Key 4; Engineer 6 (4 and 5 are his PDAs); Spy 5 (4 is his disguise kit). Spy was on 6
+// at first, but Alex expected 5, his first free key (2026-10-12).
 static int QuickSlotIndex( int nClass )
 {
-	return ( nClass == TF_CLASS_ENGINEER || nClass == TF_CLASS_SPY ) ? 5 : 3;  // 0-based: key 6 / key 4
+	return nClass == TF_CLASS_ENGINEER ? 5 : nClass == TF_CLASS_SPY ? 4 : 3;
 }
 
 static int LocalClass()
@@ -3311,9 +3369,18 @@ static int LocalClass()
 	return pPlayer && pPlayer->GetPlayerClass() ? pPlayer->GetPlayerClass()->GetClassIndex() : TF_CLASS_UNDEFINED;
 }
 
+// One item for every class (Alex, 2026-10-12: it should come along when you switch class, until
+// you change it). Saved as "all"; the older per-class entries are only read until then.
 static const char *QuickItemFor( int nClass )
 {
-	return QuickSlots()->GetString( VarArgs( "%d", nClass ), "" );
+	const char *pszAll = QuickSlots()->GetString( "all", NULL );
+	return pszAll ? pszAll : QuickSlots()->GetString( VarArgs( "%d", nClass ), "" );
+}
+
+static void SetQuickItem( const char *pszId )
+{
+	QuickSlots()->SetString( "all", pszId );
+	QuickSlots()->SaveToFile( g_pFullFileSystem, "cfg/fortcraft_quickslots.txt", "MOD" );
 }
 
 const char *FortCraft_QuickSlotMenuLabel( unsigned long long itemID )
@@ -3333,13 +3400,86 @@ void FortCraft_ToggleQuickSlot( unsigned long long itemID )
 	const int nClass = LocalClass();
 	if ( !p || nClass == TF_CLASS_UNDEFINED )
 		return;
-	const char *pszKey = VarArgs( "%d", nClass );
 	const bool bOn = !V_strcmp( QuickItemFor( nClass ), p->id );
-	QuickSlots()->SetString( pszKey, bOn ? "" : p->id );
-	QuickSlots()->SaveToFile( g_pFullFileSystem, "cfg/fortcraft_quickslots.txt", "MOD" );
+	SetQuickItem( bOn ? "" : p->id );
 	if ( vgui::surface() )
 		vgui::surface()->PlaySound( "ui/item_default_pickup.wav" );
 	Msg( "FortCraft quick key: class %d key %d %s %s\n", nClass, QuickSlotIndex( nClass ) + 1, bOn ? "cleared" : "holds", p->id );
+}
+
+int FortCraft_QuickSlotKey( int nClass )
+{
+	return s_bLinked && nClass != TF_CLASS_UNDEFINED ? QuickSlotIndex( nClass ) + 1 : 0;
+}
+
+static int QuickStackIndex( int nClass )
+{
+	const char *pszId = QuickItemFor( nClass );
+	for ( int n = 0; pszId[ 0 ] && n < s_LocalStacks.Count(); ++n )
+	{
+		if ( !V_strcmp( s_LocalStacks[ n ]->id, pszId ) )
+			return n;
+	}
+	return -1;
+}
+
+CEconItemView *FortCraft_QuickSlotItem( int nClass )
+{
+	const int n = QuickStackIndex( nClass );
+	CPlayerInventory *pInv = TFInventoryManager() ? TFInventoryManager()->GetLocalTFInventory() : NULL;
+	if ( n < 0 || !pInv || !s_LocalStacks[ n ]->pItem )
+		return NULL;
+	return pInv->GetInventoryItemByItemID( kLocalItemBase + n );
+}
+
+const char *FortCraft_QuickSlotName( int nClass )
+{
+	const int n = QuickStackIndex( nClass );
+	if ( n >= 0 && s_LocalStacks[ n ]->name[ 0 ] )
+		return s_LocalStacks[ n ]->name;
+	return QuickItemFor( nClass );
+}
+
+int FortCraft_QuickSlotChoiceCount()
+{
+	return s_LocalStacks.Count();
+}
+
+const char *FortCraft_QuickSlotChoice( int n )
+{
+	if ( n < 0 || n >= s_LocalStacks.Count() || !s_LocalStacks[ n ]->pItem || IsSupplyPack( s_LocalStacks[ n ]->id ) )
+		return NULL;
+	return s_LocalStacks[ n ]->name[ 0 ] ? s_LocalStacks[ n ]->name : s_LocalStacks[ n ]->id;
+}
+
+CEconItemView *FortCraft_QuickSlotChoiceItem( int n )
+{
+	CPlayerInventory *pInv = TFInventoryManager() ? TFInventoryManager()->GetLocalTFInventory() : NULL;
+	if ( !pInv || !FortCraft_QuickSlotChoice( n ) )
+		return NULL;
+	return pInv->GetInventoryItemByItemID( kLocalItemBase + n );
+}
+
+void FortCraft_SetQuickSlotItem( int nClass, unsigned long long itemID )
+{
+	const bool bLocal = ( itemID & 0xFF00000000000000ull ) == kLocalItemBase && LocalStackFor( itemID );
+	FortCraft_SetQuickSlot( nClass, bLocal ? (int)( itemID - kLocalItemBase ) : -1 );
+}
+
+void FortCraft_SetQuickSlot( int nClass, int n )
+{
+	if ( nClass == TF_CLASS_UNDEFINED || ( n >= 0 && !FortCraft_QuickSlotChoice( n ) ) )
+		return;
+	SetQuickItem( n >= 0 ? s_LocalStacks[ n ]->id : "" );
+	if ( vgui::surface() )
+		vgui::surface()->PlaySound( "ui/item_default_pickup.wav" );
+	Msg( "FortCraft quick key: class %d key %d %s %s (loadout screen)\n", nClass, QuickSlotIndex( nClass ) + 1,
+		n >= 0 ? "holds" : "cleared", n >= 0 ? s_LocalStacks[ n ]->id : "" );
+}
+
+static bool QuickSlotHasItem( int nClass, int nSlot )
+{
+	return nClass > TF_CLASS_UNDEFINED && nSlot == QuickSlotIndex( nClass ) && QuickItemFor( nClass )[ 0 ];
 }
 
 // A number key for an empty weapon slot: if it's this class's Minecraft item key, pull it out.
@@ -3515,6 +3655,91 @@ static void PollMobHits()
 			CLocalPlayerFilter filter;
 			C_BaseEntity::EmitSound( filter, SOUND_FROM_LOCAL_PLAYER, bFull ? "TFPlayer.CritHit" : "TFPlayer.CritHitMini" );
 		}
+		// MvM Explosive Headshot hitting the mobs around the head hit: TF2's flash and sound.
+		if ( hit.source & proto::kMobHitExplosiveHeadshot )
+		{
+			DispatchParticleEffect( "dxhr_arm_muzzleflash", pos + Vector( 0, 0, 8 ), pos + Vector( 0, 0, 8 ), vec3_angle );
+			CLocalPlayerFilter filter;
+			C_BaseEntity::EmitSound( filter, SOUND_FROM_WORLD, "Weapon_Upgrade.ExplosiveHeadshot", &pos );
+		}
+		// A gassed mob exploding (Gas Passer with "explode on ignite"), as TF2 does to players.
+		if ( hit.source & proto::kMobHitGasExplosion )
+		{
+			DispatchParticleEffect( "dragons_fury_effect", pos - Vector( 0, 0, 32 ), vec3_angle );
+			CLocalPlayerFilter filter;
+			C_BaseEntity::EmitSound( filter, SOUND_FROM_WORLD, "Weapon_Grenade_Pipebomb.Explode", &pos );
+		}
+	}
+}
+
+// The kill icon TF2 would show for the local player's current weapon (its "item_iconname", or its
+// class name without "tf_weapon_"), as in a player_death event's "weapon".
+static void LocalKillIcon( C_TFPlayer *pPlayer, char *pszOut, int nOut )
+{
+	V_strncpy( pszOut, "skull_tf", nOut );
+	C_TFWeaponBase *pWeapon = pPlayer ? pPlayer->GetActiveTFWeapon() : NULL;
+	if ( !pWeapon )
+		return;
+	CEconItemView *pItem = pWeapon->GetAttributeContainer() ? pWeapon->GetAttributeContainer()->GetItem() : NULL;
+	const char *pszIcon = pItem && pItem->GetStaticData() ? pItem->GetStaticData()->GetIconClassname() : NULL;
+	if ( pszIcon && pszIcon[ 0 ] )
+	{
+		V_strncpy( pszOut, pszIcon, nOut );
+		return;
+	}
+	const char *pszClass = pWeapon->GetName();
+	if ( pszClass && !V_strnicmp( pszClass, "tf_weapon_", 10 ) )
+		V_strncpy( pszOut, pszClass + 10, nOut );
+}
+
+// Echo where you are (Alex, 2026-10-12): Minecraft measures the space around the player (caves,
+// rooms, open sky) and TF2 sets its room echo to match; TF2 fades between presets itself.
+static void PollRoomSound()
+{
+	const proto::RoomSound &room = At< proto::RoomSound >( proto::kOffRoomSound );
+	static uint32_t s_nSeq = 0;
+	const uint32_t seq = *(volatile const uint32_t *)&room.seq;
+	if ( seq == s_nSeq )
+		return;
+	s_nSeq = seq;
+	const int nPreset = (int)MIN( room.preset, 28u );
+	engine->ClientCmd_Unrestricted( VarArgs( "dsp_room %d\n", nPreset ) );
+	Msg( "FortCraft sound: room echo preset %d\n", nPreset );
+}
+
+// Mobs the player killed: TF2's kill feed, "you - weapon icon - mob" (Alex, 2026-10-12).
+static void PollMobKills()
+{
+	const proto::MobKills &kills = At< proto::MobKills >( proto::kOffMobKills );
+	static uint32_t s_nSeen = 0xFFFFFFFF;
+	uint32_t count = *(volatile const uint32_t *)&kills.count;
+	if ( s_nSeen == 0xFFFFFFFF || count < s_nSeen || count - s_nSeen > proto::kMaxMobKills )
+		s_nSeen = count;  // first look, or Minecraft restarted: don't replay old ones
+	if ( s_nSeen == count )
+		return;
+	CHudBaseDeathNotice *pFeed = dynamic_cast< CHudBaseDeathNotice * >( gHUD.FindElement( "CTFHudDeathNotice" ) );
+	C_TFPlayer *pPlayer = C_TFPlayer::GetLocalTFPlayer();
+	for ( ; s_nSeen != count; ++s_nSeen )
+	{
+		const proto::MobKill &kill = kills.ring[ s_nSeen % proto::kMaxMobKills ];
+		char szName[ sizeof( kill.name ) ];
+		V_memcpy( szName, kill.name, sizeof( szName ) );
+		szName[ sizeof( szName ) - 1 ] = 0;
+		char szIcon[ 32 ];
+		if ( kill.flags & proto::kMobKillSentry )
+			V_strncpy( szIcon, "obj_sentrygun", sizeof( szIcon ) );
+		else if ( kill.flags & proto::kMobKillBackstab )
+			V_strncpy( szIcon, "backstab", sizeof( szIcon ) );
+		else
+			LocalKillIcon( pPlayer, szIcon, sizeof( szIcon ) );
+		if ( pFeed && pPlayer )
+		{
+			const int iTeam = pPlayer->GetTeamNumber();
+			// Robots are the other team's colour, like MvM; other mobs are neutral grey.
+			const int iVictimTeam = ( kill.flags & proto::kMobKillRobot ) ? ( iTeam == TF_TEAM_BLUE ? TF_TEAM_RED : TF_TEAM_BLUE ) : TEAM_UNASSIGNED;
+			pFeed->FortCraft_AddMobKill( pPlayer->GetPlayerName(), iTeam, szIcon, szName, iVictimTeam,
+				( kill.flags & proto::kMobKillCrit ) != 0 );
+		}
 	}
 }
 
@@ -3613,6 +3838,8 @@ void FortCraft_OnRenderStart()
 	ApplyLatestLook( pPlayer );
 	if ( s_bHaveOrigin )
 		PollMobHits();
+		PollMobKills();
+		PollRoomSound();
 	PollUiEvents( pPlayer );
 	// Raider robots keep moving while the merc is dead or respawning (Alex, 2026-10-11: they
 	// froze until you were back), so they're updated before the alive check below.

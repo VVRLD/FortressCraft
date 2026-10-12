@@ -79,7 +79,7 @@ public final class Puppet {
 			guestWasAlive = guestAlive;
 			FortCraft.LOG.info(guestAlive ? "FortCraft: TF2 connected (pid {})" : "FortCraft: TF2 gone (pid {})", FortLink.guestPid());
 			if (!guestAlive) {
-				GpuOverlay.onGuestGone();
+				GpuOverlay.onGuestGone(FortLink.guestPid());
 			}
 		}
 
@@ -128,6 +128,7 @@ public final class Puppet {
 			FarOcclusion.tick(minecraft);
 			Robots.tick(minecraft);
 			Bleed.tick(minecraft);
+			Acoustics.tick(minecraft);
 		}
 
 		if (!guestAlive) {

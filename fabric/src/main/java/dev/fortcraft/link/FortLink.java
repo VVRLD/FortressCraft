@@ -23,7 +23,7 @@ import java.util.Locale;
  */
 public final class FortLink {
 	public static final int MAGIC = 0x46524346;  // "FCRF"
-	public static final int VERSION = 69;
+	public static final int VERSION = 70;
 	/** Windows: a named page-file mapping. Linux: a file in /dev/shm (RAM), which TF2 maps too. */
 	public static final boolean WINDOWS = System.getProperty("os.name", "").toLowerCase(Locale.ROOT).startsWith("windows");
 	public static final String NAME = System.getenv().getOrDefault("FORTCRAFT_LINK", WINDOWS ? "Local\\FortCraft_v1" : "/dev/shm/FortCraft_v1");
@@ -537,6 +537,34 @@ public final class FortLink {
 	}
 
 	private static int playerJarate;
+
+	/** RoomSound @0x62A00 (v70): TF2's dsp_room preset for the space around the player. */
+	public static void writeRoomSound(int preset) {
+		if (shm == null) {
+			return;
+		}
+		shm.set(JAVA_INT, 0x62A00, preset);
+		INT.setRelease(shm, 0x62A04, shm.get(JAVA_INT, 0x62A04) + 1);
+	}
+
+	/** MobKills @0x62500 (v70): a mob the player killed, for TF2's kill feed. flags: protocol kMobKill*. */
+	public static synchronized void writeMobKill(String name, int flags) {
+		if (shm == null) {
+			return;
+		}
+		int count = shm.get(JAVA_INT, 0x62500);
+		long o = 0x62508 + Integer.remainderUnsigned(count, 16) * 64L;
+		byte[] bytes = name.getBytes(java.nio.charset.StandardCharsets.UTF_8);
+		int n = Math.min(bytes.length, 55);
+		while (n > 0 && n < bytes.length && (bytes[n] & 0xC0) == 0x80) {
+			n--;  // don't cut a character in half
+		}
+		for (int i = 0; i < 56; i++) {
+			shm.set(JAVA_BYTE, o + i, i < n ? bytes[i] : 0);
+		}
+		shm.set(JAVA_INT, o + 56, flags);
+		INT.setRelease(shm, 0x62500, count + 1);
+	}
 
 	/** PlayerJarate @0x62400 (v67; was 0x62200): one more witch Jarate hit on the player. */
 	public static synchronized void writePlayerJarate() {

@@ -71,9 +71,10 @@ int FortCraft_UpgradeBookshelves();
 bool FortCraft_MobBackstabReady();
 
 // Bits 8-15: bleed seconds (Boston Basher, Tribalman's Shiv, ...), for Minecraft to apply to mobs.
+// Bits 16-19: the shooter's MvM Explosive Headshot level (sniper rifle headshots only).
 // Both modules: the client shows crit text for mob hits flagged FC_CRIT / FC_MINICRIT.
 enum FortCraftShotFlags { FC_MELEE = 1, FC_CRIT = 2, FC_MINICRIT = 4, FC_HEADSHOT = 8, FC_KNIFE = 16, FC_SENTRY = 32,
-	FC_BLEED_SHIFT = 8 };
+	FC_BLEED_SHIFT = 8, FC_EXPLOSIVE_SHIFT = 16 };
 
 #ifndef CLIENT_DLL
 
@@ -87,7 +88,8 @@ void FortCraft_ReportWeaponShot( CTFWeaponBase *weapon, const Vector &src, const
 void FortCraft_ReportBlast( const Vector &src, float radius, float damage, int damageType );
 // A thrown jar's splash (Jarate, Mad Milk, Gas Passer) for Minecraft's mobs; nFlags is one of
 // proto::kExplosionJarate / kExplosionMilk / kExplosionGas.
-void FortCraft_ReportJar( const Vector &src, float radius, int nFlags );
+// flExplodeDamage: Gas Passer with the MvM "explode on ignite" upgrade (gassed mobs explode).
+void FortCraft_ReportJar( const Vector &src, float radius, int nFlags, float flExplodeDamage = 0.0f );
 
 
 // TF2 server: fire touched the world or a mob here (TF2 units). Minecraft sets mobs within the

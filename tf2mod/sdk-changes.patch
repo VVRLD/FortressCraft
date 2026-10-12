@@ -553,6 +553,57 @@ index 941823f..06af0c1 100644
  }
  
  
+diff --git a/src/game/client/tf/hud_basedeathnotice.cpp b/src/game/client/tf/hud_basedeathnotice.cpp
+index cb3bd83..6fe73a1 100644
+--- a/src/game/client/tf/hud_basedeathnotice.cpp
++++ b/src/game/client/tf/hud_basedeathnotice.cpp
+@@ -809,6 +809,32 @@ void CHudBaseDeathNotice::FireGameEvent( IGameEvent *event )
+ 	}
+ }
+ 
++//-----------------------------------------------------------------------------
++// FortCraft: "you - weapon icon - mob" for a Minecraft mob the local player killed (Alex,
++// 2026-10-12). pszIcon is a kill icon name without its "d_" (TF2's "weapon" in player_death).
++//-----------------------------------------------------------------------------
++void CHudBaseDeathNotice::FortCraft_AddMobKill( const char *pszKiller, int iKillerTeam, const char *pszIcon,
++	const char *pszVictim, int iVictimTeam, bool bCrit )
++{
++	if ( hud_deathnotice_time.GetFloat() == 0 )
++		return;
++	int iMsg = AddDeathNoticeItem();
++	DeathNoticeItem &notice = m_DeathNotices[ iMsg ];
++	notice.bLocalPlayerInvolved = true;
++	notice.Killer.iTeam = iKillerTeam;
++	notice.Victim.iTeam = iVictimTeam;
++	Q_strncpy( notice.Killer.szName, pszKiller, ARRAYSIZE( notice.Killer.szName ) );
++	Q_strncpy( notice.Victim.szName, pszVictim, ARRAYSIZE( notice.Victim.szName ) );
++	Q_snprintf( notice.szIcon, sizeof( notice.szIcon ), "d_%s", pszIcon );
++	const EDeathNoticeIconFormat eFormat = IsConsole() ? kDeathNoticeIcon_Standard : kDeathNoticeIcon_Inverted;
++	notice.bCrit = bCrit;
++	notice.iconCritDeath = bCrit ? GetIcon( "d_crit", eFormat ) : NULL;
++	notice.iconDeath = GetIcon( notice.szIcon, eFormat );
++	if ( !notice.iconDeath )
++		notice.iconDeath = GetIcon( "d_skull_tf", eFormat );
++	Msg( "%s killed %s with %s.%s\n", pszKiller, pszVictim, pszIcon, bCrit ? " (crit)" : "" );
++}
++
+ //-----------------------------------------------------------------------------
+ // Purpose: Gets the localized name of the control point sent in the event
+ //-----------------------------------------------------------------------------
+diff --git a/src/game/client/tf/hud_basedeathnotice.h b/src/game/client/tf/hud_basedeathnotice.h
+index c2fc5c8..a275c2d 100644
+--- a/src/game/client/tf/hud_basedeathnotice.h
++++ b/src/game/client/tf/hud_basedeathnotice.h
+@@ -100,6 +100,9 @@ public:
+ 	void RetireExpiredDeathNotices( void );
+ 
+ 	virtual void FireGameEvent( IGameEvent *event );
++	// FortCraft: a Minecraft mob the local player killed (TF2 has no event for it).
++	void FortCraft_AddMobKill( const char *pszKiller, int iKillerTeam, const char *pszIcon, const char *pszVictim,
++		int iVictimTeam, bool bCrit );
+ 	virtual bool ShouldShowDeathNotice( IGameEvent *event ){ return true; }
+ 
+ protected:
 diff --git a/src/game/client/tf/player_vs_environment/c_tf_upgrades.cpp b/src/game/client/tf/player_vs_environment/c_tf_upgrades.cpp
 index f60e253..0e2893e 100644
 --- a/src/game/client/tf/player_vs_environment/c_tf_upgrades.cpp
@@ -905,6 +956,329 @@ index 9f9a2db..61777d0 100644
  		{
  			const char *printFormatString = NULL;
  			wchar_t wszPlayerName[ MAX_PLAYER_NAME_LENGTH ];
+diff --git a/src/game/client/tf/vgui/class_loadout_panel.cpp b/src/game/client/tf/vgui/class_loadout_panel.cpp
+index a6614b2..487ccba 100644
+--- a/src/game/client/tf/vgui/class_loadout_panel.cpp
++++ b/src/game/client/tf/vgui/class_loadout_panel.cpp
+@@ -17,6 +17,7 @@
+ #include "item_style_select_dialog.h"
+ #include "vgui/IInput.h"
+ #include "vgui_controls/PanelListPanel.h"
++#include "../../../../../../my-passthrough/tf2mod/fortcraft_link.h"
+ 
+ // memdbgon must be the last include file in a .cpp file!!!
+ #include <tier0/memdbgon.h>
+@@ -433,6 +434,8 @@ CClassLoadoutPanel::CClassLoadoutPanel( vgui::Panel *parent )
+ 	m_pTauntLoadoutButton = NULL;
+ 
+ 	m_bInTauntLoadoutMode = false;
++	m_pFortCraftSlot = NULL;
++	m_bFortCraftSelecting = false;
+ 
+ 	g_pClassLoadoutPanel = this;
+ 
+@@ -635,6 +638,98 @@ void CClassLoadoutPanel::PerformLayout( void )
+ 		m_pLoadoutPresetPanel->SetPos( ( ScreenWidth() - m_pLoadoutPresetPanel->GetWide() ) / 2, m_iItemYPos );
+ 	}
+ 
++	// FortCraft: the Minecraft item key's tile (Alex, 2026-10-12), in the weapon column right under
++	// the last weapon slot: row 4 for most classes. Engineer and Spy already have 4 tiles there
++	// (PDA / watch and sapper): a 5th row was cut off by the Back bar (Alex, 2026-10-12), so their
++	// tile goes beside the weapon column, on the left between rows 2 and 3 (where Alex drew it),
++	// moving the column right if needed. Only if that doesn't fit (narrow screens) are the
++	// column's 5 tiles squeezed into it instead.
++	if ( m_pFortCraftSlot )
++	{
++		const int nKey = FortCraft_QuickSlotKey( m_iCurrentClassIndex );
++		const bool bShow = nKey > 0 && !m_bInTauntLoadoutMode;
++		m_pFortCraftSlot->SetVisible( bShow );
++		if ( bShow )
++		{
++			const bool bFullColumn = m_iCurrentClassIndex == TF_CLASS_ENGINEER || m_iCurrentClassIndex == TF_CLASS_SPY;
++			const int iTileTall = m_pFortCraftSlot->GetTall();
++			int iYPos = m_iItemYPos + m_iItemYDelta * 3;
++			bool bBeside = false;
++			if ( bFullColumn )
++			{
++				const int iTileWide = m_pFortCraftSlot->GetWide();
++				const int iGap = MAX( 2, ( m_iItemYDelta - iTileTall ) / 2 );
++				const int iColX = GetWide() / 2 + m_iItemXPosOffcenterA;
++				const int iShift = MAX( 0, 2 * iGap + iTileWide - iColX );
++				// The class model in the middle may be covered at its edge, not more.
++				int iLimit = GetWide() / 2;
++				if ( m_pPlayerModelPanel )
++					iLimit = m_pPlayerModelPanel->GetXPos() + m_pPlayerModelPanel->GetWide() / 4;
++				if ( iColX + iShift + iTileWide <= iLimit )
++				{
++					bBeside = true;
++					for ( int i = 0; iShift && i < m_pItemModelPanels.Count() && i < NUM_ITEM_PANELS_IN_LOADOUT; i++ )
++					{
++						const int iPos = g_VisibleLoadoutSlotsPerClass[ m_iCurrentClassIndex ]->m_iPos[ i ] - 1;
++						if ( iPos < 0 || iPos > 3 || IsTauntPanelPosition( iPos + 1 ) )
++							continue;  // not in the weapon column
++						int iX, iY;
++						m_pItemModelPanels[ i ]->GetPos( iX, iY );
++						m_pItemModelPanels[ i ]->SetPos( iX + iShift, iY );
++						if ( iPos < m_vecItemOptionButtons.Count() )
++						{
++							m_vecItemOptionButtons[ iPos ]->GetPos( iX, iY );
++							m_vecItemOptionButtons[ iPos ]->SetPos( iX + iShift, iY );
++						}
++					}
++					m_pFortCraftSlot->SetPos( iColX + iShift - iGap - iTileWide, m_iItemYPos + m_iItemYDelta * 3 / 2 );
++				}
++			}
++			if ( bFullColumn && !bBeside )
++			{
++				// Never hide a tile (Alex, 2026-10-12: the Spy's sapper was gone; his 1920x900 panel
++				// logged a 150 spacing for 157-tall tiles). If 5 don't fit from the usual top, the
++				// column starts right under the dotted top line instead; at worst tiles overlap a little.
++				int iTop = m_iItemYPos;
++				int iDelta = MIN( m_iItemYDelta, ( GetTall() - 2 - iTop - iTileTall ) / 4 );
++				if ( iDelta < iTileTall + 2 && m_pTopLinePanel )
++				{
++					iTop = MIN( iTop, m_pTopLinePanel->GetYPos() + m_pTopLinePanel->GetTall() );
++					iDelta = MIN( m_iItemYDelta, ( GetTall() - 2 - iTop - iTileTall ) / 4 );
++				}
++				for ( int i = 0; i < m_pItemModelPanels.Count() && i < NUM_ITEM_PANELS_IN_LOADOUT; i++ )
++				{
++					const int iPos = g_VisibleLoadoutSlotsPerClass[ m_iCurrentClassIndex ]->m_iPos[ i ] - 1;
++					if ( iPos < 0 || iPos > 3 || IsTauntPanelPosition( iPos + 1 ) )
++						continue;  // not in the weapon column
++					int iX, iY;
++					m_pItemModelPanels[ i ]->GetPos( iX, iY );
++					const int iNewY = iTop + iDelta * iPos;
++					m_pItemModelPanels[ i ]->SetPos( iX, iNewY );
++					if ( iPos < m_vecItemOptionButtons.Count() )
++					{
++						m_vecItemOptionButtons[ iPos ]->GetPos( iX, iY );
++						m_vecItemOptionButtons[ iPos ]->SetPos( iX, iNewY );
++					}
++				}
++				iYPos = iTop + iDelta * 4;
++				static int s_nLogged = -1;
++				if ( s_nLogged != GetTall() )
++				{
++					s_nLogged = GetTall();
++					Msg( "FortCraft loadout: panel %dx%d, tile %d tall, 5 rows from y %d, spacing %d%s\n", GetWide(), GetTall(),
++						iTileTall, iTop, iDelta, iDelta < iTileTall ? " (tiles overlap a little)" : "" );
++				}
++			}
++			if ( !bBeside )
++				m_pFortCraftSlot->SetPos( GetWide() / 2 + m_iItemXPosOffcenterA, iYPos );
++			const char *pszName = FortCraft_QuickSlotName( m_iCurrentClassIndex );
++			m_pFortCraftSlot->SetNoItemText( pszName[ 0 ] ? CFmtStr( "%s (none left) - key %d", pszName, nKey ).Get()
++				: CFmtStr( "MINECRAFT ITEM - KEY %d", nKey ).Get() );
++		}
++		m_pFortCraftSlot->SetSelected( false );
++	}
++
+ 	LinkModelPanelControllerNavigation( true );
+ }
+ 
+@@ -897,6 +992,13 @@ void CClassLoadoutPanel::UpdateModelPanels( void )
+ 		m_pPlayerModelPanel->HoldItemInSlot( m_iCurrentSlotIndex );
+ 	}
+ 
++	if ( m_pFortCraftSlot )
++	{
++		m_pFortCraftSlot->SetItem( FortCraft_QuickSlotItem( m_iCurrentClassIndex ) );
++		m_pFortCraftSlot->SetShowQuantity( false );
++		SetBorderForItem( m_pFortCraftSlot, false );
++	}
++
+ 	SetDialogVariable( "loadoutclass", g_pVGuiLocalize->Find( pData->m_szLocalizableName ) );
+ 
+ 	UpdatePassiveAttributes();
+@@ -919,6 +1021,11 @@ void CClassLoadoutPanel::OnItemPanelMouseReleased( vgui::Panel *panel )
+ 
+ 	if ( pItemPanel && IsVisible() )
+ 	{
++		if ( pItemPanel == m_pFortCraftSlot )
++		{
++			FortCraftOpenSlotPicker();
++			return;
++		}
+ 		for ( int i = 0; i < m_pItemModelPanels.Count(); i++ )
+ 		{
+ 			if ( m_pItemModelPanels[i] == pItemPanel  )
+@@ -930,11 +1037,130 @@ void CClassLoadoutPanel::OnItemPanelMouseReleased( vgui::Panel *panel )
+ 	}
+ }
+ 
++//-----------------------------------------------------------------------------
++// FortCraft: TF2's own item picker for the Minecraft item tile (Alex, 2026-10-12), listing only
++// the Minecraft items you carry (supply packs left out), with "Empty" first to clear the key.
++//-----------------------------------------------------------------------------
++class CFortCraftItemSelectionPanel : public CEquipSlotItemSelectionPanel
++{
++	DECLARE_CLASS_SIMPLE( CFortCraftItemSelectionPanel, CEquipSlotItemSelectionPanel );
++public:
++	// Made as a primary-slot picker so the base panel's slot tables stay valid; the list is ours.
++	CFortCraftItemSelectionPanel( vgui::Panel *parent, int iClass )
++		: CEquipSlotItemSelectionPanel( parent, iClass, LOADOUT_POSITION_PRIMARY )
++	{
++	}
++
++	virtual void ApplySchemeSettings( vgui::IScheme *pScheme ) OVERRIDE
++	{
++		BaseClass::ApplySchemeSettings( pScheme );
++		SetHeading();
++	}
++
++	// The heading read "- PRIMARY WEAPON" (Alex, 2026-10-12): set it after every layout too.
++	virtual void PerformLayout( void ) OVERRIDE
++	{
++		BaseClass::PerformLayout();
++		SetHeading();
++	}
++
++	void SetHeading()
++	{
++		vgui::Label *pLabel = dynamic_cast< vgui::Label * >( FindChildByName( "ItemSlotLabel" ) );
++		if ( pLabel )
++		{
++			char szText[ 64 ];
++			V_snprintf( szText, sizeof( szText ), "- MINECRAFT ITEM (KEY %d)", FortCraft_QuickSlotKey( m_iClass ) );
++			pLabel->SetText( szText );
++		}
++	}
++
++	virtual void OnCommand( const char *command ) OVERRIDE
++	{
++		if ( !Q_stricmp( command, "vguicancel" ) )
++		{
++			PostMessageSelectionReturned( 0 );  // closing the picker leaves the key as it was
++			OnClose();
++			return;
++		}
++		BaseClass::OnCommand( command );
++	}
++
++	virtual bool ShouldItemPanelBeVisible( CItemModelPanel *pPanel, int iPanelIndex ) OVERRIDE
++	{
++		return pPanel->HasItem() || iPanelIndex == 0;  // the first tile is "Empty"
++	}
++
++	virtual const char *GetItemNotSelectableReason( const CEconItemView *pItem ) const OVERRIDE
++	{
++		return NULL;
++	}
++
++	virtual void UpdateModelPanelsForSelection( void ) OVERRIDE
++	{
++		CUtlVector< CEconItemView * > items;
++		items.AddToTail( NULL );  // "Empty"
++		for ( int n = 0; n < FortCraft_QuickSlotChoiceCount(); ++n )
++		{
++			CEconItemView *pItem = FortCraft_QuickSlotChoiceItem( n );
++			if ( pItem )
++				items.AddToTail( pItem );
++		}
++		CEconItemView *pCurrent = FortCraft_QuickSlotItem( m_iClass );
++		m_iCurrentItemID = 0;  // "Back": leave the key as it was
++		m_iItemsInSelection = items.Count();
++		if ( GetCurrentPage() >= GetNumPages() )
++			SetCurrentPage( 0 );
++		const int nPageStart = GetCurrentPage() * GetNumSlotsPerPage();
++		for ( int i = 0; i < m_pItemModelPanels.Count(); i++ )
++		{
++			const int k = i + nPageStart;
++			CEconItemView *pItem = k < items.Count() ? items[ k ] : NULL;
++			m_pItemModelPanels[i]->SetShowEquipped( false );
++			m_pItemModelPanels[i]->SetShowGreyedOutTooltip( true );
++			m_pItemModelPanels[i]->SetGreyedOut( NULL );
++			m_pItemModelPanels[i]->SetNoItemText( "#SelectNoItemSlot" );
++			m_pItemModelPanels[i]->SetSelected( false );
++			m_pItemModelPanels[i]->SetShowQuantity( true );
++			m_pItemModelPanels[i]->SetForceShowEquipped( pItem && pItem == pCurrent );
++			m_pItemModelPanels[i]->SetItem( pItem );
++			SetBorderForItem( m_pItemModelPanels[i], false );
++		}
++	}
++};
++
++void CClassLoadoutPanel::FortCraftOpenSlotPicker()
++{
++	if ( m_iCurrentClassIndex == TF_CLASS_UNDEFINED )
++		return;
++	m_bFortCraftSelecting = true;
++	m_pSelectionPanel = new CFortCraftItemSelectionPanel( this, m_iCurrentClassIndex );  // removes itself on close
++	m_pSelectionPanel->ShowPanel( 0, true );
++	if ( m_pPlayerModelPanel )
++	{
++		m_pPlayerModelPanel->SetVisible( false );
++	}
++	ClearItemOptionsMenu();
++	PostMessage( GetParent(), new KeyValues( "SelectionStarted" ) );
++}
++
+ //-----------------------------------------------------------------------------
+ // Purpose: 
+ //-----------------------------------------------------------------------------
+ void CClassLoadoutPanel::OnSelectionReturned( KeyValues *data )
+ {
++	// FortCraft: the picker was for the Minecraft item tile: set the key, not a TF2 loadout slot.
++	if ( m_bFortCraftSelecting )
++	{
++		m_bFortCraftSelecting = false;
++		uint64 ulIndex = data ? data->GetUint64( "itemindex", 0 ) : 0;
++		if ( ulIndex != 0 )
++		{
++			FortCraft_SetQuickSlotItem( m_iCurrentClassIndex, ulIndex );
++			UpdateModelPanels();
++		}
++		data = NULL;
++	}
+ 	if ( data )
+ 	{
+ 		uint64 ulIndex = data->GetUint64( "itemindex", INVALID_ITEM_ID );
+@@ -978,6 +1204,7 @@ void CClassLoadoutPanel::OnSelectionReturned( KeyValues *data )
+ //-----------------------------------------------------------------------------
+ void CClassLoadoutPanel::OnCancelSelection( void )
+ {
++	m_bFortCraftSelecting = false;
+ 	if ( m_pSelectionPanel )
+ 	{
+ 		m_pSelectionPanel->SetVisible( false );
+@@ -1011,6 +1238,21 @@ void CClassLoadoutPanel::ApplyKVsToItemPanels( void )
+ {
+ 	BaseClass::ApplyKVsToItemPanels();
+ 
++	// FortCraft: the Minecraft item key's tile, made like the weapon tiles.
++	if ( !m_pFortCraftSlot )
++	{
++		m_pFortCraftSlot = vgui::SETUP_PANEL( new CItemModelPanel( this, "fortcraft_quickslot" ) );
++		m_pFortCraftSlot->SetActAsButton( true, true );
++		m_pFortCraftSlot->SetTooltip( m_pMouseOverTooltip, "" );
++		m_pFortCraftSlot->SetVisible( false );
++	}
++	if ( m_pItemModelPanelKVs )
++	{
++		m_pFortCraftSlot->ApplySettings( m_pItemModelPanelKVs );
++		SetBorderForItem( m_pFortCraftSlot, false );
++		m_pFortCraftSlot->InvalidateLayout();
++	}
++
+ 	if ( m_pItemOptionPanelKVs )
+ 	{
+ 		for ( int i = 0; i < m_vecItemOptionButtons.Count(); i++ )
+diff --git a/src/game/client/tf/vgui/class_loadout_panel.h b/src/game/client/tf/vgui/class_loadout_panel.h
+index 894b0e6..ad44179 100644
+--- a/src/game/client/tf/vgui/class_loadout_panel.h
++++ b/src/game/client/tf/vgui/class_loadout_panel.h
+@@ -119,6 +119,11 @@ protected:
+ 	int						m_iCurrentSlotIndex;
+ 	bool					m_bLoadoutHasChanged;
+ 	bool					m_bInTauntLoadoutMode;
++
++	// FortCraft: the Minecraft item key's tile, under melee (Engineer and Spy: under the PDA).
++	CItemModelPanel			*m_pFortCraftSlot;
++	bool					m_bFortCraftSelecting;	// TF2's item picker is open for that tile
++	void					FortCraftOpenSlotPicker();
+ 	CTFPlayerModelPanel		*m_pPlayerModelPanel;
+ 	CEquipSlotItemSelectionPanel	*m_pSelectionPanel;
+ 	vgui::Label				*m_pTauntHintLabel;
 diff --git a/src/game/client/tf/vgui/crafting_panel.cpp b/src/game/client/tf/vgui/crafting_panel.cpp
 index 7137243..6dbd54d 100644
 --- a/src/game/client/tf/vgui/crafting_panel.cpp
@@ -2891,7 +3265,7 @@ index 3b2c6a1..6b26772 100644
  	virtual int		OnTakeDamage( const CTakeDamageInfo &info ) OVERRIDE;
  	virtual void	IncrementDeflected( void );
 diff --git a/src/game/shared/tf/tf_weapon_jar.cpp b/src/game/shared/tf/tf_weapon_jar.cpp
-index ba54bf9..d05749d 100644
+index ba54bf9..05d3872 100644
 --- a/src/game/shared/tf/tf_weapon_jar.cpp
 +++ b/src/game/shared/tf/tf_weapon_jar.cpp
 @@ -26,6 +26,7 @@
@@ -2902,7 +3276,7 @@ index ba54bf9..d05749d 100644
  #endif
  
  //=============================================================================
-@@ -317,6 +318,15 @@ extern void ExtinguishPlayer( CEconEntity *pExtinguisher, CTFPlayer *pOwner, CTF
+@@ -317,6 +318,21 @@ extern void ExtinguishPlayer( CEconEntity *pExtinguisher, CTFPlayer *pOwner, CTF
  
  void JarExplode( int iEntIndex, CTFPlayer *pAttacker, CBaseEntity *pOriginalWeapon, CBaseEntity *pWeapon, const Vector& vContactPoint, int iTeam, float flRadius, ETFCond cond, float flDuration, const char *pszImpactEffect, const char *pszExplodeSound )
  {
@@ -2913,7 +3287,13 @@ index ba54bf9..d05749d 100644
 +	else if ( cond == TF_COND_MAD_MILK )
 +		FortCraft_ReportJar( vContactPoint, flRadius, 1 << 7 );
 +	else if ( cond == TF_COND_GAS )
-+		FortCraft_ReportJar( vContactPoint, flRadius, 1 << 8 );
++	{
++		// MvM "explode on ignite": gassed mobs explode for 350 (TF2's number), as players do.
++		int iExplodeOnIgnite = 0;
++		if ( pWeapon )
++			CALL_ATTRIB_HOOK_INT_ON_OTHER( pWeapon, iExplodeOnIgnite, explode_on_ignite );
++		FortCraft_ReportJar( vContactPoint, flRadius, 1 << 8, iExplodeOnIgnite ? 350.0f : 0.0f );
++	}
 +
  	// Splash!
  	CPVSFilter particleFilter( vContactPoint );
