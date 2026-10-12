@@ -62,6 +62,18 @@ final class GpuOverlay {
 	private static final long[] interopObj = new long[2];
 	private static int width, height;
 	private static int copyFailures;
+	/**
+	 * Written before the GPU setup starts and deleted once the GPU overlay has worked for 20 s.
+	 * If Minecraft or TF2 dies in between (a crash inside the graphics driver can't be caught),
+	 * the file stays and every later launch uses the shared-memory copy (testers, 2026-10-12:
+	 * TF2 closed as soon as it appeared in Minecraft, and only -fortcraft_cpu_overlay helped).
+	 * Delete this file (in fabric/run) to try the GPU path again.
+	 */
+	private static final java.nio.file.Path OFF_FILE = java.nio.file.Path.of("fortcraft_gpu_overlay_off.txt");
+	private static final long TRIAL_NANOS = 20_000_000_000L;
+	private static long openedAt;
+	private static boolean trialPassed;
+	private static boolean keepOff;
 	private static int framesSinceOpen;
 	private static int emptyChecks;
 	private static boolean contentSeen;
@@ -112,6 +124,11 @@ final class GpuOverlay {
 				}
 			}
 			copyFailures = 0;
+			if (!trialPassed && contentSeen && openedAt != 0 && System.nanoTime() - openedAt > TRIAL_NANOS) {
+				trialPassed = true;
+				deleteOffFile();
+				FortCraft.LOG.info("FortCraft: GPU overlay worked for 20 s; keeping it on for this PC");
+			}
 			if (!contentSeen && ++framesSinceOpen % 60 == 0 && !checkContent(gl.glId(), w, h)) {
 				return false;
 			}
@@ -182,8 +199,43 @@ final class GpuOverlay {
 		return 0;
 	}
 
+	/** Called when TF2 goes away: if that was during the 20 s trial, the GPU path stays off. */
+	public static void onGuestGone() {
+		if (state == 2 || trialPassed) {
+			return;
+		}
+		keepOff = true;
+		fail("TF2 closed during the GPU overlay's first 20 s; turned off on this PC (" + OFF_FILE.toAbsolutePath() + ")");
+	}
+
+	private static void deleteOffFile() {
+		try {
+			java.nio.file.Files.deleteIfExists(OFF_FILE);
+		} catch (java.io.IOException e) {
+			FortCraft.LOG.warn("FortCraft: couldn't delete {}: {}", OFF_FILE.toAbsolutePath(), e.toString());
+		}
+	}
+
 	private static void init() {
 		state = 2;
+		if (java.nio.file.Files.exists(OFF_FILE)) {
+			fail("turned off on this PC because Minecraft or TF2 closed while it started last time; delete "
+				+ OFF_FILE.toAbsolutePath() + " to try again");
+			return;
+		}
+		try {
+			java.nio.file.Files.writeString(OFF_FILE, "FortCraft was trying the GPU overlay. If this file is still here, "
+				+ "Minecraft or TF2 closed while it started, so FortCraft uses the CPU overlay on this PC. "
+				+ "Delete this file to try the GPU overlay again.");
+			// Quitting Minecraft normally during the trial isn't a crash (a crash skips this hook).
+			Runtime.getRuntime().addShutdownHook(new Thread(() -> {
+				if (!keepOff && !trialPassed) {
+					deleteOffFile();
+				}
+			}, "FortCraft GPU overlay trial"));
+		} catch (java.io.IOException e) {
+			FortCraft.LOG.warn("FortCraft: couldn't write {}: {}", OFF_FILE.toAbsolutePath(), e.toString());
+		}
 		try {
 			SymbolLookup d3d9 = SymbolLookup.libraryLookup("d3d9", Arena.global());
 			SymbolLookup user32 = SymbolLookup.libraryLookup("user32", Arena.global());
@@ -265,6 +317,7 @@ final class GpuOverlay {
 	private static void open(int gen, int w, int h, long[] handles) throws Throwable {
 		close();
 		framesSinceOpen = 0;
+		openedAt = System.nanoTime();
 		emptyChecks = 0;
 		copyFailures = 0;
 		generation = gen;
@@ -318,6 +371,11 @@ final class GpuOverlay {
 	private static void fail(String why) {
 		state = 2;
 		close();
+		// A failure we caught (no interop, blank frames, ...) is checked again next launch; only a
+		// close during the trial (or a crash, which never gets here) keeps the GPU path off.
+		if (!keepOff && !why.startsWith("turned off on this PC")) {
+			deleteOffFile();
+		}
 		FortCraft.LOG.warn("FortCraft: GPU overlay not available ({}); using the shared-memory copy", why);
 	}
 

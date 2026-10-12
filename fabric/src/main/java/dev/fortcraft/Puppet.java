@@ -78,6 +78,9 @@ public final class Puppet {
 		if (guestAlive != guestWasAlive) {
 			guestWasAlive = guestAlive;
 			FortCraft.LOG.info(guestAlive ? "FortCraft: TF2 connected (pid {})" : "FortCraft: TF2 gone (pid {})", FortLink.guestPid());
+			if (!guestAlive) {
+				GpuOverlay.onGuestGone();
+			}
 		}
 
 		if (minecraft.level == null) {
