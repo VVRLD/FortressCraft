@@ -22,7 +22,10 @@ namespace fortcraft { namespace proto
 	static constexpr std::uint64_t kMappingBytes = 0x100000 + 2ull * 3840 * 2160 * 4;
 
 	// A side counts as gone when its heartbeat is older than this.
-	static constexpr std::uint64_t kHeartbeatTimeoutMs = 1000;
+	// 5 s (was 1 s): Minecraft's render thread can freeze for over a second (creating a world,
+	// setting up the GPU overlay, a slow PC), and TF2 then quit, thinking Minecraft was gone
+	// (testers, 2026-10-12). Minecraft's heartbeat now also comes from its own thread.
+	static constexpr std::uint64_t kHeartbeatTimeoutMs = 5000;
 
 	static constexpr std::uint64_t kOffHeader = 0x0;
 	static constexpr std::uint64_t kOffPlayerState = 0x100;

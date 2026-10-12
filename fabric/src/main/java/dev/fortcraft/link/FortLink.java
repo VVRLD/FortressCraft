@@ -34,7 +34,7 @@ public final class FortLink {
 
 	// OverlayHeader @0x200: seq, front, width, height
 	private static final long O = 0x200;
-	private static final long HEARTBEAT_TIMEOUT_MS = 1000;
+	private static final long HEARTBEAT_TIMEOUT_MS = 5000;  // protocol kHeartbeatTimeoutMs
 
 	// Header @0x0
 	private static final long H_MAGIC = 0x00;
@@ -179,7 +179,29 @@ public final class FortLink {
 		}
 		shm.set(JAVA_LONG, H_HOST_FRAME, frame);
 		LONG.setRelease(shm, H_HOST_HEARTBEAT, tickCount());
+		if (heartbeatThread == null) {
+			// The heartbeat says "Minecraft is running", not "Minecraft drew a frame": from its
+			// own thread too, so a freeze of the render thread (world creation, GPU overlay
+			// setup, a slow PC) doesn't make TF2 think Minecraft is gone and quit (2026-10-12).
+			heartbeatThread = new Thread(() -> {
+				while (true) {
+					MemorySegment link = shm;
+					if (link != null) {
+						LONG.setRelease(link, H_HOST_HEARTBEAT, tickCount());
+					}
+					try {
+						Thread.sleep(200);
+					} catch (InterruptedException e) {
+						return;
+					}
+				}
+			}, "FortCraft heartbeat");
+			heartbeatThread.setDaemon(true);
+			heartbeatThread.start();
+		}
 	}
+
+	private static Thread heartbeatThread;
 
 	/** Forward what the player is pressing and where they're looking. Call once per frame. */
 	public static void writeInput(long sample, int buttons, float yaw, float pitch, int weaponSlot) {
