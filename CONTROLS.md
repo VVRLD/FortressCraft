@@ -21,7 +21,8 @@ weapons, menus and HUD. Every key marked *rebindable* can be changed in Minecraf
 | Z / X / C | TF2 voice menus 1 / 2 / 3; then a number key picks a line, 0 closes *(rebindable)* |
 
 Engineer: with the build or destroy PDA out, 1-4 pick sentry, dispenser, teleporter entrance and
-teleporter exit.
+teleporter exit. Q or a right click puts any PDA away (the Engineer's build and destroy
+PDAs, the Spy's disguise kit) and goes back to your last weapon.
 
 ## Menus
 
