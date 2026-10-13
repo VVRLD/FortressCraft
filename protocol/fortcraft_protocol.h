@@ -178,7 +178,7 @@ namespace fortcraft { namespace proto
 		kCameraEurekaMenu = 1u << 6, // v49: the Eureka Effect's teleport menu is open (1, 2 and Q go to it)
 		kCameraConsole = 1u << 7,   // v53: TF2's console is showing (every key types, menu keys included)
 		kCameraDead = 1u << 8,      // v62: TF2's merc is dead (Minecraft clears the player's potion effects)
-		kCameraEngineerPda = 1u << 9, // 2026-10-13: the Engineer's build or destroy PDA is out (Q puts it away)
+		kCameraEngineerPda = 1u << 9, // 2026-10-13: a PDA is out (Engineer build/destroy, Spy disguise kit); Q puts it away
 	};
 
 	struct Camera

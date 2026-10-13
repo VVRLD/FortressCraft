@@ -231,6 +231,15 @@ static proto::OverlayPose s_PairPose, s_WorkPose;
 // Movement (tf_gamemovement.cpp, both modules) sees it as IN_BULLRUSH on the command, a button
 // TF2 never uses, so the client's prediction and the server agree.
 static void QuickSlotPressed( int nSlot );  // the Minecraft item key (below)
+
+// A PDA is out: the Engineer's build or destroy PDA, or the Spy's disguise kit. Their number keys
+// pick buildings or disguises, so Q and a right click put them away (Alex, 2026-10-13).
+static bool IsPda( C_BaseCombatWeapon *pWeapon )
+{
+	C_TFWeaponBase *pTF = dynamic_cast< C_TFWeaponBase * >( pWeapon );
+	const int id = pTF ? pTF->GetWeaponID() : TF_WEAPON_NONE;
+	return id == TF_WEAPON_PDA_ENGINEER_BUILD || id == TF_WEAPON_PDA_ENGINEER_DESTROY || id == TF_WEAPON_PDA_SPY;
+}
 static bool QuickSlotHasItem( int nClass, int nSlot );
 static bool CreativeFlight( bool bJump )
 {
@@ -316,6 +325,20 @@ bool FortCraft_ApplyInput( CUserCmd *pCmd )
 	if ( in.buttons & proto::kInAttack2 ) buttons |= IN_ATTACK2;
 	if ( CreativeFlight( ( in.buttons & proto::kInJump ) != 0 ) )
 		buttons |= IN_BULLRUSH;
+	// Right click with a PDA out: put it away (it has no right-click use).
+	static bool s_bAttack2Was;
+	const bool bAttack2 = ( buttons & IN_ATTACK2 ) != 0;
+	C_TFPlayer *pPdaPlayer = C_TFPlayer::GetLocalTFPlayer();
+	if ( pPdaPlayer && IsPda( pPdaPlayer->GetActiveWeapon() ) && !UiOpen() )
+	{
+		if ( bAttack2 && !s_bAttack2Was )
+		{
+			engine->ClientCmd( "lastinv\n" );
+			Msg( "FortCraft: right click put the PDA away\n" );
+		}
+		buttons &= ~IN_ATTACK2;
+	}
+	s_bAttack2Was = bAttack2;
 	pCmd->buttons = buttons;
 
 	// Minecraft's hotbar slot picks the TF2 weapon slot (1: primary, 2: secondary, 3: melee...).
@@ -431,8 +454,7 @@ static void WriteCamera( const Vector &origin, const QAngle &angles )
 		| ( EurekaMenuOpen() ? proto::kCameraEurekaMenu : 0 )
 		| ( engine->Con_IsVisible() ? proto::kCameraConsole : 0 )
 		| ( pPlayer && !pPlayer->IsAlive() ? proto::kCameraDead : 0 )
-		| ( pActive && ( pActive->GetWeaponID() == TF_WEAPON_PDA_ENGINEER_BUILD
-			|| pActive->GetWeaponID() == TF_WEAPON_PDA_ENGINEER_DESTROY ) ? proto::kCameraEngineerPda : 0 );
+		| ( IsPda( pActive ) ? proto::kCameraEngineerPda : 0 );
 	ToMinecraft( origin, cam.x, cam.y, cam.z );
 	cam.yaw = AngleNormalize( -angles.y - 90.0f );
 	cam.pitch = angles.x;
@@ -1007,18 +1029,14 @@ static void UiCommand( C_TFPlayer *pPlayer, uint32_t cmd )
 		Msg( "FortCraft: TF2 voice menu %u\n", cmd - proto::kUiVoiceMenu1 + 1 );
 		return;
 	}
-	// Q with the Engineer's build or destroy PDA out: put it away, back to the last weapon. Its
-	// number keys pick buildings, so there was no way back but a left click (GitHub issue 13).
-	if ( cmd == proto::kUiCancel && pPlayer )
+	// Q with a PDA out (Engineer build/destroy, Spy disguise kit): put it away, back to the last
+	// weapon. Their number keys pick buildings or disguises, so there was no way back but a left
+	// click (GitHub issue 13; the Spy's kit too, Alex 2026-10-13).
+	if ( cmd == proto::kUiCancel && pPlayer && IsPda( pPlayer->GetActiveWeapon() ) )
 	{
-		C_TFWeaponBase *pPda = dynamic_cast< C_TFWeaponBase * >( pPlayer->GetActiveWeapon() );
-		const int idPda = pPda ? pPda->GetWeaponID() : TF_WEAPON_NONE;
-		if ( idPda == TF_WEAPON_PDA_ENGINEER_BUILD || idPda == TF_WEAPON_PDA_ENGINEER_DESTROY )
-		{
-			engine->ClientCmd( "lastinv\n" );
-			Msg( "FortCraft: Q put the Engineer's PDA away\n" );
-			return;
-		}
+		engine->ClientCmd( "lastinv\n" );
+		Msg( "FortCraft: Q put the PDA away\n" );
+		return;
 	}
 	if ( cmd >= proto::kUiVoiceSelect1 && cmd < proto::kUiVoiceSelect1 + 9 )
 	{
@@ -3217,10 +3235,21 @@ static int FreeLastPagePosition( CPlayerInventory *pInv )
 		bool bUsed = false;
 		for ( int i = 0; i < pInv->GetItemCount() && !bUsed; ++i )
 			bUsed = ExtractBackpackPositionFromBackend( pInv->GetItem( i )->GetInventoryPosition() ) == (uint32)pos;
+		// Only Minecraft items you carry now hold their slot here (pItem set).
 		for ( int i = 0; i < s_LocalStacks.Count() && !bUsed; ++i )
-			bUsed = s_LocalStacks[ i ]->pos == pos;
+			bUsed = s_LocalStacks[ i ]->pos == pos && s_LocalStacks[ i ]->pItem;
 		if ( !bUsed )
+		{
+			// A slot kept for an item you no longer carry goes to this one; that item gets a new
+			// slot if it comes back. Kept slots used to pile up over a session until the page was
+			// full of them and new items showed nowhere (Alex's testers, 2026-10-13).
+			for ( int i = 0; i < s_LocalStacks.Count(); ++i )
+			{
+				if ( s_LocalStacks[ i ]->pos == pos )
+					s_LocalStacks[ i ]->pos = 0;
+			}
 			return pos;
+		}
 	}
 	return 0;
 }

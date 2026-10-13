@@ -45,12 +45,12 @@ public final class Taunts {
 	 * the number-key and Q presses before Minecraft sees them and pass them to TF2.
 	 */
 	public static void beforeKeybinds(Minecraft minecraft) {
-		// Q with the Engineer's PDA out: TF2 puts it away (its number keys pick buildings, so it
-		// could only be left with a left click; GitHub issue 13).
+		// Q with a PDA out (Engineer build/destroy, Spy disguise kit): TF2 puts it away (their number
+		// keys pick buildings or disguises, so it could only be left with a left click; GitHub issue 13).
 		if (minecraft.gui.screen() == null && Overlay.active() && FortLink.engineerPdaOut()) {
 			while (minecraft.options.keyDrop.consumeClick()) {
 				FortLink.sendUiCommand(CANCEL);
-				FortCraft.LOG.info("FortCraft: Q -> put the Engineer's PDA away");
+				FortCraft.LOG.info("FortCraft: Q -> put the PDA away");
 			}
 		}
 		if (!tf2HasKeys()) {
