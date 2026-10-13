@@ -446,6 +446,11 @@ public final class FortLink {
 	public record Tf2Camera(boolean thirdPerson, boolean tauntMenu, boolean taunting, boolean uiOpen, boolean medigun, double x, double y, double z, float yaw, float pitch, float zoom, boolean cloaked, boolean eurekaMenu, boolean console, boolean dead) {
 	}
 
+	/** True while the Engineer's build or destroy PDA is out (camera flag kCameraEngineerPda). */
+	public static boolean engineerPdaOut() {
+		return shm != null && (shm.get(JAVA_INT, 0x1D4) & 512) != 0;
+	}
+
 	public static Tf2Camera readCamera() {
 		if (shm == null) {
 			return null;

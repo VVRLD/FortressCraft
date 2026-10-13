@@ -123,6 +123,12 @@ if [[ -n "$MISSING" || "${FORTCRAFT_STEAM_RUNTIME:-}" == "1" ]] && [[ "${FORTCRA
 		exit 1
 	fi
 	RUNTIME=("$SNIPER/run" --)
+	# The container only sees the usual folders: share the Source SDK Base library and the
+	# FortCraft folder in case they're on another drive (GitHub issue 11: /mnt/... made TF2 say
+	# Source SDK Base 2013 Multiplayer isn't installed).
+	SDKLIB=$(cd "$SDKBASE/../../.." && pwd)
+	export PRESSURE_VESSEL_FILESYSTEMS_RW="${PRESSURE_VESSEL_FILESYSTEMS_RW:+$PRESSURE_VESSEL_FILESYSTEMS_RW:}$SDKLIB:$(cd "$GAME/../.." && pwd)"
+	echo "Shared with Steam's runtime: $PRESSURE_VESSEL_FILESYSTEMS_RW" >> "$DIAG"
 	echo "Running TF2 inside Steam's Linux Runtime ($SNIPER)"
 fi
 echo "Launch: ${RUNTIME[*]:-direct}" >> "$DIAG"

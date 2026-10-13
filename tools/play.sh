@@ -14,6 +14,9 @@ mkdir -p "$LOGS"
 chmod +x "$HERE/../fabric/gradlew" 2>/dev/null || true
 # Gradle needs Java 25 (newer Java such as 27 makes the Minecraft build fail at once).
 source "$HERE/java25.sh"
+# Some unzip tools leave files or folders dated before 1970, and Gradle then refuses to build
+# ("Invalid Timestamp", GitHub issue 12): give anything dated before 2000 today's date.
+find "$HERE/../fabric/src" ! -newermt 2000-01-01 -exec touch -c {} + 2>/dev/null || true
 echo "Starting Minecraft (log: logs/minecraft_stdout.log). The first start downloads Minecraft and Fabric files."
 ( cd "$HERE/../fabric" && ./gradlew runClient > "$LOGS/minecraft_stdout.log" 2>&1 ) &
 MC=$!

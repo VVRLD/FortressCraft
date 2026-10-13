@@ -13,6 +13,10 @@ tasklist /fi "imagename eq mod_tf_win64.exe" | find /i "mod_tf_win64.exe" >nul &
   echo TF2 is still running. Close Minecraft, wait a few seconds, and try again.
   exit /b 1
 )
+rem Valve's build turns its VScript (.nut) files into *_nut.h headers with Python. If Python was
+rem missing on an earlier try, those headers were left empty and are never made again
+rem ("g_Script_spawn_helper: undeclared identifier", GitHub issue 2): delete empty ones.
+for /r "%SRC%\game" %%F in (*_nut.h) do if %%~zF LSS 64 del "%%F"
 for %%P in (game\client\client_win64_tf.vcxproj game\server\server_win64_tf.vcxproj) do (
   "%MSBUILD%" "%SRC%\%%P" /m /p:Configuration=Release /p:Platform=x64 /p:PlatformToolset=%FORTCRAFT_TOOLSET% /v:quiet /nologo /clp:ErrorsOnly || exit /b 1
 )

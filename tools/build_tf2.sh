@@ -54,8 +54,11 @@ tty=()
 
 echo "Building the TF2 mod ($mode) inside $IMAGE ..."
 set +e  # keep going after a failed build so the log path is printed
+# --security-opt label=disable: on SELinux systems (Bazzite, Fedora Silverblue) the container
+# otherwise can't read the FortCraft folder ("buildallprojects: Permission denied", GitHub issue 9).
 podman run --rm ${tty[@]+"${tty[@]}"} \
 	--userns=keep-id \
+	--security-opt label=disable \
 	--env "$check_env=buildallprojects" \
 	--env "CCACHE_DIR=$ccache" \
 	--mount "type=bind,source=$ccache,target=$ccache" \

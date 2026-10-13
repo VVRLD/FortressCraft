@@ -430,7 +430,9 @@ static void WriteCamera( const Vector &origin, const QAngle &angles )
 			? proto::kCameraCloaked : 0 )
 		| ( EurekaMenuOpen() ? proto::kCameraEurekaMenu : 0 )
 		| ( engine->Con_IsVisible() ? proto::kCameraConsole : 0 )
-		| ( pPlayer && !pPlayer->IsAlive() ? proto::kCameraDead : 0 );
+		| ( pPlayer && !pPlayer->IsAlive() ? proto::kCameraDead : 0 )
+		| ( pActive && ( pActive->GetWeaponID() == TF_WEAPON_PDA_ENGINEER_BUILD
+			|| pActive->GetWeaponID() == TF_WEAPON_PDA_ENGINEER_DESTROY ) ? proto::kCameraEngineerPda : 0 );
 	ToMinecraft( origin, cam.x, cam.y, cam.z );
 	cam.yaw = AngleNormalize( -angles.y - 90.0f );
 	cam.pitch = angles.x;
@@ -1004,6 +1006,19 @@ static void UiCommand( C_TFPlayer *pPlayer, uint32_t cmd )
 		engine->ClientCmd_Unrestricted( VarArgs( "voice_menu_%u\n", cmd - proto::kUiVoiceMenu1 + 1 ) );
 		Msg( "FortCraft: TF2 voice menu %u\n", cmd - proto::kUiVoiceMenu1 + 1 );
 		return;
+	}
+	// Q with the Engineer's build or destroy PDA out: put it away, back to the last weapon. Its
+	// number keys pick buildings, so there was no way back but a left click (GitHub issue 13).
+	if ( cmd == proto::kUiCancel && pPlayer )
+	{
+		C_TFWeaponBase *pPda = dynamic_cast< C_TFWeaponBase * >( pPlayer->GetActiveWeapon() );
+		const int idPda = pPda ? pPda->GetWeaponID() : TF_WEAPON_NONE;
+		if ( idPda == TF_WEAPON_PDA_ENGINEER_BUILD || idPda == TF_WEAPON_PDA_ENGINEER_DESTROY )
+		{
+			engine->ClientCmd( "lastinv\n" );
+			Msg( "FortCraft: Q put the Engineer's PDA away\n" );
+			return;
+		}
 	}
 	if ( cmd >= proto::kUiVoiceSelect1 && cmd < proto::kUiVoiceSelect1 + 9 )
 	{
@@ -3188,12 +3203,15 @@ const char *FortCraft_LocalItemImage( unsigned long long itemID )
 	return p && p->icon[0] ? p->icon : NULL;
 }
 
-// First free slot on the backpack's last page: no Steam item and no other Minecraft stack there.
+// First free backpack slot for a Minecraft stack: no Steam item and no other Minecraft stack
+// there. The last page first; if the player's own items fill it, the pages before it, last to
+// first (GitHub issue 13: some Minecraft items, like netherrack, never showed in TF2's backpack).
 static int FreeLastPagePosition( CPlayerInventory *pInv )
 {
 	const int nPerPage = 50;  // BACKPACK_SLOTS_PER_PAGE
 	const int nMax = pInv->GetMaxItemCount();
-	const int nFirst = ( ( nMax + nPerPage - 1 ) / nPerPage - 1 ) * nPerPage + 1;
+	const int nLastFirst = ( ( nMax + nPerPage - 1 ) / nPerPage - 1 ) * nPerPage + 1;
+	for ( int nFirst = nLastFirst; nFirst >= 1; nFirst -= nPerPage )
 	for ( int pos = nFirst; pos < nFirst + nPerPage && pos <= nMax; ++pos )
 	{
 		bool bUsed = false;
@@ -3225,7 +3243,7 @@ static void AddLocalItem( CPlayerInventory *pInv, int n )
 		st.pos = FreeLastPagePosition( pInv );
 	if ( !st.pos )
 	{
-		Msg( "FortCraft backpack: no free slot on the last page for %s\n", st.id );
+		Msg( "FortCraft backpack: no free backpack slot for %s\n", st.id );
 		return;
 	}
 	CEconItem *pItem = new CEconItem;
