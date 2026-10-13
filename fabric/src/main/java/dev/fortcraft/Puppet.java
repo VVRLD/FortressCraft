@@ -27,7 +27,7 @@ public final class Puppet {
 	private static final String WORLD_NAME = "FortCraft Test";
 	private static final String NORMAL_WORLD_NAME = "FortCraft Normal";
 
-	private static final int TARGET_FPS = 240;
+	private static final int TARGET_FPS = LowEnd.ON ? 60 : 240;  // low-end mode: 60 for both games
 
 	private static long frame;
 	private static boolean fpsSet;
@@ -55,6 +55,7 @@ public final class Puppet {
 			fpsSet = true;
 			minecraft.options.framerateLimit().set(TARGET_FPS);
 			FortCraft.LOG.info("FortCraft: Minecraft frame rate limit set to {}", TARGET_FPS);
+			LowEnd.apply(minecraft);
 		}
 		// While paced to TF2's frames (Overlay.pace), Minecraft's own frame limiter would add its
 		// own uneven waits on top, so it is switched off; TF2 still gets the 240 fps target.

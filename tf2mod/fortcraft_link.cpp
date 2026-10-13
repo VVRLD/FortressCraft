@@ -1706,7 +1706,9 @@ static void MatchHostDisplay()
 	const proto::HostDisplay &d = At< proto::HostDisplay >( proto::kOffHostDisplay );
 	if ( d.width <= 0 || d.height <= 0 )
 		return;
-	static int s_nCapH = CommandLine()->ParmValue( "-fortcraft_overlay_height", 1080 );
+	// Low-end mode (-fortcraft_lowend, PLAY-FORTCRAFT-LOW-END.cmd): 720p, under half the pixels.
+	static int s_nCapH = CommandLine()->ParmValue( "-fortcraft_overlay_height",
+		CommandLine()->FindParm( "-fortcraft_lowend" ) ? 720 : 1080 );
 	static const int kHeights[] = { 1080, 900, 720, 540 };
 	int h = 540;
 	for ( int i = 0; i < 4; ++i )

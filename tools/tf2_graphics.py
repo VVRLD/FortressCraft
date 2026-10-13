@@ -1,6 +1,6 @@
 """Copies the player's own TF2 graphics settings into FortCraft's TF2.
 
-    python tools/tf2_graphics.py <output .cfg>
+    python tools/tf2_graphics.py [--low] <output .cfg>
 
 Run by tools/run_tf2.bat and tools/run_tf2.sh on every start; TF2 runs the file with +exec.
 Reads (never writes) the real Team Fortress 2's settings:
@@ -28,6 +28,12 @@ QUALITY = [
     'r_lod',
 ]
 ALWAYS = [('mat_vsync', '0'), ('mat_motion_blur_enabled', '0')]
+# Low-end mode (--low, from PLAY-FORTCRAFT-LOW-END.cmd): TF2's lowest picture settings instead of
+# the player's own, for weaker PCs (Alex, 2026-10-12).
+LOW = [('mat_picmip', '2'), ('r_rootlod', '2'), ('r_lod', '2'), ('mat_reducefillrate', '1'),
+       ('r_shadowrendertotexture', '0'), ('mat_antialias', '0'), ('mat_aaquality', '0'),
+       ('mat_forceaniso', '1'), ('mat_trilinear', '0'), ('mat_bumpmap', '0'), ('mat_parallaxmap', '0'),
+       ('r_flex', '0'), ('r_eyes', '0'), ('r_teeth', '0'), ('cl_particle_batch_mode', '1')]
 
 
 def steam_roots():
@@ -133,9 +139,20 @@ def from_registry(out):
 
 
 def main():
-    if len(sys.argv) != 2:
+    low = '--low' in sys.argv[1:]
+    args = [a for a in sys.argv[1:] if a != '--low']
+    if len(args) != 1:
         print(__doc__)
         return 2
+    sys.argv[1:] = args
+    if low:
+        lines = ['// Written by FortCraft\'s tools/tf2_graphics.py: low-end mode, TF2\'s lowest picture settings.']
+        lines += ['%s "%s"' % kv for kv in LOW + ALWAYS]
+        os.makedirs(os.path.dirname(os.path.abspath(sys.argv[1])), exist_ok=True)
+        with open(sys.argv[1], 'w', encoding='utf-8', newline='\n') as f:
+            f.write('\n'.join(lines) + '\n')
+        print('FortCraft: low-end mode: TF2 on its lowest graphics')
+        return 0
     settings = {}
     tf = tf_dir()
     from_cfg = from_config_cfg(tf, settings) if tf else 0

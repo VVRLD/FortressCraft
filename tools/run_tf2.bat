@@ -10,6 +10,7 @@ rem Pass "visible" first to keep TF2's window on screen:  tools\run_tf2.bat visi
 rem Extra switches go after it (or alone):
 rem   -fortcraft_no_overlay   no weapon/HUD copy at all (to tell overlay cost from TF2's own)
 rem   -fortcraft_cpu_overlay  use the old read-back copy instead of the GPU one
+rem   -fortcraft_lowend       low-end mode: 720p, TF2's lowest graphics (PLAY-FORTCRAFT-LOW-END.cmd)
 setlocal
 set SDK=%~dp0..\..\source-sdk-2013\game
 set LOGS=%~dp0..\logs
@@ -21,5 +22,7 @@ if /i "%~1"=="visible" (
   set EXTRA=%2 %3 %4
 )
 rem The player's own TF2 graphics settings (motion blur and vertical sync always off).
-python "%~dp0tf2_graphics.py" "%SDK%\mod_tf\cfg\fortcraft_graphics.cfg" || echo Couldn't copy your TF2 graphics settings; TF2 keeps its own.
+set GFX=
+echo.%* | find /i "-fortcraft_lowend" >nul && set GFX=--low
+python "%~dp0tf2_graphics.py" %GFX% "%SDK%\mod_tf\cfg\fortcraft_graphics.cfg" || echo Couldn't copy your TF2 graphics settings; TF2 keeps its own.
 start "" /D "%SDK%" "%SDK%\mod_tf_win64.exe" -novid -windowed -w 1280 -h 720 -insecure -condebug %HIDE% -fortcraft_logs "%LOGS%" %EXTRA% +sv_lan 1 +engine_no_focus_sleep 0 +snd_mute_losefocus 0 +mat_queue_mode 0 +fps_max 144 +mp_waitingforplayers_time 0 +mp_timelimit 0 +mp_winlimit 0 +mp_maxrounds 0 +exec fortcraft_graphics +map fortcraft_flat

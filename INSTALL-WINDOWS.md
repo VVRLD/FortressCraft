@@ -34,6 +34,15 @@ and TF2 starts hidden in the background. Close Minecraft to stop; TF2 closes by 
 - One of your own worlds: copy its folder into `my-passthrough\fabric\run\saves`, then in a
   Command Prompt run `set FORTCRAFT_WORLD=<folder name>` followed by `my-passthrough\tools\play.bat`.
 
+### Weaker PC or laptop? Low-end mode
+
+Double-click **`PLAY-FORTCRAFT-LOW-END.cmd`** instead (in the low-end download,
+`PLAY-FORTCRAFT.cmd` already does this). Both games run at 60 frames per second instead of
+240, TF2 draws at 720p on its lowest graphics, and Minecraft starts with fast graphics, 6 chunks
+render distance, fewer particles, and no clouds, shadows or smooth lighting. Minecraft's
+settings stay lowered afterwards; raise them again in Minecraft's options if you go back to
+the normal launch.
+
 ## If something goes wrong
 
 - Logs are in `my-passthrough\logs`, Minecraft's in `my-passthrough\fabric\run\logs`, TF2's
