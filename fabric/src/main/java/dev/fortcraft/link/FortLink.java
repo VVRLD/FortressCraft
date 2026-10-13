@@ -67,7 +67,7 @@ public final class FortLink {
 	private static final long I_PITCH = I + 0x14;
 	private static final long I_WEAPON_SLOT = I + 0x18;
 	public static final int IN_FORWARD = 1, IN_BACK = 2, IN_LEFT = 4, IN_RIGHT = 8, IN_JUMP = 16, IN_CROUCH = 32;
-	public static final int IN_ATTACK = 64, IN_RELOAD = 128, IN_ATTACK2 = 256;
+	public static final int IN_ATTACK = 64, IN_RELOAD = 128, IN_ATTACK2 = 256, IN_CLIMB = 512;
 
 	// BlockBoxes @0x1000: seq, count, then boxes of 6 floats (min xyz, max xyz) in block coords
 	private static final long B = 0x1000;

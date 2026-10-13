@@ -2750,7 +2750,7 @@ index 7e9ceed..cf5c53e 100644
  
  	Vector vecNewDirVelocity = vecNewVelocity - DotProduct( tr.plane.normal, vecNewVelocity ) * tr.plane.normal;
 diff --git a/src/game/shared/tf/tf_gamemovement.cpp b/src/game/shared/tf/tf_gamemovement.cpp
-index 4766016..4014ac8 100644
+index 4766016..176cdae 100644
 --- a/src/game/shared/tf/tf_gamemovement.cpp
 +++ b/src/game/shared/tf/tf_gamemovement.cpp
 @@ -22,6 +22,7 @@
@@ -2816,18 +2816,18 @@ index 4766016..4014ac8 100644
 -	
 -	CTraceFilterObject traceFilter( mv->m_nPlayerHandle.Get(), collisionGroup );
 +		CTraceFilterObject traceFilter( mv->m_nPlayerHandle.Get(), collisionGroup );
- 
--	enginetrace->TraceRay( ray, fMask, &traceFilter, &pm );
++
 +		enginetrace->TraceRay( ray, fMask, &traceFilter, &pm );
 +	}
-+
+ 
+-	enginetrace->TraceRay( ray, fMask, &traceFilter, &pm );
 +	// FortCraft: Minecraft blocks are solid too.
 +	if ( fMask & CONTENTS_SOLID )
 +		FortCraft_ClipHullTrace( start, end, GetPlayerMins(), GetPlayerMaxs(), pm );
  }
  
  //-----------------------------------------------------------------------------
-@@ -2621,6 +2651,30 @@ void CTFGameMovement::FullWalkMoveUnderwater()
+@@ -2621,6 +2651,63 @@ void CTFGameMovement::FullWalkMoveUnderwater()
  //-----------------------------------------------------------------------------
  void CTFGameMovement::FullWalkMove()
  {
@@ -2852,6 +2852,39 @@ index 4766016..4014ac8 100644
 +		TryPlayerMove();
 +		CategorizePosition();
 +		CheckVelocity();
++		return;
++	}
++
++	// FortCraft: Minecraft ladders, vines and scaffolding (Alex, 2026-10-13). Minecraft says when
++	// the player is on one (IN_ALT2, set in fortcraft_link.cpp from Minecraft's onClimbable), and
++	// TF2 climbs as Minecraft does: forward or jump climbs at 2.35 blocks/s, crouch holds on,
++	// otherwise you slide down at most 3 blocks/s; sideways speed at most 3 blocks/s. The slow
++	// slide also means no fall damage builds up on a ladder.
++	if ( FortCraft_Active() && ( mv->m_nButtons & IN_ALT2 ) && !InWater() )
++	{
++		Vector vecForward, vecRight;
++		AngleVectors( mv->m_vecViewAngles, &vecForward, &vecRight, NULL );
++		vecForward.z = 0.0f;
++		vecRight.z = 0.0f;
++		VectorNormalize( vecForward );
++		VectorNormalize( vecRight );
++		Vector vecWish = vecForward * mv->m_flForwardMove + vecRight * mv->m_flSideMove;
++		Vector vecTarget = VectorNormalize( vecWish ) > 0.0f ? vecWish * MIN( 144.0f, mv->m_flMaxSpeed ) : vec3_origin;
++		const float flBlend = MIN( 1.0f, 10.0f * gpGlobals->frametime );
++		mv->m_vecVelocity.x += ( vecTarget.x - mv->m_vecVelocity.x ) * flBlend;
++		mv->m_vecVelocity.y += ( vecTarget.y - mv->m_vecVelocity.y ) * flBlend;
++		if ( mv->m_nButtons & ( IN_JUMP | IN_FORWARD ) )
++			mv->m_vecVelocity.z = 113.0f;
++		else if ( mv->m_nButtons & IN_DUCK )
++			mv->m_vecVelocity.z = 0.0f;
++		else
++			mv->m_vecVelocity.z = MAX( mv->m_vecVelocity.z - GetCurrentGravity() * gpGlobals->frametime, -144.0f );
++		SetGroundEntity( NULL );
++		CheckVelocity();
++		TryPlayerMove();
++		CategorizePosition();
++		CheckVelocity();
++		player->m_Local.m_flFallVelocity = 0.0f;
 +		return;
 +	}
 +

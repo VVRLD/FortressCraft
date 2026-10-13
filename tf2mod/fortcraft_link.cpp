@@ -323,6 +323,7 @@ bool FortCraft_ApplyInput( CUserCmd *pCmd )
 	if ( in.buttons & proto::kInAttack ) buttons |= IN_ATTACK;
 	if ( in.buttons & proto::kInReload ) buttons |= IN_RELOAD;
 	if ( in.buttons & proto::kInAttack2 ) buttons |= IN_ATTACK2;
+	if ( in.buttons & proto::kInClimb ) buttons |= IN_ALT2;  // ladder climbing (tf_gamemovement.cpp)
 	if ( CreativeFlight( ( in.buttons & proto::kInJump ) != 0 ) )
 		buttons |= IN_BULLRUSH;
 	// Right click with a PDA out: put it away (it has no right-click use).

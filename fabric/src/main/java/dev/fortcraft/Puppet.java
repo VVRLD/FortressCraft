@@ -111,6 +111,9 @@ public final class Puppet {
 			buttons |= guestAlive && RightClick.tf2Attack2(minecraft) ? FortLink.IN_ATTACK2 : 0;
 			buttons |= Tf2Keys.RELOAD.isDown() ? FortLink.IN_RELOAD : 0;
 		}
+		// On a ladder, vine or scaffolding (Minecraft's own test, at the spot TF2 put the player):
+		// TF2 climbs (tf_gamemovement.cpp). Also with a screen open, so chat doesn't drop you.
+		buttons |= player.onClimbable() && !player.isSpectator() ? FortLink.IN_CLIMB : 0;
 		FortLink.writeInput(frame, buttons, player.getYRot(), player.getXRot(), WeaponSelection.selectedSlot(minecraft, guestAlive));
 		BlockScanner.tick(minecraft.level, player.getX(), player.getY(), player.getZ());
 		Overlay.pace(minecraft, guestAlive);

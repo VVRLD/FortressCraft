@@ -91,6 +91,7 @@ namespace fortcraft { namespace proto
 		kInAttack = 1u << 6,  // fire (Minecraft's attack button)
 		kInReload = 1u << 7,
 		kInAttack2 = 1u << 8,  // secondary fire; Minecraft's use button when not aimed at a door, chest...
+		kInClimb = 1u << 9,    // 2026-10-13: the player is on a ladder, vine or scaffolding (Minecraft's onClimbable); set even with a screen open
 	};
 
 	struct InputState

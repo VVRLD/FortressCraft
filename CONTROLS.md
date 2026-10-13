@@ -20,6 +20,9 @@ weapons, menus and HUD. Every key marked *rebindable* can be changed in Minecraf
 | G | Taunt menu; G again does your weapon's taunt; Q or G stops a taunt *(rebindable)* |
 | Z / X / C | TF2 voice menus 1 / 2 / 3; then a number key picks a line, 0 closes *(rebindable)* |
 
+Ladders, vines and scaffolding: walk forward or hold jump to climb, crouch to hold on, let go to
+slide down.
+
 Engineer: with the build or destroy PDA out, 1-4 pick sentry, dispenser, teleporter entrance and
 teleporter exit. Q or a right click puts any PDA away (the Engineer's build and destroy
 PDAs, the Spy's disguise kit) and goes back to your last weapon.
