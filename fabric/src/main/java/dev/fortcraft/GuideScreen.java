@@ -21,7 +21,7 @@ public final class GuideScreen extends Screen {
 		"\u00a7eMove, shoot, jump\u00a7f: TF2 controls.  \u00a7e1-9 / wheel\u00a7f: weapons",
 		"\u00a7eE\u00a7f: TF2 backpack (last page = your Minecraft items)",
 		"   Right-click an item > Equip to hand to mine, build or eat",
-		"\u00a7eF\u00a7f: Minecraft inventory   \u00a7eM\u00a7f: loadout + crafting",
+		"\u00a7eF\u00a7f: Minecraft inventory (middle-click = hold)\u00a7eM\u00a7f: loadout + crafting",
 		"\u00a7e,\u00a7f / \u00a7e.\u00a7f: class / team   \u00a7eG\u00a7f: taunt   \u00a7eZ X C\u00a7f: voice",
 		"\u00a7eR\u00a7f: reload (Eureka Effect: teleport menu)",
 		"",

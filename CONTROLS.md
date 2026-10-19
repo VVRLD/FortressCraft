@@ -46,6 +46,8 @@ Everything in your Minecraft inventory shows on the backpack's last page (E take
 
 - **Blocks and items:** right-click > **Equip to hand** (or double-click) to hold it. Left-click
   then mines, right-click places or uses it. A weapon key or the wheel puts it away.
+- **Backpack won't load** ("Loadout not available, contacting item server")? Open Minecraft's
+  inventory (F) and **middle-click** an item instead: it's held the same way (a pack is used).
 - **Health Kit and Ammo Pack:** right-click > **Use** (or double-click). The Health Kit restores
   100-150 health, the Ammo Pack fills your ammo. A kit is given back if you are already full.
 - **Food:** there is no hunger. Eat any food (Equip to hand, hold right-click) to heal: raw food

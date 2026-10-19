@@ -4,6 +4,7 @@
   "compatibilityLevel": "JAVA_25",
   "client": [
     "CameraMixin",
+    "ContainerScreenMixin",
     "EnchantingTableMixin",
     "EntityRenderDispatcherMixin",
     "ExperienceOrbMixin",

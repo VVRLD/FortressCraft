@@ -112,6 +112,26 @@ public final class Hand {
 		attackWasDown = attack;
 	}
 
+	/**
+	 * Middle click on an item in Minecraft's own inventory (ContainerScreenMixin): the same as
+	 * "Equip to hand" (or "Use", for a supply pack) in TF2's backpack, for when TF2's backpack
+	 * can't load (GitHub issues 24, 28). Closes the inventory. False if nothing was done.
+	 */
+	public static boolean holdFromInventory(Minecraft minecraft, ItemStack stack) {
+		String id = idOf(stack);
+		if (minecraft.player == null || id == null) {
+			return false;
+		}
+		FortCraft.LOG.info("FortCraft: middle click on {} in Minecraft's inventory", id);
+		minecraft.player.closeContainer();  // closes the inventory screen and tells the server
+		if (PackItems.isPackId(id)) {
+			useFromBackpack(minecraft, id);
+		} else {
+			equip(minecraft, id);
+		}
+		return true;
+	}
+
 	/** "Use" on a supply pack in TF2's backpack. */
 	private static void useFromBackpack(Minecraft minecraft, String id) {
 		var server = minecraft.getSingleplayerServer();
