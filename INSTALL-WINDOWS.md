@@ -13,7 +13,7 @@
 
 ## 2. Set up (once)
 
-1. Unzip the Windows release somewhere you can write to without spaces in the path name, for example `Documents\FortCraft`. but not `My Documents\Fort Craft`
+1. Unzip the Windows release somewhere you can write to without spaces in the path name, for example `Documents\FortCraft`, NOT `My Documents\Fort Craft`
    Keep the folders together.
 2. Double-click **`START-HERE.cmd`**. Don't run `setup_windows.ps1` directly: Windows often blocks
    PowerShell scripts, and `START-HERE.cmd` works around that.
