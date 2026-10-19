@@ -3,6 +3,8 @@
   "package": "dev.fortcraft.mixin",
   "compatibilityLevel": "JAVA_25",
   "client": [
+    "BlocksMixin",
+    "BuiltInPackSourceMixin",
     "CameraMixin",
     "ContainerScreenMixin",
     "EnchantingTableMixin",

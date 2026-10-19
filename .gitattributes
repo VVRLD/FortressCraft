@@ -6,3 +6,4 @@ fabric/gradlew text eol=lf
 *.ps1 text eol=crlf
 *.bsp binary
 *.jar binary
+*.png binary

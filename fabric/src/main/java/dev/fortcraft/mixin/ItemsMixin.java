@@ -18,5 +18,6 @@ public abstract class ItemsMixin {
 	@Inject(method = "<clinit>", at = @At("TAIL"))
 	private static void fortcraft$registerPacks(CallbackInfo ci) {
 		PackItems.register();
+		dev.fortcraft.mvm.MvmBlocks.registerItems();
 	}
 }

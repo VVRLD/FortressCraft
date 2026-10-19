@@ -14,5 +14,7 @@
   "key.fortcraft.voice_menu_2": "Voice menu 2",
   "key.fortcraft.voice_menu_3": "Voice menu 3",
   "key.fortcraft.voice_cancel": "Close voice menu",
-  "key.fortcraft.guide": "FortCraft guide"
+  "key.fortcraft.guide": "FortCraft guide",
+  "item.fortcraft.unusual_flint_and_steel": "Unusual Flint and Steel",
+  "block.fortcraft.mvm_portal": "Ghost Town Portal"
 }

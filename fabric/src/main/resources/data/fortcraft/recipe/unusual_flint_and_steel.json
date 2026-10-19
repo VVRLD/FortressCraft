@@ -1,0 +1,11 @@
+{
+  "type": "minecraft:crafting_shapeless",
+  "category": "equipment",
+  "ingredients": [
+    "minecraft:flint_and_steel",
+    "minecraft:amethyst_shard"
+  ],
+  "result": {
+    "id": "fortcraft:unusual_flint_and_steel"
+  }
+}

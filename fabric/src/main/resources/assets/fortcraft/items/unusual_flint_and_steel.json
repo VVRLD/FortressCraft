@@ -1,0 +1,12 @@
+{
+  "model": {
+    "type": "minecraft:model",
+    "model": "fortcraft:item/unusual_flint_and_steel",
+    "tints": [
+      {
+        "type": "minecraft:constant",
+        "value": -5085756
+      }
+    ]
+  }
+}

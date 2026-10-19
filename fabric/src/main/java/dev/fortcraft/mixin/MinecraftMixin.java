@@ -46,6 +46,7 @@ public abstract class MinecraftMixin {
 	@Inject(method = "renderFrame", at = @At(value = "INVOKE", target = "Lnet/minecraft/client/renderer/GameRenderer;render()V"))
 	private void fortcraft$beforeRender(boolean advanceGameTime, CallbackInfo ci) {
 		Puppet.beforeRender((Minecraft) (Object) this);
+		dev.fortcraft.mvm.GhostTownSelfTest.tick((Minecraft) (Object) this);
 	}
 
 	/** While TF2 is linked: number keys and Q go to TF2 during taunts, and P is TF2's menu key. */

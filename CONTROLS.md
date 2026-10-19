@@ -66,6 +66,16 @@ plus FortCraft's supply packs, which are always listed:
 Pick a recipe and press **Craft**. If you don't have enough ingredients, the recipe says how many
 you have and nothing is taken.
 
+## Ghost Town portal
+
+1. Craft an **Unusual Flint and Steel**: flint and steel + an amethyst shard.
+2. Build an upright frame of **iron blocks** like a Nether portal (inside at least 2 wide and
+   3 tall; corners not needed).
+3. Hold the Unusual Flint and Steel (**Equip to hand**, or middle-click it in Minecraft's
+   inventory) and right-click the inside of the frame. It fills with a white portal.
+4. Stand in the portal. The first time in a world, Ghost Town is built from TF2's map (a chat
+   message says when it's ready). You arrive in RED's spawn; the white portal behind you goes home.
+
 ## Good to know
 
 - Survival: Minecraft's mobs hurt your TF2 health; TF2 deaths respawn you at your bed or the world spawn.

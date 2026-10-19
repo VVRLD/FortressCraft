@@ -37,6 +37,8 @@
 !/fabric/gradle/wrapper/gradle-wrapper.properties
 !/fabric/src/**/*.java
 !/fabric/src/**/*.json
+!/fabric/src/**/*.png
+!/fabric/src/**/*.png.mcmeta
 
 # Never these: build output, downloads, logs, saves, local settings
 /fabric/run/

@@ -1,0 +1,10 @@
+{
+  "variants": {
+    "axis=x": {
+      "model": "fortcraft:block/mvm_portal_ns"
+    },
+    "axis=z": {
+      "model": "fortcraft:block/mvm_portal_ew"
+    }
+  }
+}
