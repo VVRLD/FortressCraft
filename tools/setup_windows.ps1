@@ -49,6 +49,12 @@ if ((Split-Path -Leaf $project) -ne 'my-passthrough') {
 }
 
 # ---- Git ---------------------------------------------------------------------------------------
+# Valve's SDK build passes folder paths to its tools without quotes, so a space anywhere in the
+# path breaks it ("MSB8066: custom build for ...proto exited with code 1", GitHub issue 14).
+if ($root -match ' ') {
+    Fail "The FortCraft folder's path has a space in it ($root). Valve's SDK can't be built there. Move the FortCraft folder to a path without spaces, for example C:\FortCraft, then run START-HERE.cmd again."
+}
+
 Step 'Checking Git'
 if (-not (Get-Command git.exe -ErrorAction SilentlyContinue)) {
     if ((Get-Command winget.exe -ErrorAction SilentlyContinue) -and (Ask 'Git is missing. Install it now with winget?')) {
@@ -64,43 +70,99 @@ Write-Host (git --version)
 # build fails with error MSB8066 / exit code 9009 and "g_Script_... undeclared identifier").
 Step 'Checking Python 3 (Valve''s SDK build needs it)'
 function PythonOk { $v = (cmd /c "python -c ""import sys; print(sys.version_info[0])"" 2>nul"); return ($LASTEXITCODE -eq 0 -and "$v".Trim() -eq '3') }
-if (-not (PythonOk)) {
-    if ((Get-Command winget.exe -ErrorAction SilentlyContinue) -and (Ask 'Python 3 is missing. Install it now with winget?')) {
-        Run { winget install --id Python.Python.3.13 -e --accept-package-agreements --accept-source-agreements } 'Installing Python failed.'
-        Fail 'Python was installed. Close this window and run START-HERE.cmd again so Windows finds it.'
+# Python can be installed but not on PATH (installer box not ticked, or installed after this
+# window opened): then winget says it's already there and setup used to stop (GitHub issue 18).
+# Look in the usual install folders and the "py" launcher too, and put the one found on PATH.
+function FindPythonDir {
+    $dirs = @()
+    foreach ($base in @("$env:LOCALAPPDATA\Programs\Python", "$env:ProgramFiles", "${env:ProgramFiles(x86)}", 'C:\')) {
+        if (Test-Path -LiteralPath $base) {
+            $dirs += (Get-ChildItem -LiteralPath $base -Directory -Filter 'Python3*' -ErrorAction SilentlyContinue |
+                      Sort-Object Name -Descending | ForEach-Object FullName)
+        }
     }
-    Fail 'Install Python 3 from python.org (tick "Add python.exe to PATH"), then run setup again. If "python" opens the Microsoft Store, turn off its App execution alias in Windows Settings.'
+    # The newer "Python install manager" puts them in %LOCALAPPDATA%\Python\pythoncore-3.x-64.
+    if (Test-Path -LiteralPath "$env:LOCALAPPDATA\Python") {
+        $dirs += (Get-ChildItem -LiteralPath "$env:LOCALAPPDATA\Python" -Directory -Filter 'pythoncore-3*' -ErrorAction SilentlyContinue |
+                  Sort-Object Name -Descending | ForEach-Object FullName)
+    }
+    $launcher = (cmd /c 'py -3 -c "import sys; print(sys.executable)" 2>nul')
+    if ($LASTEXITCODE -eq 0 -and $launcher) { $dirs = @(Split-Path -Parent "$launcher".Trim()) + $dirs }
+    foreach ($d in $dirs) { if (Test-Path -LiteralPath (Join-Path $d 'python.exe')) { return $d } }
+    return $null
+}
+function UsePython {
+    if (PythonOk) { return $true }
+    $dir = FindPythonDir
+    if (-not $dir) { return $false }
+    $env:PATH = "$dir;$dir\Scripts;$env:PATH"
+    $script:pythonDir = $dir
+    return (PythonOk)
+}
+$pythonDir = $null
+if (-not (UsePython)) {
+    if ((Get-Command winget.exe -ErrorAction SilentlyContinue) -and (Ask 'Python 3 is missing. Install it now with winget?')) {
+        # winget exits with an error when Python is already installed, so don't stop on its exit
+        # code: look again afterwards instead.
+        & winget install --id Python.Python.3.13 -e --accept-package-agreements --accept-source-agreements
+    }
+    if (-not (UsePython)) {
+        Fail 'Install Python 3 from python.org (tick "Add python.exe to PATH"), then close this window and run START-HERE.cmd again. If "python" opens the Microsoft Store, turn off its App execution alias in Windows Settings.'
+    }
 }
 Write-Host (cmd /c 'python --version 2>&1')
+if ($pythonDir) { Write-Host "Using Python at $pythonDir (it isn't on your PATH; FortCraft remembers where it is)" }
 
 # ---- Java 25 -----------------------------------------------------------------------------------
 Step 'Looking for Java 25 (Minecraft''s build needs exactly 25)'
 function JavaMajor([string] $jdk) {
     $exe = Join-Path $jdk 'bin\java.exe'
     if (-not (Test-Path -LiteralPath $exe)) { return 0 }
-    $line = (cmd /c """$exe"" -version 2>&1" | Select-Object -First 1)
-    if (-not $line) { return 0 }
-    if ($line -match 'version "(\d+)') { return [int]$Matches[1] }
+    # Not just the first line: a "Picked up JAVA_TOOL_OPTIONS" note can come before the version.
+    foreach ($line in @(cmd /c """$exe"" -version 2>&1")) {
+        if ("$line" -match 'version "(\d+)') { return [int]$Matches[1] }
+    }
     return 0
 }
-$javaHome = $null
-$candidates = @()
-if ($env:JAVA_HOME) { $candidates += $env:JAVA_HOME }
-$javaOnPath = Get-Command java.exe -ErrorAction SilentlyContinue
-if ($javaOnPath) { $candidates += (Split-Path -Parent (Split-Path -Parent $javaOnPath.Source)) }
-foreach ($base in @("$env:ProgramFiles\Eclipse Adoptium", "$env:ProgramFiles\Java", "$env:ProgramFiles\Microsoft",
-                    "$env:ProgramFiles\Zulu", "$env:ProgramFiles\Amazon Corretto", "$env:USERPROFILE\.jdks")) {
-    if (Test-Path -LiteralPath $base) { $candidates += (Get-ChildItem -LiteralPath $base -Directory | ForEach-Object FullName) }
-}
-foreach ($c in $candidates) { if ((JavaMajor $c) -eq 25) { $javaHome = $c; break } }
-if (-not $javaHome) {
-    if ((Get-Command winget.exe -ErrorAction SilentlyContinue) -and (Ask 'Java 25 not found. Install Eclipse Temurin 25 (free) with winget?')) {
-        Run { winget install --id EclipseAdoptium.Temurin.25.JDK -e --accept-package-agreements --accept-source-agreements } 'Installing Java 25 failed.'
-        foreach ($c in (Get-ChildItem -LiteralPath "$env:ProgramFiles\Eclipse Adoptium" -Directory -ErrorAction SilentlyContinue | ForEach-Object FullName)) {
-            if ((JavaMajor $c) -eq 25) { $javaHome = $c; break }
+# Every place a JDK is usually installed: machine-wide and per-user folders, and the JDK
+# vendors' registry entries. Temurin installed per-user (or elsewhere) wasn't found before, and
+# winget then refused to install it again (GitHub issue 20).
+function JavaCandidates {
+    $list = @()
+    if ($env:JAVA_HOME) { $list += $env:JAVA_HOME }
+    foreach ($j in @(Get-Command java.exe -All -ErrorAction SilentlyContinue)) { $list += (Split-Path -Parent (Split-Path -Parent $j.Source)) }
+    $bases = @()
+    foreach ($root in @($env:ProgramFiles, "$env:LOCALAPPDATA\Programs")) {
+        foreach ($vendor in @('Eclipse Adoptium', 'Java', 'Microsoft', 'Zulu', 'Amazon Corretto', 'BellSoft', 'Semeru', 'OpenJDK')) {
+            $bases += (Join-Path $root $vendor)
         }
     }
-    if (-not $javaHome) { Fail 'Install Java 25 (for example Eclipse Temurin 25 from adoptium.net), then run setup again.' }
+    $bases += "$env:USERPROFILE\.jdks"
+    foreach ($base in $bases) {
+        if (Test-Path -LiteralPath $base) { $list += (Get-ChildItem -LiteralPath $base -Directory -ErrorAction SilentlyContinue | ForEach-Object FullName) }
+    }
+    foreach ($key in @('HKLM:\SOFTWARE\JavaSoft\JDK', 'HKLM:\SOFTWARE\Eclipse Adoptium\JDK', 'HKCU:\SOFTWARE\Eclipse Adoptium\JDK')) {
+        foreach ($k in @(Get-ChildItem -Path $key -Recurse -ErrorAction SilentlyContinue)) {
+            foreach ($name in @('JavaHome', 'Path')) {
+                $v = (Get-ItemProperty -Path $k.PSPath -Name $name -ErrorAction SilentlyContinue).$name
+                if ($v) { $list += "$v".TrimEnd('\') }
+            }
+        }
+    }
+    return ($list | Select-Object -Unique)
+}
+function FindJava25 {
+    foreach ($c in (JavaCandidates)) { if ((JavaMajor $c) -eq 25) { return $c } }
+    return $null
+}
+$javaHome = FindJava25
+if (-not $javaHome) {
+    if ((Get-Command winget.exe -ErrorAction SilentlyContinue) -and (Ask 'Java 25 not found. Install Eclipse Temurin 25 (free) with winget?')) {
+        # winget exits with an error when Temurin 25 is already installed: look again instead of stopping.
+        & winget install --id EclipseAdoptium.Temurin.25.JDK -e --accept-package-agreements --accept-source-agreements
+        $javaHome = FindJava25
+    }
+    if (-not $javaHome) { Fail 'Install Java 25 (for example Eclipse Temurin 25 from adoptium.net), then run setup again. If it is installed already, set JAVA_HOME to its folder (the one containing bin\java.exe).' }
 }
 Write-Host "Using Java 25 at $javaHome"
 
@@ -154,16 +216,36 @@ Write-Host "Source SDK Base 2013 Multiplayer: $sdkBase"
     "set `"FORTCRAFT_TOOLSET=$toolset`"",
     "set `"FORTCRAFT_JAVA_HOME=$javaHome`"",
     "set `"FORTCRAFT_TF2_DIR=$tf2`"",
-    "set `"FORTCRAFT_SDK_BASE_DIR=$sdkBase`""
+    "set `"FORTCRAFT_SDK_BASE_DIR=$sdkBase`"",
+    "set `"FORTCRAFT_PYTHON_DIR=$pythonDir`""
 ) | Set-Content -LiteralPath $config -Encoding ascii -ErrorAction Stop
 
 # ---- Valve's SDK + FortCraft's changes ---------------------------------------------------------
 Step 'Getting Valve''s Source SDK 2013'
+# A download that broke off part way leaves a checkout without the SDK in it: start that over.
+if ((Test-Path -LiteralPath (Join-Path $sdk '.git')) -and -not (Test-Path -LiteralPath (Join-Path $sdk 'src\devtools'))) {
+    Write-Host 'The last SDK download didn''t finish; starting it again.'
+    Remove-Item -LiteralPath $sdk -Recurse -Force -ErrorAction SilentlyContinue
+}
 if (-not (Test-Path -LiteralPath $sdk)) {
+    # Only the one SDK version FortCraft needs, not Valve's whole history: a much smaller
+    # download, tried up to 4 times, since a dropped connection stopped setup ("fetch-pack:
+    # unexpected disconnect", GitHub issue 15).
     # core.longpaths: the SDK has some very long file paths, which Windows refuses in deep folders.
-    Run { git -c core.longpaths=true clone https://github.com/ValveSoftware/source-sdk-2013.git "$sdk" } 'Downloading Valve''s SDK failed. Check your internet connection and run setup again.'
+    Run { git init -q "$sdk" } 'Could not create the SDK folder.'
     Run { git -C "$sdk" config core.longpaths true } 'Could not configure the SDK checkout.'
-    Run { git -C "$sdk" checkout -q $baseCommit } 'Could not switch the SDK to the version FortCraft needs.'
+    Run { git -C "$sdk" remote add origin https://github.com/ValveSoftware/source-sdk-2013.git } 'Could not configure the SDK checkout.'
+    $fetched = $false
+    for ($try = 1; $try -le 4 -and -not $fetched; $try++) {
+        if ($try -gt 1) { Write-Host "Download broke off; trying again ($try of 4)..."; Start-Sleep -Seconds 5 }
+        & git -C "$sdk" fetch --depth 1 origin $baseCommit
+        $fetched = ($LASTEXITCODE -eq 0)
+    }
+    if (-not $fetched) {
+        Remove-Item -LiteralPath $sdk -Recurse -Force -ErrorAction SilentlyContinue
+        Fail 'Downloading Valve''s SDK failed 4 times. Check your internet connection (a VPN or a slow network can drop it), then run setup again.'
+    }
+    Run { git -C "$sdk" checkout -q FETCH_HEAD } 'Could not unpack the SDK.'
 } elseif (-not (Test-Path -LiteralPath (Join-Path $sdk '.git'))) {
     Fail "$sdk exists but isn't a Git checkout. Move it away, then run setup again."
 }

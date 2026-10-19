@@ -7,6 +7,8 @@ set "MSBUILD=C:\Program Files\Microsoft Visual Studio\18\Community\MSBuild\Curre
 set "FORTCRAFT_TOOLSET=v145"
 if exist "%~dp0config.local.cmd" call "%~dp0config.local.cmd"
 if defined FORTCRAFT_MSBUILD set "MSBUILD=%FORTCRAFT_MSBUILD%"
+rem Python found by setup outside PATH (GitHub issue 18): Valve's build runs "python".
+if defined FORTCRAFT_PYTHON_DIR set "PATH=%FORTCRAFT_PYTHON_DIR%;%PATH%"
 if not exist "%MSBUILD%" (echo Visual Studio's MSBuild not found. Run tools\setup_windows.bat first. & exit /b 1)
 set SRC=%~dp0..\..\source-sdk-2013\src
 tasklist /fi "imagename eq mod_tf_win64.exe" | find /i "mod_tf_win64.exe" >nul && (

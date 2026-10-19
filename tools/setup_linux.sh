@@ -43,8 +43,22 @@ if [[ -e "$SDK" ]]; then
 	echo "$SDK already exists; leaving it alone."
 else
 	echo "Downloading Valve's Source SDK 2013 into $SDK ..."
-	git clone https://github.com/ValveSoftware/source-sdk-2013.git "$SDK"
-	git -C "$SDK" checkout -q "$BASE"
+	# Only the one version FortCraft needs (much smaller than Valve's whole history), tried up to
+	# 4 times: a dropped connection stopped setup (GitHub issue 15).
+	git init -q "$SDK"
+	git -C "$SDK" remote add origin https://github.com/ValveSoftware/source-sdk-2013.git
+	ok=0
+	for try in 1 2 3 4; do
+		if git -C "$SDK" fetch --depth 1 origin "$BASE"; then ok=1; break; fi
+		echo "Download broke off; trying again ($try of 4)..."
+		sleep 5
+	done
+	if (( ! ok )); then
+		rm -rf "$SDK"
+		echo "Downloading Valve's SDK failed 4 times. Check your internet connection, then run setup again."
+		exit 1
+	fi
+	git -C "$SDK" checkout -q FETCH_HEAD
 	git -C "$SDK" apply --check "$HERE/../tf2mod/sdk-changes.patch"
 	git -C "$SDK" apply "$HERE/../tf2mod/sdk-changes.patch"
 	echo "FortCraft's changes applied to the SDK."

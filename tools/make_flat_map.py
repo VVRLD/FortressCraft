@@ -88,7 +88,10 @@ def main():
         + "}\n"
     )
     ents = (
-        entity("info_player_teamspawn", (0, 0, 0), {"TeamNum": "2", "StartDisabled": "0", "angles": "0 0 0"})
+        # Not at (0, 0, 0): TF2 ignores a spawn point exactly on the world origin ("Check for a
+        # bad spawn entity" in CTFPlayer::SelectSpawnSpotByType), which left Red without a valid
+        # spawn (GitHub PR 4).
+        entity("info_player_teamspawn", (-64, 0, 0), {"TeamNum": "2", "StartDisabled": "0", "angles": "0 0 0"})
         + entity("info_player_teamspawn", (64, 0, 0), {"TeamNum": "3", "StartDisabled": "0", "angles": "0 0 0"})
         + entity("light_environment", (0, 0, 512), {"_light": "255 255 255 300", "_ambient": "255 255 255 200", "pitch": "-60", "angles": "-60 0 0"})
     )

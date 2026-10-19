@@ -8,10 +8,11 @@ if defined FORTCRAFT_JAVA_HOME set "JAVA_HOME=%FORTCRAFT_JAVA_HOME%"
 call "%~dp0build_tf2.bat" || (pause & exit /b 1)
 rem The test map: ready-made in prebuilt\, or compiled with tools\build_map.bat.
 set "MAP=%~dp0..\..\source-sdk-2013\game\mod_tf\maps\fortcraft_flat.bsp"
-if not exist "%MAP%" if exist "%~dp0..\prebuilt\fortcraft_flat.bsp" (
+rem An older copy is replaced too: a new release can fix the map (GitHub PR 4).
+fc /b "%~dp0..\prebuilt\fortcraft_flat.bsp" "%MAP%" >nul 2>nul || if exist "%~dp0..\prebuilt\fortcraft_flat.bsp" (
   if not exist "%~dp0..\..\source-sdk-2013\game\mod_tf\maps" mkdir "%~dp0..\..\source-sdk-2013\game\mod_tf\maps"
   copy /y "%~dp0..\prebuilt\fortcraft_flat.bsp" "%MAP%" >nul
 )
 if not exist "%MAP%" call "%~dp0build_map.bat" >nul || (echo Building TF2's map failed: run tools\build_map.bat to see why. & pause & exit /b 1)
-start "Minecraft (FortCraft)" /MIN /D "%~dp0..\fabric" cmd /c gradlew.bat runClient
+start "Minecraft (FortCraft)" /MIN /D "%~dp0..\fabric" cmd /c .\gradlew.bat runClient
 call "%~dp0run_tf2.bat" %*

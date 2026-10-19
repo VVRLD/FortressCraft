@@ -10,6 +10,8 @@
 
 #ifndef _WIN32
 #include <dlfcn.h>
+#include <errno.h>
+#include <signal.h>
 #include <fcntl.h>
 #include <sys/mman.h>
 #include <sys/stat.h>
@@ -29,6 +31,9 @@ extern "C" __declspec( dllimport ) void *__stdcall OpenFileMappingW( unsigned lo
 extern "C" __declspec( dllimport ) void *__stdcall MapViewOfFile( void *mapping, unsigned long access, unsigned long offHigh, unsigned long offLow, size_t bytes );
 extern "C" __declspec( dllimport ) unsigned long long __stdcall GetTickCount64();
 extern "C" __declspec( dllimport ) unsigned long __stdcall GetCurrentProcessId();
+extern "C" __declspec( dllimport ) void *__stdcall OpenProcess( unsigned long access, int inherit, unsigned long pid );
+extern "C" __declspec( dllimport ) int __stdcall GetExitCodeProcess( void *process, unsigned long *code );
+extern "C" __declspec( dllimport ) int __stdcall CloseHandle( void *handle );
 typedef int( __stdcall *FortCraftEnumProc )( void *hwnd, intptr_t param );
 extern "C" __declspec( dllimport ) int __stdcall EnumWindows( FortCraftEnumProc proc, intptr_t param );
 extern "C" __declspec( dllimport ) unsigned long __stdcall GetWindowThreadProcessId( void *hwnd, unsigned long *pid );
@@ -81,20 +86,41 @@ uint64_t FortCraftPlat_NowUs()
 
 unsigned long FortCraftPlat_ProcessId() { return GetCurrentProcessId(); }
 
+bool FortCraftPlat_ProcessAlive( unsigned long pid )
+{
+	void *process = OpenProcess( 0x1000 /* PROCESS_QUERY_LIMITED_INFORMATION */, 0, pid );
+	if ( !process )
+		return false;
+	unsigned long code = 0;
+	const bool bAlive = GetExitCodeProcess( process, &code ) && code == 259 /* STILL_ACTIVE */;
+	CloseHandle( process );
+	return bAlive;
+}
+
 #ifdef CLIENT_DLL  // windows and cursor: the client only (keeps user32 out of server.dll)
 // Hide TF2's window once, when launched with -fortcraft_hidden: Minecraft is the one you see.
-static int __stdcall HideOurWindow( void *hwnd, intptr_t )
+static int __stdcall HideOurWindow( void *hwnd, intptr_t param )
 {
 	unsigned long pid = 0;
 	GetWindowThreadProcessId( hwnd, &pid );
 	if ( pid == GetCurrentProcessId() && IsWindowVisible( hwnd ) )
+	{
 		ShowWindow( hwnd, 0 /* SW_HIDE */ );
+		++*reinterpret_cast< int * >( param );
+	}
 	return 1;
 }
 
-void FortCraftPlat_HideOwnWindows( FortCraftPlatLog )
+void FortCraftPlat_HideOwnWindows( FortCraftPlatLog pLog )
 {
-	EnumWindows( HideOurWindow, 0 );
+	int nHidden = 0;
+	EnumWindows( HideOurWindow, reinterpret_cast< intptr_t >( &nHidden ) );
+	if ( nHidden > 0 )
+	{
+		char szLine[ 96 ];
+		V_snprintf( szLine, sizeof( szLine ), "FortCraft: hid %d TF2 window(s)\n", nHidden );
+		pLog( szLine );
+	}
 }
 
 static void *s_hRestoreFocus;
@@ -248,6 +274,13 @@ uint64_t FortCraftPlat_NowUs()
 }
 
 unsigned long FortCraftPlat_ProcessId() { return (unsigned long)getpid(); }
+
+bool FortCraftPlat_ProcessAlive( unsigned long pid )
+{
+	// Inside Steam's runtime container Minecraft's pid may not be visible: then it counts as
+	// gone, as before (TF2 closes when the heartbeat stops).
+	return kill( (pid_t)pid, 0 ) == 0 || errno == EPERM;
+}
 
 #ifdef CLIENT_DLL  // windows and cursor: the client only
 

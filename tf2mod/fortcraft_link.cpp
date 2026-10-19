@@ -81,6 +81,7 @@ static char s_szOriginMap[ MAX_PATH ];
 static double s_flLastJoinTry;
 static bool s_bHidden;
 static double s_flRehideAt;
+static double s_flQuitCheckAt, s_flWaitLoggedAt;  // link lost: is Minecraft gone, or paused?
 
 static void PlatLog( const char *pszLine ) { Msg( "%s", pszLine ); }
 
@@ -1743,11 +1744,21 @@ static void MatchHostDisplay()
 	// Low-end mode (-fortcraft_lowend, PLAY-FORTCRAFT-LOW-END.cmd): 720p, under half the pixels.
 	static int s_nCapH = CommandLine()->ParmValue( "-fortcraft_overlay_height",
 		CommandLine()->FindParm( "-fortcraft_lowend" ) ? 720 : 1080 );
-	static const int kHeights[] = { 1080, 900, 720, 540 };
-	int h = 540;
-	for ( int i = 0; i < 4; ++i )
+	// No 540: TF2 has no 960x540 mode and snapped to 640x480 (4:3) instead, so the overlay was
+	// a different shape from Minecraft for the rest of the session (GitHub PR 4). 720 is the
+	// floor, also for -fortcraft_overlay_height.
+	static const int kHeights[] = { 1080, 900, 720 };
+	static const int kMinHeight = kHeights[ ARRAYSIZE( kHeights ) - 1 ];
+	if ( s_nCapH < kMinHeight )
 	{
-		if ( kHeights[ i ] <= s_nCapH && kHeights[ i ] <= MAX( 540, (int)d.height ) )
+		Msg( "FortCraft: -fortcraft_overlay_height %d is below %d, the lowest TF2 honours; using %d\n",
+			s_nCapH, kMinHeight, kMinHeight );
+		s_nCapH = kMinHeight;
+	}
+	int h = kMinHeight;
+	for ( int i = 0; i < (int)ARRAYSIZE( kHeights ); ++i )
+	{
+		if ( kHeights[ i ] <= s_nCapH && kHeights[ i ] <= MAX( kMinHeight, (int)d.height ) )
 		{
 			h = kHeights[ i ];
 			break;
@@ -3809,6 +3820,14 @@ void FortCraft_OnRenderStart()
 		s_bHidden = true;
 		FortCraftPlat_HideOwnWindows( PlatLog );
 	}
+	// Testers saw TF2's window on screen during play (GitHub issues 21, 23): something showed it
+	// again after the first hide. Check every 2 seconds and hide it again (logged when it does).
+	static double s_flNextHideCheck;
+	if ( s_bHidden && Plat_FloatTime() >= s_flNextHideCheck )
+	{
+		s_flNextHideCheck = Plat_FloatTime() + 2.0;
+		FortCraftPlat_HideOwnWindows( PlatLog );
+	}
 	if ( s_flRehideAt > 0.0 && Plat_FloatTime() >= s_flRehideAt )
 	{
 		s_flRehideAt = 0.0;
@@ -3835,13 +3854,33 @@ void FortCraft_OnRenderStart()
 		else
 		{
 			Msg( "FortCraft: Minecraft link lost (magic %08X version %u)\n", h.magic, h.version );
-			// A hidden TF2 can't be closed by hand, so it closes with Minecraft.
+			s_flQuitCheckAt = Plat_FloatTime();
+		}
+	}
+	// A hidden TF2 can't be closed by hand, so it closes with Minecraft. But only once
+	// Minecraft's process is gone: on slow PCs Minecraft paused for over 5 s and TF2 quit while
+	// Minecraft carried on (GitHub issue 6). While it's only paused, TF2 waits and relinks.
+	if ( !s_bLinked && s_flQuitCheckAt > 0.0 && Plat_FloatTime() >= s_flQuitCheckAt )
+	{
+		s_flQuitCheckAt = Plat_FloatTime() + 1.0;
+		if ( h.magic != proto::kMagic || !FortCraftPlat_ProcessAlive( h.hostPid ) )
+		{
+			s_flQuitCheckAt = 0.0;
 			if ( s_bHidden )
+			{
+				Msg( "FortCraft: Minecraft has closed; closing TF2\n" );
 				engine->ClientCmd_Unrestricted( "quit" );
+			}
+		}
+		else if ( s_flQuitCheckAt - s_flWaitLoggedAt > 10.0 )
+		{
+			s_flWaitLoggedAt = s_flQuitCheckAt;
+			Msg( "FortCraft: Minecraft (pid %u) is still running but not answering; waiting for it\n", h.hostPid );
 		}
 	}
 	if ( !s_bLinked )
 		return;
+	s_flQuitCheckAt = 0.0;
 
 	++s_nFrame;
 	h.guestFrame = s_nFrame;

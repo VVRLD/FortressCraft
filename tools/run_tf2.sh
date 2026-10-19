@@ -29,18 +29,19 @@ if [[ ! -x "$GAME/mod_tf_linux64" ]]; then
 	exit 1
 fi
 # Our empty map is built on Windows (Valve ships no Linux map compiler). The tester package
-# carries a copy in prebuilt/; install it once.
+# carries a copy in prebuilt/; install it, and replace an older copy (a new release can fix the
+# map, GitHub PR 4).
 MAP="$GAME/mod_tf/maps/fortcraft_flat.bsp"
-if [[ ! -f "$MAP" ]]; then
-	for candidate in "$HERE/../prebuilt/fortcraft_flat.bsp" "$HERE/../../prebuilt/fortcraft_flat.bsp"; do
-		if [[ -f "$candidate" ]]; then
+for candidate in "$HERE/../prebuilt/fortcraft_flat.bsp" "$HERE/../../prebuilt/fortcraft_flat.bsp"; do
+	if [[ -f "$candidate" ]]; then
+		if ! cmp -s "$candidate" "$MAP"; then
 			mkdir -p "$GAME/mod_tf/maps"
 			cp "$candidate" "$MAP"
 			echo "Installed the FortCraft map into $MAP"
-			break
 		fi
-	done
-fi
+		break
+	fi
+done
 [[ -f "$MAP" ]] || { echo "Missing $MAP (copy prebuilt/fortcraft_flat.bsp there)."; exit 1; }
 
 HIDE=(-fortcraft_hidden)
@@ -85,9 +86,26 @@ steam_libraries() {
 		grep -o '"path"[[:space:]]*"[^"]*"' "$root/steamapps/libraryfolders.vdf" 2>/dev/null | sed 's/.*"\([^"]*\)"$/\1/'
 	done | awk '!seen[$0]++'
 }
+# TF2 talks to the Steam client while it runs; without it, it stops with "SteamAPI init failed"
+# (GitHub issue 16). The Flatpak Steam keeps that connection inside its sandbox, so a TF2 started
+# from outside can't reach it.
+if command -v pgrep >/dev/null && ! pgrep -x steam >/dev/null 2>&1 && ! pgrep -f 'ubuntu12_32/steam' >/dev/null 2>&1; then
+	echo "Steam isn't running. Start Steam, sign in, then run this again."
+	exit 1
+fi
+if [[ ! -d "$HOME/.steam/steam/steamapps" && ! -d "$HOME/.local/share/Steam/steamapps" \
+	&& -d "$HOME/.var/app/com.valvesoftware.Steam/.local/share/Steam/steamapps" ]]; then
+	echo "Note: your Steam is the Flatpak version. TF2 can't reach it from outside the Flatpak"
+	echo "sandbox (\"SteamAPI init failed\"). If TF2 stops with that, install Steam from your"
+	echo "distribution's own package (for example the steam-installer package) instead."
+fi
 SDKBASE=""
+TF2LIB=""
 SNIPER=""
 while IFS= read -r lib; do
+	if [[ -z "$TF2LIB" && -f "$lib/steamapps/appmanifest_440.acf" ]]; then
+		TF2LIB="$lib"
+	fi
 	if [[ -z "$SDKBASE" && -f "$lib/steamapps/appmanifest_243750.acf" ]]; then
 		SDKBASE="$lib/steamapps/common/Source SDK Base 2013 Multiplayer"
 	fi
@@ -99,7 +117,16 @@ DIAG="$LOGS/tf2_libraries.txt"
 {
 	echo "Source SDK Base 2013 Multiplayer: ${SDKBASE:-not found}"
 	echo "Steam Linux Runtime 3.0 (sniper): ${SNIPER:-not found}"
+	echo "Team Fortress 2 library: ${TF2LIB:-not found}"
 } > "$DIAG"
+# TF2's own files (models, scripts/objects.txt...) come from your Team Fortress 2 install;
+# without them TF2 crashes with "Can't open scripts/objects.txt" (GitHub issue 22).
+if [[ -z "$TF2LIB" || ! -f "$TF2LIB/steamapps/common/Team Fortress 2/tf/tf2_misc_dir.vpk" ]]; then
+	echo "Team Fortress 2 isn't fully installed (FortCraft uses its models and scripts)."
+	echo "In Steam: install Team Fortress 2 (or Properties, Installed Files, Verify integrity),"
+	echo "then run this again."
+	exit 1
+fi
 if [[ -z "$SDKBASE" ]]; then
 	echo "Steam's \"Source SDK Base 2013 Multiplayer\" isn't installed. In Steam: Library, Tools,"
 	echo "install \"Source SDK Base 2013 Multiplayer\", then run this again."
@@ -126,8 +153,12 @@ if [[ -n "$MISSING" || "${FORTCRAFT_STEAM_RUNTIME:-}" == "1" ]] && [[ "${FORTCRA
 	# The container only sees the usual folders: share the Source SDK Base library and the
 	# FortCraft folder in case they're on another drive (GitHub issue 11: /mnt/... made TF2 say
 	# Source SDK Base 2013 Multiplayer isn't installed).
+	# TF2's library too: its files are read from there, and it can be on yet another drive
+	# (GitHub issue 22: "Can't open scripts/objects.txt").
 	SDKLIB=$(cd "$SDKBASE/../../.." && pwd)
-	export PRESSURE_VESSEL_FILESYSTEMS_RW="${PRESSURE_VESSEL_FILESYSTEMS_RW:+$PRESSURE_VESSEL_FILESYSTEMS_RW:}$SDKLIB:$(cd "$GAME/../.." && pwd)"
+	SHARE="$SDKLIB"
+	[[ "$TF2LIB" != "$SDKLIB" ]] && SHARE="$SHARE:$TF2LIB"
+	export PRESSURE_VESSEL_FILESYSTEMS_RW="${PRESSURE_VESSEL_FILESYSTEMS_RW:+$PRESSURE_VESSEL_FILESYSTEMS_RW:}$SHARE:$(cd "$GAME/../.." && pwd)"
 	echo "Shared with Steam's runtime: $PRESSURE_VESSEL_FILESYSTEMS_RW" >> "$DIAG"
 	echo "Running TF2 inside Steam's Linux Runtime ($SNIPER)"
 fi

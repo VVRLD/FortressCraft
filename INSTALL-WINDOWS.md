@@ -13,8 +13,9 @@
 
 ## 2. Set up (once)
 
-1. Unzip the Windows release somewhere you can write to, for example `Documents\FortCraft`.
-   Keep the folders together.
+1. Unzip the Windows release somewhere you can write to whose path has **no spaces**, for
+   example `C:\FortCraft` (not `Desktop\For craft`: Valve's SDK can't be built in a path with a
+   space, and setup stops if it finds one). Keep the folders together.
 2. Double-click **`START-HERE.cmd`**. Don't run `setup_windows.ps1` directly: Windows often blocks
    PowerShell scripts, and `START-HERE.cmd` works around that.
 

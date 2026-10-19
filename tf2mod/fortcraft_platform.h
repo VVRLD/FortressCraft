@@ -20,6 +20,9 @@ uint64_t FortCraftPlat_NowUs();
 
 unsigned long FortCraftPlat_ProcessId();
 
+// Is that process still running? (Minecraft's, to tell a pause from Minecraft having closed.)
+bool FortCraftPlat_ProcessAlive( unsigned long pid );
+
 // ---- Window, focus and cursor (client only) ------------------------------------------------
 // pLog receives one finished line (for TF2's console, Msg).
 typedef void ( *FortCraftPlatLog )( const char *pszLine );
