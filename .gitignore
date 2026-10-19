@@ -9,6 +9,7 @@
 !/*.cmd
 !/*.sh
 !/third_party/**
+!/.github/**
 !/prebuilt/*.bsp
 
 !/protocol/*.h

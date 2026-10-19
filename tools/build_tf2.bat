@@ -6,6 +6,7 @@ setlocal
 set "MSBUILD=C:\Program Files\Microsoft Visual Studio\18\Community\MSBuild\Current\Bin\amd64\MSBuild.exe"
 set "FORTCRAFT_TOOLSET=v145"
 if exist "%~dp0config.local.cmd" call "%~dp0config.local.cmd"
+if defined FORTCRAFT_PREBUILT goto prebuilt
 if defined FORTCRAFT_MSBUILD set "MSBUILD=%FORTCRAFT_MSBUILD%"
 rem Python found by setup outside PATH (GitHub issue 18): Valve's build runs "python".
 if defined FORTCRAFT_PYTHON_DIR set "PATH=%FORTCRAFT_PYTHON_DIR%;%PATH%"
@@ -23,3 +24,14 @@ for %%P in (game\client\client_win64_tf.vcxproj game\server\server_win64_tf.vcxp
   "%MSBUILD%" "%SRC%\%%P" /m /p:Configuration=Release /p:Platform=x64 /p:PlatformToolset=%FORTCRAFT_TOOLSET% /v:quiet /nologo /clp:ErrorsOnly || exit /b 1
 )
 echo TF2 mod built and installed.
+exit /b 0
+
+:prebuilt
+rem Release download: the TF2 side comes ready-built in ..\prebuilt\win64 (no Visual Studio).
+rem Install it again if it differs from what's installed (a newer release unzipped over this one).
+set "PRE=%~dp0..\prebuilt\win64"
+set "GAME=%~dp0..\..\source-sdk-2013\game"
+if not exist "%PRE%\client.dll" (echo The ready-built TF2 files are missing from prebuilt\win64. Run START-HERE.cmd again. & exit /b 1)
+for %%F in (client.dll server.dll) do fc /b "%PRE%\%%F" "%GAME%\mod_tf\bin\x64\%%F" >nul 2>nul || copy /y "%PRE%\%%F" "%GAME%\mod_tf\bin\x64\%%F" >nul || (echo Couldn't install %%F: is TF2 still running? & exit /b 1)
+fc /b "%PRE%\mod_tf_win64.exe" "%GAME%\mod_tf_win64.exe" >nul 2>nul || copy /y "%PRE%\mod_tf_win64.exe" "%GAME%\mod_tf_win64.exe" >nul || (echo Couldn't install mod_tf_win64.exe: is TF2 still running? & exit /b 1)
+exit /b 0

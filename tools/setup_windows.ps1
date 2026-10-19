@@ -29,8 +29,18 @@ function Ask([string] $question) {
 }
 
 Write-Host 'FortCraft setup (Windows). Single-player / offline only.' -ForegroundColor Green
-Write-Host 'Needs: Steam with Team Fortress 2 and Source SDK Base 2013 Multiplayer, Java 25, Git,'
-Write-Host 'Visual Studio (or Build Tools) with "Desktop development with C++", and about 6 GB free.'
+# The release download carries the TF2 side already built (prebuilt\win64, made by
+# tools\build_release_tf2.bat): then Visual Studio and Python aren't needed, which caused most of
+# the setup problems in the GitHub issues. Without it (a source checkout) TF2 is built here.
+$prebuiltTf2 = Join-Path $project 'prebuilt\win64'
+$usePrebuilt = Test-Path -LiteralPath (Join-Path $prebuiltTf2 'client.dll')
+if ($usePrebuilt) {
+    Write-Host 'Needs: Steam with Team Fortress 2 and Source SDK Base 2013 Multiplayer, Java 25, Git,'
+    Write-Host 'and about 3 GB free. The TF2 side comes ready-built.'
+} else {
+    Write-Host 'Needs: Steam with Team Fortress 2 and Source SDK Base 2013 Multiplayer, Java 25, Git,'
+    Write-Host 'Visual Studio (or Build Tools) with "Desktop development with C++", and about 6 GB free.'
+}
 
 # ---- Folder name -------------------------------------------------------------------------------
 # FortCraft's changes to Valve's SDK refer to this folder as "my-passthrough" next to
@@ -68,6 +78,8 @@ Write-Host (git --version)
 # ---- Python 3 -----------------------------------------------------------------------------------
 # Valve's SDK build runs "python" to turn its VScript files into C++ (without it the server
 # build fails with error MSB8066 / exit code 9009 and "g_Script_... undeclared identifier").
+$pythonDir = $null
+if (-not $usePrebuilt) {
 Step 'Checking Python 3 (Valve''s SDK build needs it)'
 function PythonOk { $v = (cmd /c "python -c ""import sys; print(sys.version_info[0])"" 2>nul"); return ($LASTEXITCODE -eq 0 -and "$v".Trim() -eq '3') }
 # Python can be installed but not on PATH (installer box not ticked, or installed after this
@@ -99,7 +111,6 @@ function UsePython {
     $script:pythonDir = $dir
     return (PythonOk)
 }
-$pythonDir = $null
 if (-not (UsePython)) {
     if ((Get-Command winget.exe -ErrorAction SilentlyContinue) -and (Ask 'Python 3 is missing. Install it now with winget?')) {
         # winget exits with an error when Python is already installed, so don't stop on its exit
@@ -112,6 +123,7 @@ if (-not (UsePython)) {
 }
 Write-Host (cmd /c 'python --version 2>&1')
 if ($pythonDir) { Write-Host "Using Python at $pythonDir (it isn't on your PATH; FortCraft remembers where it is)" }
+}
 
 # ---- Java 25 -----------------------------------------------------------------------------------
 Step 'Looking for Java 25 (Minecraft''s build needs exactly 25)'
@@ -167,6 +179,10 @@ if (-not $javaHome) {
 Write-Host "Using Java 25 at $javaHome"
 
 # ---- Visual Studio C++ build tools -------------------------------------------------------------
+$msbuild = $null; $toolset = $null
+if ($usePrebuilt) {
+    Step 'Using the ready-built TF2 side (Visual Studio not needed)'
+} else {
 Step 'Looking for Visual Studio C++ build tools'
 $vswhere = Join-Path ${env:ProgramFiles(x86)} 'Microsoft Visual Studio\Installer\vswhere.exe'
 $msbuild = $null; $toolset = $null
@@ -183,6 +199,7 @@ if (-not $msbuild -or -not (Test-Path -LiteralPath $msbuild)) {
     Fail 'Install Visual Studio 2022 or newer (Community or Build Tools) with "Desktop development with C++", then run setup again.'
 }
 Write-Host "Using $msbuild (toolset $toolset)"
+}
 
 # ---- Steam games ---------------------------------------------------------------------------------
 Step 'Looking for Team Fortress 2 and Source SDK Base 2013 Multiplayer in Steam'
@@ -217,7 +234,8 @@ Write-Host "Source SDK Base 2013 Multiplayer: $sdkBase"
     "set `"FORTCRAFT_JAVA_HOME=$javaHome`"",
     "set `"FORTCRAFT_TF2_DIR=$tf2`"",
     "set `"FORTCRAFT_SDK_BASE_DIR=$sdkBase`"",
-    "set `"FORTCRAFT_PYTHON_DIR=$pythonDir`""
+    "set `"FORTCRAFT_PYTHON_DIR=$pythonDir`"",
+    "set `"FORTCRAFT_PREBUILT=$(if ($usePrebuilt) { '1' } else { '' })`""
 ) | Set-Content -LiteralPath $config -Encoding ascii -ErrorAction Stop
 
 # ---- Valve's SDK + FortCraft's changes ---------------------------------------------------------
@@ -257,6 +275,15 @@ if ($LASTEXITCODE -eq 0) {
     Run { git -C "$sdk" apply "$patch" } 'Applying FortCraft''s SDK changes failed.'
 }
 
+if ($usePrebuilt) {
+    Step 'Installing the ready-built TF2 side'
+    $bin = Join-Path $sdk 'game\mod_tf\bin\x64'
+    New-Item -ItemType Directory -Force -Path $bin | Out-Null
+    foreach ($f in @('client.dll', 'server.dll')) {
+        Copy-Item -LiteralPath (Join-Path $prebuiltTf2 $f) -Destination (Join-Path $bin $f) -Force -ErrorAction Stop
+    }
+    Copy-Item -LiteralPath (Join-Path $prebuiltTf2 'mod_tf_win64.exe') -Destination (Join-Path $sdk 'game\mod_tf_win64.exe') -Force -ErrorAction Stop
+} else {
 Step 'Generating the SDK''s Visual Studio projects'
 Push-Location (Join-Path $sdk 'src')
 try { Run { & '.\devtools\bin\vpc.exe' /hl2mp /tf /define:SOURCESDK +everything /mksln everything.sln | Out-Null } 'Generating the SDK projects failed.' }
@@ -270,6 +297,7 @@ foreach ($p in @('tier1\tier1_win64.vcxproj', 'mathlib\mathlib_win64.vcxproj', '
                  'game\client\client_win64_tf.vcxproj', 'game\server\server_win64_tf.vcxproj')) {
     Write-Host "  $p"
     Run { & $msbuild (Join-Path $src $p) /m /p:Configuration=Release /p:Platform=x64 /p:PlatformToolset=$toolset /v:quiet /nologo /clp:ErrorsOnly } "Building $p failed (see the error above)."
+}
 }
 
 Step 'Installing FortCraft''s test map'

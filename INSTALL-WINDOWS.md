@@ -5,11 +5,12 @@
 - **Steam**, signed in, with **Team Fortress 2** and **Source SDK Base 2013 Multiplayer**
   installed (the SDK Base is free: Steam > Library > Tools).
 - **Minecraft: Java Edition.**
-- **Visual Studio 2022 or newer** (Community is free) or **Build Tools for Visual Studio**,
-  with the workload **"Desktop development with C++"**.
-- **Java 25**, **Git** and **Python 3**: setup offers to install them for you (with winget) if
-  they're missing. (Valve's SDK build runs Python.)
-- About 6 GB of free disk space and an internet connection.
+- **Java 25** and **Git**: setup offers to install them for you (with winget) if they're missing.
+- About 3 GB of free disk space and an internet connection.
+
+The TF2 side comes ready-built in the release download, so you don't need Visual Studio or
+Python. (Building it yourself from a GitHub checkout still needs **Visual Studio 2022 or newer**
+with **"Desktop development with C++"**, and **Python 3**.)
 
 ## 2. Set up (once)
 
@@ -19,9 +20,9 @@
 2. Double-click **`START-HERE.cmd`**. Don't run `setup_windows.ps1` directly: Windows often blocks
    PowerShell scripts, and `START-HERE.cmd` works around that.
 
-Setup finds Java 25, Visual Studio and your Steam games, downloads Valve's Source SDK 2013 next
-to the `my-passthrough` folder, applies FortCraft's changes, builds the TF2 side, installs the
-test map and prepares the Minecraft side. The first run takes a while (roughly 10-30 minutes).
+Setup finds Java 25 and your Steam games, downloads Valve's Source SDK 2013 next to the
+`my-passthrough` folder, applies FortCraft's changes, installs the ready-built TF2 side and the
+test map, and prepares the Minecraft side. The first run takes a while (roughly 5-15 minutes).
 If it stops, the red message says what to fix; run `START-HERE.cmd` again afterwards and it
 carries on.
 
@@ -46,6 +47,9 @@ the normal launch.
 
 ## If something goes wrong
 
+- **Reporting a problem on GitHub?** Double-click **`COLLECT-LOGS.cmd`**. It makes one zip with
+  both games' logs and basic facts about your PC (no saves, game files or account details);
+  attach it to your issue.
 - Logs are in `my-passthrough\logs`, Minecraft's in `my-passthrough\fabric\run\logs`, TF2's
   console in `source-sdk-2013\game\mod_tf\console.log`.
 - "TF2 is still running": close Minecraft, wait a few seconds, try again.
