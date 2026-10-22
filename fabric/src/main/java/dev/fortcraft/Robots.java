@@ -80,7 +80,9 @@ import net.minecraft.world.phys.shapes.VoxelShape;
  */
 public final class Robots {
 	public static final int NONE = 0, BOWMAN = 1, DEMOKNIGHT = 2, MEDIC = 3, SCOUT = 4, GIANT_HEAVY = 5, JARATE = 6, JAR = 7,
-		ARROW = 8, ROCKET = 9, PIPE = 10, SOLDIER = 11, DEMOMAN = 12, SNIPER = 13, SPY = 14, SCOUT_FULL = 15, TANK = 16;
+		ARROW = 8, ROCKET = 9, PIPE = 10, SOLDIER = 11, DEMOMAN = 12, SNIPER = 13, SPY = 14, SCOUT_FULL = 15, TANK = 16,
+		/** Not a robot: the MvM bomb in the Ghost Town, dropped on the ground or on a carrier's back. */
+		BOMB = 17;
 
 	// Flags for TF2 (protocol kRobot*).
 	private static final int DEAD = 1, HURT = 2, GROUND = 4, SWING = 8, CHARGING = 16, CASTING = 32,
@@ -106,6 +108,8 @@ public final class Robots {
 	private static int occluderCount;
 	private static final String INIT_TAG = "fortcraft_robot";
 	private static final String KIND_TAG = "fortcraft_kind_";
+	/** Set on a new mob to choose its robot class (Ghost Town wave squads). */
+	public static final String FORCE_KIND_TAG = "fortcraft_force_kind_";
 	private static final String BOSS_TAG = "fortcraft_boss";
 	private static final double GIANT_SCALE = 1.75, BOSS_SCALE = 2.2;
 
@@ -183,6 +187,9 @@ public final class Robots {
 		if (e instanceof AbstractArrow a) {
 			return a.getOwner() instanceof Pillager ? ARROW : NONE;  // Bowman arrows: TF2's Huntsman arrows
 		}
+		if (e instanceof net.minecraft.world.entity.item.ItemEntity item && dev.fortcraft.mvm.GhostTownWaves.isBombItem(item.getItem())) {
+			return BOMB;  // the dropped bomb: TF2 draws MvM's bomb, Minecraft hides the TNT
+		}
 		if (!(e instanceof Mob)) {
 			return NONE;
 		}
@@ -228,7 +235,7 @@ public final class Robots {
 	/** True for robots (not their projectiles): their hits on the player are softened. */
 	public static boolean isRobot(Entity e) {
 		int k = e == null ? NONE : kindOf(e);
-		return k != NONE && k != JAR && k != ARROW && k != ROCKET && k != PIPE;
+		return k != NONE && k != JAR && k != ARROW && k != ROCKET && k != PIPE && k != BOMB;
 	}
 
 	/** Once per Minecraft frame while TF2 is linked: the robots near the player to TF2. */
@@ -368,6 +375,7 @@ public final class Robots {
 			}
 			ids[n] = id;
 			kinds[n] = (byte) kindOf(mob);
+			if (dev.fortcraft.mvm.GhostTownWaves.isDeploying(id)) x |= 128;  // kRobotExDeploying: TF2 plays the bomb deploy
 			extras[n] = (byte) x;
 			flags[n] = (short) f;
 			targets[n] = patient != null ? patient : 0;
@@ -381,6 +389,29 @@ public final class Robots {
 			values[o + 6] = mob.getBbHeight();
 			values[o + 7] = mob.getBbWidth();
 			n++;
+			if (n < MAX && mob.getItemBySlot(net.minecraft.world.entity.EquipmentSlot.HEAD).is(net.minecraft.world.item.Items.TNT)
+				&& minecraft.level.dimension() == dev.fortcraft.mvm.GhostTown.LEVEL) {
+				// The Ghost Town's bomb carrier: the bomb on its back (TF2 draws it; the TNT "hat" is
+				// only how the server marks the carrier).
+				float yaw = mob.getPreciseBodyRotation(pt);
+				double r = Math.toRadians(yaw);
+				double back = 0.35 * mob.getScale();
+				ids[n] = id | 0x40000000;
+				kinds[n] = (byte) BOMB;
+				extras[n] = 0;
+				flags[n] = 0;
+				targets[n] = 0;
+				int b = n * 8;
+				values[b] = (float) (pos.x + Math.sin(r) * back);
+				values[b + 1] = (float) (pos.y + mob.getBbHeight() * 0.45);
+				values[b + 2] = (float) (pos.z - Math.cos(r) * back);
+				values[b + 3] = yaw;
+				values[b + 4] = yaw;
+				values[b + 5] = 0;
+				values[b + 6] = 0.6f;
+				values[b + 7] = 0.6f;
+				n++;
+			}
 		}
 		FortLink.writeRobots(ids, kinds, extras, flags, targets, values, n);
 		if (occlude) {
@@ -493,8 +524,8 @@ public final class Robots {
 	 */
 	private static void becomeRobot(ServerLevel level, Mob mob) {
 		var raid = mob instanceof Raider r ? r.getCurrentRaid() : null;
-		int wave = raid != null ? raid.getGroupsSpawned() : 0;
-		boolean lastWave = raid != null && wave >= raid.getNumGroups(level.getDifficulty());
+		int wave = raid != null ? raid.getGroupsSpawned() : dev.fortcraft.mvm.GhostTownWaves.waveOf(mob);
+		boolean lastWave = raid != null ? wave >= raid.getNumGroups(level.getDifficulty()) : dev.fortcraft.mvm.GhostTownWaves.lastWave(mob);
 		boolean captain = mob instanceof Raider r && r.isCaptain();
 		double roll = mob.getRandom().nextDouble();
 		int kind = kindOf(mob);
@@ -502,6 +533,15 @@ public final class Robots {
 			kind = roll < 0.3 ? BOWMAN : roll < 0.52 ? SOLDIER : roll < 0.72 ? DEMOMAN : roll < 0.88 ? SNIPER : MEDIC;
 		} else if (mob instanceof Vindicator) {
 			kind = roll < 0.55 ? DEMOKNIGHT : roll < 0.75 ? SPY : SCOUT_FULL;
+		}
+		// A Ghost Town wave asks for a class (its squads: "20 Scouts, then Snipers"...).
+		for (String tag : mob.entityTags()) {
+			if (tag.startsWith(FORCE_KIND_TAG)) {
+				try {
+					kind = Integer.parseInt(tag.substring(FORCE_KIND_TAG.length()));
+				} catch (NumberFormatException ignored) {
+				}
+			}
 		}
 		boolean boss = captain && lastWave;
 		if (boss) {
@@ -593,8 +633,11 @@ public final class Robots {
 		if (mob.getTarget() instanceof Player p && p.isAlive()) {
 			return;
 		}
-		Player player = level.getNearestPlayer(mob, 32.0);
-		if (player != null && !player.isCreative() && !player.isSpectator() && mob.hasLineOfSight(player)) {
+		// In the Ghost Town robots go for creative players too (TF2 decides the damage there), so
+		// MvM waves can be played in a creative world (2026-10-20). Snipers look further, as in MvM.
+		boolean town = level.dimension() == dev.fortcraft.mvm.GhostTown.LEVEL;
+		Player player = level.getNearestPlayer(mob, town && kindOf(mob) == SNIPER ? 48.0 : 32.0);
+		if (player != null && (!player.isCreative() || town) && !player.isSpectator() && mob.hasLineOfSight(player)) {
 			mob.setTarget(player);
 		}
 	}

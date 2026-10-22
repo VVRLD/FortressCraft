@@ -1292,6 +1292,33 @@ static void DropMoneyOnGround( const Vector &ground, int nAmount )
 	s_DroppedMoney.AddToTail( d );
 }
 
+// One bag of a kill's money: falls straight down from 1.5 blocks over the floor Minecraft found and
+// stays on it (TF2's own toss flew bags through Minecraft's walls, which its physics can't see).
+static void DropMoneyFalling( const Vector &floor, int nAmount, float flLifetime )
+{
+	if ( nAmount <= 0 )
+		return;
+	const float s = (float)proto::kUnitsPerBlock;
+	QAngle angles( 0.0f, RandomFloat( -180.0f, 180.0f ), 0.0f );
+	CCurrencyPack *pPack = dynamic_cast< CCurrencyPack * >( CBaseEntity::CreateNoSpawn( "item_currencypack_custom", floor + Vector( 0, 0, 1.5f * s ), angles, NULL ) );
+	if ( !pPack )
+		return;
+	pPack->SetAmount( nAmount );
+	pPack->m_flFortCraftLifetime = flLifetime;
+	DispatchSpawn( pPack );
+	const float flFall = RandomFloat( 0.25f, 0.4f );
+	Vector vecDown( 0.0f, 0.0f, -1.5f * s / flFall );
+	pPack->DropSingleInstance( vecDown, NULL, 0.0f, 0.0f );
+	pPack->SetMoveType( MOVETYPE_FLY );  // no gravity, no bounce: straight down
+	pPack->SetAbsVelocity( vecDown );
+	DroppedMoney d;
+	d.hPack = pPack;
+	d.bHasGround = true;
+	d.vecGround = floor + Vector( 0, 0, 10.0f );
+	d.flLandAt = gpGlobals->curtime + flFall;
+	s_DroppedMoney.AddToTail( d );
+}
+
 static void UpdateDroppedMoney()
 {
 	for ( int i = s_DroppedMoney.Count() - 1; i >= 0; --i )
@@ -1341,7 +1368,21 @@ static void ServerMobHits( CTFPlayer *pPlayer )
 			// rewards last 5 minutes, ordinary ones a minute.
 			const float s = (float)proto::kUnitsPerBlock;
 			const Vector pos( ( hit.x - 0.5f ) * s + anchor.x, -( hit.z - 0.5f ) * s + anchor.y, ( hit.y + 60.0f ) * s + anchor.z );
-			if ( hit.source & proto::kMobHitMoneyLand )
+			if ( hit.source & proto::kMobHitMoneyGround )
+			{
+				// A kill's money onto the floor Minecraft found under the mob (y = that floor):
+				// small bags, each a little apart, falling from a block and a half up.
+				const Vector ground( ( hit.x - 0.5f ) * s + anchor.x, -( hit.z - 0.5f ) * s + anchor.y, ( hit.y + 60.0f ) * s + anchor.z );
+				const int nBags = nMoney < 2 ? 1 : clamp( nMoney / 5, 2, 40 );
+				const float flLifetime = nMoney >= 1000 ? 300.0f : 60.0f;
+				for ( int i = 0; i < nBags; ++i )
+				{
+					const Vector spot = ground + Vector( RandomFloat( -18.0f, 18.0f ), RandomFloat( -18.0f, 18.0f ), 0.0f );
+					DropMoneyFalling( spot, nMoney / nBags + ( i == 0 ? nMoney % nBags : 0 ), flLifetime );
+				}
+				Msg( "FortCraft MvM: a kill dropped $%d in %d bag(s) onto the floor\n", nMoney, nBags );
+			}
+			else if ( hit.source & proto::kMobHitMoneyLand )
 			{
 				// One bag of the dragon's rain, onto the ground Minecraft picked (y = that ground).
 				const Vector ground( ( hit.x - 0.5f ) * s + anchor.x, -( hit.z - 0.5f ) * s + anchor.y, ( hit.y + 60.0f ) * s + anchor.z );

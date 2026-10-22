@@ -26,6 +26,11 @@ public final class GhostTownSelfTest {
 	private static int wait;
 	private static BlockPos portal;
 	private static volatile boolean busy;
+	private static boolean wavesDone;
+	private static boolean bombChecked;
+	private static long autoSince;
+	private static boolean autoDone;
+	private static BlockPos testFire;
 
 	private GhostTownSelfTest() {
 	}
@@ -42,6 +47,17 @@ public final class GhostTownSelfTest {
 			case 0 -> {
 				wait = 200;
 				step = 1;
+				var recipe = server.getRecipeManager().byKey(net.minecraft.resources.ResourceKey.create(net.minecraft.core.registries.Registries.RECIPE,
+					net.minecraft.resources.Identifier.fromNamespaceAndPath("fortcraft", "unusual_flint_and_steel")));
+				net.minecraft.world.item.CreativeModeTabs.tryRebuildTabContents(minecraft.player.connection.enabledFeatures(), true, minecraft.level.registryAccess());
+				boolean inTab = false, inSearch = false;
+				for (var tab : net.minecraft.world.item.CreativeModeTabs.allTabs()) {
+					for (ItemStack s : tab.getDisplayItems()) if (s.is(MvmBlocks.UNUSUAL_FLINT_AND_STEEL)) inTab = true;
+				}
+				for (ItemStack s : net.minecraft.world.item.CreativeModeTabs.searchTab().getSearchTabDisplayItems()) {
+					if (s.is(MvmBlocks.UNUSUAL_FLINT_AND_STEEL)) inSearch = true;
+				}
+				log("recipe loaded: {}; in a creative tab: {}; in creative search: {}", recipe.isPresent(), inTab, inSearch);
 			}
 			case 1 -> run(server, () -> {
 				ServerLevel level = sp.level();
@@ -77,6 +93,22 @@ public final class GhostTownSelfTest {
 				step = 4;
 			});
 			case 4 -> run(server, () -> {
+				if (autoSince == 0) {
+					sp.level().getServer().setDifficulty(net.minecraft.world.Difficulty.NORMAL, true);
+					autoSince = System.currentTimeMillis();
+					log("waiting 33 s in town without pressing Ready: {}", GhostTownWaves.state());
+				}
+				if (!autoDone) {
+					if (System.currentTimeMillis() - autoSince < 33_000) {
+						wait = 200;
+						return;
+					}
+					autoDone = true;
+					log("after 33 s in town: {}", GhostTownWaves.state());
+					GhostTownWaves.killAllForTest(sp.level());
+					wait = 400;
+					return;
+				}
 				ServerLevel level = sp.level();
 				BlockPos feet = sp.blockPosition();
 				int solid = 0, total = 0;
@@ -88,11 +120,85 @@ public final class GhostTownSelfTest {
 					level.dimension().identifier(), sp.position(), level.getBlockState(feet).getBlock(),
 					level.getBlockState(feet.below()).getBlock(), solid, total,
 					Minecraft.getInstance().level == null ? "?" : Minecraft.getInstance().level.dimension().identifier());
+				var client = Minecraft.getInstance().level;
+				log("town check: table {}, shelf {}, client sky colour {}, fog colour {}, block light at feet {}",
+					level.getBlockState(CoalTownMap.TABLE).getBlock(),
+					level.getBlockState(new BlockPos(CoalTownMap.SHELF_X, CoalTownMap.TABLE.getY(), CoalTownMap.TABLE.getZ())).getBlock(),
+					client == null ? "?" : client.environmentAttributes().getValue(net.minecraft.world.attribute.EnvironmentAttributes.SKY_COLOR, sp.position()),
+					client == null ? "?" : client.environmentAttributes().getValue(net.minecraft.world.attribute.EnvironmentAttributes.FOG_COLOR, sp.position()),
+					level.getBrightness(net.minecraft.world.level.LightLayer.BLOCK, feet));
+				if (!wavesDone) {
+					sp.teleportTo(level, 533.5, 63, 50.5, java.util.Set.of(), 0, 0, true);  // where Alex's TF2 respawn put him
+					GhostTown.respawnInTown(sp);
+					log("respawn in town: now in {} at {}", sp.level().dimension().identifier(), sp.position());
+				}
+				if (GhostTown.isCoalTown() && !wavesDone) {
+					log("waves before: {}; ready button {}; hatch {}; robot spawn {}", GhostTownWaves.state(),
+						level.getBlockState(CoalTownMap.READY_BUTTON).getBlock(), CoalTownMap.hatch(level), CoalTownMap.robotSpawn(level));
+					StringBuilder col = new StringBuilder();
+					for (int y = 58; y <= 66; y++) col.append(y).append('=').append(level.getBlockState(new BlockPos(CoalTownMap.HATCH_X, y, CoalTownMap.HATCH_Z)).getBlock().getDescriptionId()).append(' ');
+					log("hatch column: {}", col);
+					log("route arrival->hatch {} steps, robots->arrival {} steps",
+						GhostTownWaves.findPath(level, CoalTownMap.ARRIVAL, CoalTownMap.hatch(level)).size(),
+						GhostTownWaves.findPath(level, CoalTownMap.robotSpawn(level), CoalTownMap.ARRIVAL).size());
+					BlockPos fire = feet.east();
+					level.setBlock(fire, net.minecraft.world.level.block.Blocks.FIRE.defaultBlockState(), 3);
+					boolean putOut = sp.gameMode.destroyBlock(fire);
+					log("fire: placed on {}, punched out: {}, now {}", level.getBlockState(fire.below()).getBlock(), putOut, level.getBlockState(fire).getBlock());
+					level.setBlock(fire, net.minecraft.world.level.block.Blocks.FIRE.defaultBlockState(), 3);
+					testFire = fire;
+					level.getServer().setDifficulty(net.minecraft.world.Difficulty.NORMAL, true);
+					GhostTownWaves.pressReadyForTest(level);
+					log("waves after Ready: {}; carrier at {}", GhostTownWaves.state(), GhostTownWaves.carrierPos(level));
+					wait = 2400;
+					step = 40;
+					return;
+				}
+				BlockPos floor = feet.below();
+				var before = level.getBlockState(floor).getBlock();
+				boolean player = sp.gameMode.destroyBlock(floor);
+				boolean destroy = level.destroyBlock(floor, true, sp);
+				boolean remove = level.removeBlock(floor, false);
+				level.explode(null, feet.getX() + 0.5, feet.getY(), feet.getZ() + 3.5, 4.0F, net.minecraft.world.level.Level.ExplosionInteraction.TNT);
+				int holes = 0;
+				for (BlockPos p : BlockPos.betweenClosed(feet.offset(-12, -6, -12), feet.offset(12, 6, 12))) {
+					if (!level.getBlockState(p).isAir()) holes++;
+				}
+				log("protection: floor {} -> player break {}, destroyBlock {}, removeBlock {}, floor now {}; solid around after a TNT-sized blast {} (was {})",
+					before, player, destroy, remove, level.getBlockState(floor).getBlock(), holes, solid);
 				TeleportTransition back = GhostTown.destination(level, sp, feet);
 				log("destination home: {}", back == null ? "none" : back.newLevel().dimension().identifier() + " " + back.position());
 				if (back != null) sp.teleport(back);
 				wait = 200;
 				step = 5;
+			});
+			case 40 -> run(server, () -> {
+				ServerLevel level = sp.level();
+				log("waves after ~10 s: {}; carrier at {}, hatch {}", GhostTownWaves.state(), GhostTownWaves.carrierPos(level), CoalTownMap.hatch(level));
+				int fires = 0;
+				for (BlockPos q : BlockPos.betweenClosed(testFire.offset(-6, -3, -6), testFire.offset(6, 3, 6))) {
+					if (level.getBlockState(q).is(net.minecraft.world.level.block.Blocks.FIRE)) fires++;
+				}
+				log("fire after ~10 s: {} fire blocks within 6 of it, floor under it {}", fires, level.getBlockState(testFire.below()).getBlock());
+				if (!bombChecked) {
+					log("robots along the lanes: {}", GhostTownWaves.robotSpreadForTest(level));
+					GhostTownWaves.killCarrierForTest(level);
+					bombChecked = true;
+					wait = 1200;
+					return;  // back here after the bomb has dropped
+				}
+				log("after killing the carrier: {}", GhostTownWaves.bombForTest(level));
+				GhostTownWaves.killAllForTest(level);
+				log("waves right after killing every robot: {}", GhostTownWaves.state());
+				GhostTownWaves.pressReadyForTest(level);
+				GhostTownWaves.carrierToHatchForTest(level);
+				wait = 2400;  // the bomb takes 3 s or more to deploy
+				step = 41;
+			});
+			case 41 -> run(server, () -> {
+				log("waves after the bomb was carried onto the hatch: {}", GhostTownWaves.state());
+				wavesDone = true;
+				step = 4;
 			});
 			case 5 -> {
 				log("back in {} at {}", minecraft.level.dimension().identifier(), minecraft.player.position());

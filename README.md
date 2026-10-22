@@ -34,7 +34,10 @@ TF2 classes, weapons, HUD and menus; rocket and sticky jumps on Minecraft blocks
 blowing up Minecraft mobs; melee block breaking with Minecraft cracks and drops; Engineer
 buildings that fight hostile mobs; TF2's backpack showing your Minecraft items (equip blocks to
 hand, use health and ammo packs); crafting Minecraft recipes and supply packs in TF2's crafting
-screen; taunts, voice commands, the TF2 console; the Nether and the End.
+screen; taunts, voice commands, the TF2 console; the Nether and the End; village raids fought by TF2's
+Mann vs. Machine robots; the Ghost Town, an MvM dimension reached through an iron-block portal
+lit with the Unusual Flint and Steel, with TF2's wave panel, bomb and money (the in-game guide's
+second page explains it).
 
 ## Known limitations
 

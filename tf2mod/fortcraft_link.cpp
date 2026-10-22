@@ -1899,6 +1899,11 @@ static void AutoJoin( C_TFPlayer *pPlayer )
 		engine->ClientCmd_Unrestricted( "cl_autoreload 1\n" );
 		// Respawn straight away after dying (TF2 made Alex wait 16 seconds).
 		engine->ClientCmd_Unrestricted( "mp_disable_respawn_times 1; mp_respawnwavetime 0\n" );
+		// Walk up Minecraft stairs and slabs (half a block, 24 units) without jumping (Alex,
+		// 2026-10-20). TF2's step is 18 units and every map load resets it (CWorld::Precache);
+		// players take it when they spawn, so set it here, before AutoJoin spawns us. Full
+		// blocks still need a jump.
+		engine->ClientCmd_Unrestricted( "sv_stepsize 25\n" );
 
 		// Several of the settings below are "cheat" settings that TF2 silently refuses without
 		// sv_cheats 1, so that has to come first (it came last before, and TF2's map was drawn).
@@ -2064,6 +2069,9 @@ static const RobotKind kRobotKinds[] = {
 	// 16: MvM's Tank (a ravager in the last raid wave). No voice, no steps.
 	{ "models/bots/boss_bot/boss_tank.mdl", NULL, NULL, NULL, true, "models/bots/boss_bot/boss_tank.mdl", false, NULL, 0, 0, 0,
 		ACT_INVALID, ACT_INVALID, ACT_INVALID, ACT_INVALID, ACT_INVALID, ACT_INVALID },
+	// 17: not a robot, the MvM bomb in the Ghost Town: on its carrier's back, or on the ground.
+	{ "models/props_td/atom_bomb.mdl", NULL, NULL, NULL, false, NULL, false, NULL, 0, 0, 0,
+		ACT_INVALID, ACT_INVALID, ACT_INVALID, ACT_INVALID, ACT_INVALID, ACT_INVALID },
 };
 
 struct RobotState
@@ -2093,6 +2101,7 @@ struct RobotState
 	float flCloak = 0.0f;                // Spy: 0 seen .. 1 cloaked
 	uint8_t extra = 0;                   // last frame's kRobotEx*
 	bool bTrail = false;                 // projectile: trail started
+	bool bDeploying = false;             // Ghost Town bomb carrier deploying at the hatch
 	double flNextTracer = 0.0;
 	bool bDead = false;
 	bool bSeen = false;      // in this frame's list
@@ -2337,6 +2346,27 @@ static void UpdateRobot( RobotState &r, const proto::RaidRobot &in, float dt )
 		ReleaseRobot( r );
 		return;
 	}
+	if ( r.kind == proto::kRobotKindBomb )
+	{
+		// The MvM bomb: upright, turned with its carrier (or as it fell), where Minecraft says.
+		if ( !r.pModel )
+		{
+			if ( modelinfo->GetModelIndex( k.pszModel ) == -1 )
+				return;
+			r.pModel = new C_FortCraftRobot;
+			if ( !r.pModel->InitializeAsClientEntity( k.pszModel, RENDER_GROUP_OPAQUE_ENTITY ) )
+			{
+				r.pModel->Release();
+				r.pModel = NULL;
+				return;
+			}
+			r.hModel = r.pModel;
+		}
+		r.vecLast = pos;
+		r.pModel->SetAbsOrigin( pos );
+		r.pModel->SetAbsAngles( QAngle( 0, AngleNormalize( -in.bodyYaw - 90.0f ), 0 ) );
+		return;
+	}
 	if ( r.kind >= proto::kRobotKindJar && r.kind <= proto::kRobotKindPipe )
 	{
 		// A projectile: the jar tumbles; arrows, rockets and pipes point along their path, rockets
@@ -2483,7 +2513,16 @@ static void UpdateRobot( RobotState &r, const proto::RaidRobot &in, float dt )
 	int nSeq;
 	// Slow walks count as moving too, or the robot slid along in its standing pose (Alex).
 	const bool bMoving = flSpeed > 0.04f * UNITS_PER_BLOCK;
-	if ( !bGround )
+	// The Ghost Town's bomb carrier at the hatch: TF2's own bomb deploy (Alex, 2026-10-20). MvM's
+	// bots play "primary_deploybomb" (CTFBotMvMDeployBomb); the Tank opens with "deploy".
+	const bool bDeploying = ( in.extra & proto::kRobotExDeploying ) != 0;
+	const int nDeploySeq = bDeploying ? pModel->LookupSequence( r.kind == proto::kRobotKindTank ? "deploy" : "primary_deploybomb" ) : -1;
+	if ( bDeploying && !r.bDeploying )
+		RobotSound( bGiant ? "MVM.DeployBombGiant" : "MVM.DeployBombSmall", pos );
+	r.bDeploying = bDeploying;
+	if ( nDeploySeq >= 0 )
+		nSeq = nDeploySeq;
+	else if ( !bGround )
 		nSeq = RobotSequence( pModel, k.air );
 	else if ( bMoving )
 		nSeq = RobotSequence( pModel, bDeployed && k.deployedRun != ACT_INVALID ? k.deployedRun : k.run );

@@ -50,6 +50,9 @@ public final class GhostTown {
 	private static MinecraftServer server;
 	private static boolean built;
 	private static BlockPos arrival;
+	private static float arrivalYaw = 180.0F;
+	/** "coaltown" once the Coal Town map's chunks are in this world, else the TF2-map conversion. */
+	private static String source;
 	private static CompletableFuture<Void> building;
 	private static String problem;
 	private static long lastNotice;
@@ -62,9 +65,75 @@ public final class GhostTown {
 	private GhostTown() {
 	}
 
+	/** True in the Ghost Town, where nothing can break blocks (Alex, 2026-10-19). */
+	public static boolean isProtected(Level level) {
+		return level != null && level.dimension() == LEVEL;
+	}
+
+	/** Protected, unless the block there is fire: fire can always be put out (Alex, 2026-10-19). */
+	public static boolean isProtected(Level level, BlockPos pos) {
+		return isProtected(level) && !(level.getBlockState(pos).getBlock() instanceof net.minecraft.world.level.block.BaseFireBlock);
+	}
+
+	/**
+	 * Which Coal Town layout this world has; a new name makes worlds copy the map again and redo
+	 * FortCraft's additions. "coaltown2" (2026-10-19): barrier wall, wall torches, bookshelf ring,
+	 * Ready button and hatch.
+	 */
+	private static final String COAL_TOWN = "coaltown2";
+
+	/** True when this world's Ghost Town is the Coal Town map (waves need its layout). */
+	public static synchronized boolean isCoalTown() {
+		return COAL_TOWN.equals(source);
+	}
+
+	/**
+	 * TF2 respawned the player while they were in the Ghost Town (Puppet): put them back in RED's
+	 * spawn there instead of sending them to the overworld.
+	 */
+	public static void respawnInTown(ServerPlayer player) {
+		MinecraftServer now = player.level().getServer();
+		load(now);
+		if (!built) prepare(now);  // the town was just re-copied and not set up yet
+		ServerLevel town = now.getLevel(LEVEL);
+		if (town == null || arrival == null) {
+			// No spawn in the Ghost Town (2026-10-19: Alex kept "spawning in the void", at his
+			// overworld bed's coordinates inside the Ghost Town): go to the normal respawn instead.
+			player.teleport(TeleportTransition.createDefault(player, TeleportTransition.DO_NOTHING));
+			FortCraft.LOG.warn("FortCraft: TF2 respawned but the Ghost Town has no spawn yet; back to the overworld respawn");
+			return;
+		}
+		player.teleportTo(town, arrival.getX() + 0.5, arrival.getY(), arrival.getZ() + 0.5, java.util.Set.of(), arrivalYaw, 0, true);
+		FortCraft.LOG.info("FortCraft: TF2 respawned; Minecraft's player back to RED's spawn in the Ghost Town at {}", arrival);
+	}
+
 	/** True once this world's Ghost Town is built (or replaced by the fallback platform). */
 	public static synchronized boolean ready() {
 		return built;
+	}
+
+	/**
+	 * Before a world's dimensions load (MinecraftServerMixin): if the Coal Town map is there and this
+	 * world's Ghost Town isn't made from it yet, swap the dimension's chunks for the map's.
+	 */
+	public static synchronized void beforeLevels(MinecraftServer now) {
+		load(now);
+		if (COAL_TOWN.equals(source)) return;
+		Path zip = CoalTownMap.find();
+		if (zip == null) {
+			FortCraft.LOG.info("FortCraft: no maps/mvm_coaltown.zip; the Ghost Town is built from TF2's map instead");
+			return;
+		}
+		Path dimension = net.minecraft.world.level.dimension.DimensionType.getStorageFolder(LEVEL, now.getWorldPath(LevelResource.ROOT));
+		try {
+			if (CoalTownMap.install(zip, dimension) == 0) return;
+			source = COAL_TOWN;
+			built = false;
+			arrival = null;
+			save(now);
+		} catch (IOException e) {
+			FortCraft.LOG.error("FortCraft: couldn't copy the Coal Town map into {}", dimension, e);
+		}
 	}
 
 	/** Start building Ghost Town if this world doesn't have it yet (called when a portal is lit). */
@@ -76,6 +145,10 @@ public final class GhostTown {
 		if (level == null) {
 			problem = "the Ghost Town dimension didn't load (FortCraft's data pack is missing)";
 			FortCraft.LOG.error("FortCraft: {}", problem);
+			return;
+		}
+		if (COAL_TOWN.equals(source)) {
+			decorateCoalTown(now, level);
 			return;
 		}
 		Path bsp = Tf2Install.ghostTownMap();
@@ -93,6 +166,114 @@ public final class GhostTown {
 				return null;
 			}
 		}).thenAcceptAsync(map -> place(now, level, map, bsp), now);
+	}
+
+	/**
+	 * The Coal Town map's chunks are already there; add what FortCraft needs once: the upgrade
+	 * station (enchanting table and bookshelves) and a white portal home in RED's spawn room, and
+	 * torches along the streets so the night town isn't pitch black.
+	 */
+	private static void decorateCoalTown(MinecraftServer now, ServerLevel level) {
+		long t0 = System.nanoTime();
+		for (int cx = CoalTownMap.TOWN_X0 >> 4; cx <= CoalTownMap.TOWN_X1 >> 4; cx++) {
+			for (int cz = CoalTownMap.TOWN_Z0 >> 4; cz <= CoalTownMap.TOWN_Z1 >> 4; cz++) level.getChunk(cx, cz);
+		}
+		BlockPos table = CoalTownMap.TABLE;
+		level.setBlock(table, Blocks.ENCHANTING_TABLE.defaultBlockState(), 3);
+		int shelves = 0;
+		for (int dx = -2; dx <= 2; dx++) {
+			for (int dz = -2; dz <= 2; dz++) {
+				boolean ring = Math.abs(dx) == 2 || Math.abs(dz) == 2;
+				for (int y = 0; y < 2; y++) {
+					BlockPos p = table.offset(dx, y, dz);
+					if (ring && !(dx == 2 && dz == 0)) {  // the east middle stays open: the way in
+						level.setBlock(p, Blocks.BOOKSHELF.defaultBlockState(), 3);
+						shelves++;
+					} else if (!p.equals(table)) {
+						level.setBlock(p, Blocks.AIR.defaultBlockState(), 3);
+					}
+				}
+			}
+		}
+		PortalFrame.build(level, CoalTownMap.PORTAL, Direction.Axis.X, 2, 3);
+		level.setBlock(CoalTownMap.READY_BUTTON, Blocks.STONE_BUTTON.defaultBlockState()
+			.setValue(net.minecraft.world.level.block.ButtonBlock.FACE, net.minecraft.world.level.block.state.properties.AttachFace.FLOOR)
+			.setValue(net.minecraft.world.level.block.ButtonBlock.FACING, Direction.EAST), 3);
+		BlockPos hatch = CoalTownMap.hatch(level);
+		for (int dx = -1; dx <= 1; dx++) {
+			for (int dz = -1; dz <= 1; dz++) {
+				level.setBlock(hatch.offset(dx, -1, dz), Blocks.IRON_TRAPDOOR.defaultBlockState()
+					.setValue(net.minecraft.world.level.block.TrapDoorBlock.HALF, net.minecraft.world.level.block.state.properties.Half.TOP), 3);
+			}
+		}
+		int walls = placeBarrierWall(level);
+		int torches = placeTorches(level);
+		arrival = CoalTownMap.ARRIVAL;
+		arrivalYaw = CoalTownMap.ARRIVAL_YAW;
+		built = true;
+		save(now);
+		FortCraft.LOG.info("FortCraft: Coal Town Ghost Town ready in {} ms: upgrade station at {} with {} bookshelves, {} wall torches, {} barrier blocks, hatch {}, arrival {}",
+			(System.nanoTime() - t0) / 1_000_000, CoalTownMap.TABLE, shelves, torches, walls, hatch, arrival);
+		message(now, "The Ghost Town is ready. Step into the white portal.");
+	}
+
+	/** Invisible barrier walls round the town, from below the ground to well above the roofs. */
+	private static int placeBarrierWall(ServerLevel level) {
+		int placed = 0;
+		BlockState barrier = Blocks.BARRIER.defaultBlockState();
+		for (int x = CoalTownMap.WALL_X0; x <= CoalTownMap.WALL_X1; x++) {
+			for (int z = CoalTownMap.WALL_Z0; z <= CoalTownMap.WALL_Z1; z++) {
+				if (x != CoalTownMap.WALL_X0 && x != CoalTownMap.WALL_X1 && z != CoalTownMap.WALL_Z0 && z != CoalTownMap.WALL_Z1) continue;
+				for (int y = 56; y <= 110; y++) {
+					BlockPos p = new BlockPos(x, y, z);
+					if (level.getBlockState(p).canBeReplaced()) {
+						level.setBlock(p, barrier, 2);
+						placed++;
+					}
+				}
+			}
+		}
+		return placed;
+	}
+
+	/**
+	 * Torches on the outside walls of buildings, at head height, facing the street, at least 7
+	 * blocks apart (Alex: the first version lit the open desert like a floodlit field).
+	 */
+	private static int placeTorches(ServerLevel level) {
+		List<BlockPos> placed = new ArrayList<>();
+		for (int x = CoalTownMap.WALL_X0 + 1; x < CoalTownMap.WALL_X1; x++) {
+			for (int z = CoalTownMap.WALL_Z0 + 1; z < CoalTownMap.WALL_Z1; z++) {
+				BlockPos feet = CoalTownMap.ground(level, x, z);
+				if (!level.canSeeSky(feet) || feet.getY() > 66) continue;  // streets only, not roofs
+				BlockPos at = feet.above();
+				for (Direction d : Direction.Plane.HORIZONTAL) {
+					BlockPos wall = at.relative(d);
+					BlockState w = level.getBlockState(wall);
+					if (w.is(Blocks.SAND) || w.is(Blocks.SANDSTONE) || w.is(Blocks.BARRIER) || !w.isFaceSturdy(level, wall, d.getOpposite())) continue;
+					if (!level.getBlockState(at).isAir() || tooClose(placed, at) || nearLight(level, at)) break;
+					level.setBlock(at, Blocks.WALL_TORCH.defaultBlockState()
+						.setValue(net.minecraft.world.level.block.WallTorchBlock.FACING, d.getOpposite()), 3);
+					placed.add(at);
+					break;
+				}
+			}
+		}
+		return placed.size();
+	}
+
+	private static boolean tooClose(List<BlockPos> placed, BlockPos p) {
+		for (BlockPos q : placed) {
+			if (Math.abs(q.getX() - p.getX()) < 7 && Math.abs(q.getZ() - p.getZ()) < 7 && Math.abs(q.getY() - p.getY()) < 4) return true;
+		}
+		return false;
+	}
+
+	private static boolean nearLight(ServerLevel level, BlockPos p) {
+		for (BlockPos q : BlockPos.betweenClosed(p.offset(-3, -2, -3), p.offset(3, 2, 3))) {
+			if (level.getBlockState(q).getLightEmission() >= 10) return true;
+		}
+		return false;
 	}
 
 	/** Runs on the server thread once the map is converted (or couldn't be). */
@@ -178,7 +359,7 @@ public final class GhostTown {
 		returns.put(player.getUUID(), new Return(from.dimension(), stepOut(from, portal, player.position()), player.getYRot()));
 		save(now);
 		FortCraft.LOG.info("FortCraft: Ghost Town portal: {} enters at {}", player.getName().getString(), arrival);
-		return new TeleportTransition(town, Vec3.atBottomCenterOf(arrival), Vec3.ZERO, 180.0F, 0,
+		return new TeleportTransition(town, Vec3.atBottomCenterOf(arrival), Vec3.ZERO, arrivalYaw, 0,
 			TeleportTransition.PLAY_PORTAL_SOUND.then(TeleportTransition.PLACE_PORTAL_TICKET));
 	}
 
@@ -215,6 +396,8 @@ public final class GhostTown {
 		server = now;
 		built = false;
 		arrival = null;
+		arrivalYaw = 180.0F;
+		source = null;
 		problem = null;
 		returns.clear();
 		Path f = file(now);
@@ -223,6 +406,8 @@ public final class GhostTown {
 			for (String line : Files.readAllLines(f, StandardCharsets.UTF_8)) {
 				String[] p = line.trim().split(" ");
 				if (p[0].equals("version") && p.length == 2 && Integer.parseInt(p[1]) == VERSION) built = true;
+				if (p[0].equals("source") && p.length == 2) source = p[1];
+				if (p[0].equals("yaw") && p.length == 2) arrivalYaw = Float.parseFloat(p[1]);
 				if (p[0].equals("arrival") && p.length == 4) arrival = new BlockPos(Integer.parseInt(p[1]), Integer.parseInt(p[2]), Integer.parseInt(p[3]));
 				if (p[0].equals("return") && p.length == 7) {
 					returns.put(UUID.fromString(p[1]), new Return(ResourceKey.create(Registries.DIMENSION, Identifier.parse(p[2])),
@@ -230,7 +415,7 @@ public final class GhostTown {
 				}
 			}
 			if (arrival == null) built = false;
-			FortCraft.LOG.info("FortCraft: Ghost Town state: built={} arrival={} returns={}", built, arrival, returns.size());
+			FortCraft.LOG.info("FortCraft: Ghost Town state: source={} built={} arrival={} returns={}", source, built, arrival, returns.size());
 		} catch (IOException | RuntimeException e) {
 			FortCraft.LOG.warn("FortCraft: couldn't read {}", f, e);
 			built = false;
@@ -240,7 +425,9 @@ public final class GhostTown {
 	private static void save(MinecraftServer now) {
 		Path f = file(now);
 		StringBuilder sb = new StringBuilder();
+		if (source != null) sb.append("source ").append(source).append('\n');
 		if (built && arrival != null) {
+			sb.append("yaw ").append(arrivalYaw).append('\n');
 			sb.append("version ").append(VERSION).append('\n');
 			sb.append("arrival ").append(arrival.getX()).append(' ').append(arrival.getY()).append(' ').append(arrival.getZ()).append('\n');
 		}

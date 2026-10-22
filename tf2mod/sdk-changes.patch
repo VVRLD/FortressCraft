@@ -816,7 +816,7 @@ index 20070cf..e97cd3d 100644
  // Purpose: 
  //-----------------------------------------------------------------------------
 diff --git a/src/game/client/tf/tf_hud_mann_vs_machine_status.cpp b/src/game/client/tf/tf_hud_mann_vs_machine_status.cpp
-index f676e97..4f274e1 100644
+index f676e97..11090ad 100644
 --- a/src/game/client/tf/tf_hud_mann_vs_machine_status.cpp
 +++ b/src/game/client/tf/tf_hud_mann_vs_machine_status.cpp
 @@ -17,6 +17,7 @@
@@ -827,7 +827,21 @@ index f676e97..4f274e1 100644
  // memdbgon must be the last include file in a .cpp file!!!
  #include "tier0/memdbgon.h"
  
-@@ -431,7 +432,8 @@ void CWaveStatusPanel::ApplySchemeSettings( IScheme *pScheme )
+@@ -299,7 +300,13 @@ void CMvMBossStatusPanel::ApplySchemeSettings( IScheme *pScheme )
+ void CMvMBossStatusPanel::OnTick( void )
+ {	
+ 	if ( !TFGameRules() || !TFGameRules()->IsMannVsMachineMode() )
++	{
++		// FortCraft: outside real MvM this panel never ran, so its background stayed visible as an
++		// empty box under the wave panel in village raids and Ghost Town waves (Alex, 2026-10-20).
++		if ( m_pBackground && m_pBackground->IsVisible() )
++			m_pBackground->SetVisible( false );
+ 		return;
++	}
+ 
+ 	CUtlVector< C_TFMvMBossProgressUser* > activeBosses;
+ 	for ( int i = 0; i < ITFMvMBossProgressUserAutoList::AutoList().Count(); ++i )
+@@ -431,7 +438,8 @@ void CWaveStatusPanel::ApplySchemeSettings( IScheme *pScheme )
  //-----------------------------------------------------------------------------
  void CWaveStatusPanel::OnTick( void )
  {	
@@ -837,7 +851,46 @@ index f676e97..4f274e1 100644
  		return;
  
  	if ( !TFObjectiveResource() )
-@@ -1780,7 +1782,7 @@ bool CTFHudMannVsMachineStatus::ShouldDraw( void )
+@@ -603,6 +611,30 @@ void CWaveStatusPanel::UpdateEnemyCounts( void )
+ 		}
+ 	}
+ 
++	// FortCraft: the bar's saved bounds can come from another screen size (TF2 starts at one
++	// resolution and FortCraft's overlay switches it), which drew the bar oversized across the robot
++	// icons (Alex, 2026-10-20). Take them from WaveStatusPanel.res's numbers at the current size.
++	if ( FortCraft_RaidHudActive() && !cl_hud_minmode.GetBool() )
++	{
++		int nScreenW, nScreenH;
++		vgui::surface()->GetScreenSize( nScreenW, nScreenH );
++		static int s_nSizedFor = -1;
++		if ( s_nSizedFor != nScreenW * 10000 + nScreenH )
++		{
++			s_nSizedFor = nScreenW * 10000 + nScreenH;
++			const vgui::HScheme hScheme = GetScheme();
++			m_nBarOrgX = scheme()->GetProportionalScaledValueEx( hScheme, 211 );
++			m_nBarOrgY = scheme()->GetProportionalScaledValueEx( hScheme, 20 );
++			m_nBarOrgW = scheme()->GetProportionalScaledValueEx( hScheme, 178 );
++			m_nBarOrgT = scheme()->GetProportionalScaledValueEx( hScheme, 10 );
++			m_nBgOrgX = scheme()->GetProportionalScaledValueEx( hScheme, 210 );
++			m_nBgOrgY = scheme()->GetProportionalScaledValueEx( hScheme, 19 );
++			m_nBgOrgW = scheme()->GetProportionalScaledValueEx( hScheme, 180 );
++			m_nBgOrgT = scheme()->GetProportionalScaledValueEx( hScheme, 12 );
++			m_nEnemyRemainingNoSupport = -1;  // re-place the bar below
++		}
++	}
++
+ 	// update the progress bar
+ 	if ( nMaxEnemyCountNoSupport > 0 )
+ 	{
+@@ -613,6 +645,7 @@ void CWaveStatusPanel::UpdateEnemyCounts( void )
+ 			if ( m_pProgressBar )
+ 			{
+ 				float flPercent = (float)m_nEnemyRemainingNoSupport / (float)nMaxEnemyCountNoSupport;
++				flPercent = clamp( flPercent, 0.0f, 1.0f );  // FortCraft: never wider than the bar
+ 				m_pProgressBar->SetBounds( m_nBarOrgX, m_nBarOrgY, (int)(m_nBarOrgW * flPercent) + m_nWidthSpacer, m_nBarOrgT );
+ 			}
+ 			
+@@ -1780,7 +1813,7 @@ bool CTFHudMannVsMachineStatus::ShouldDraw( void )
  {
  	// Don't draw in freezecam
  	C_TFPlayer *pPlayer = CTFPlayer::GetLocalTFPlayer();
@@ -846,7 +899,7 @@ index f676e97..4f274e1 100644
  	{
  		return false;
  	}
-@@ -1791,7 +1793,7 @@ bool CTFHudMannVsMachineStatus::ShouldDraw( void )
+@@ -1791,7 +1824,7 @@ bool CTFHudMannVsMachineStatus::ShouldDraw( void )
  //-----------------------------------------------------------------------------
  void CTFHudMannVsMachineStatus::OnTick( void )
  {	
@@ -2111,7 +2164,7 @@ index 2c86d52..cc7b936 100644
  
  	int GetBaseTurnRate( void );
 diff --git a/src/game/server/tf/tf_player.cpp b/src/game/server/tf/tf_player.cpp
-index c030951..684e74e 100644
+index c030951..d2108bf 100644
 --- a/src/game/server/tf/tf_player.cpp
 +++ b/src/game/server/tf/tf_player.cpp
 @@ -6,6 +6,8 @@
@@ -2189,7 +2242,7 @@ index c030951..684e74e 100644
  	// Update timers.
  	UpdateTimers();
  
-@@ -2935,6 +2980,74 @@ void CTFPlayer::PrecacheTFPlayer()
+@@ -2935,6 +2980,76 @@ void CTFPlayer::PrecacheTFPlayer()
  	// Precache the player models and gibs.
  	PrecachePlayerModels();
  
@@ -2208,6 +2261,8 @@ index c030951..684e74e 100644
 +			"models/weapons/c_models/c_sniperrifle/c_sniperrifle.mdl", "models/weapons/c_models/c_knife/c_knife.mdl",
 +			"models/weapons/c_models/c_scattergun.mdl", "models/weapons/w_models/w_arrow.mdl", "models/weapons/w_models/w_rocket.mdl",
 +			"models/weapons/w_models/w_grenade_grenadelauncher.mdl", "models/bots/boss_bot/boss_tank.mdl",
++			// The MvM bomb in the Ghost Town, carried or dropped (2026-10-20).
++			"models/props_td/atom_bomb.mdl",
 +		};
 +		for ( int i = 0; i < ARRAYSIZE( kRobotWeapons ); ++i )
 +			PrecacheModel( kRobotWeapons[ i ] );
@@ -2264,7 +2319,7 @@ index c030951..684e74e 100644
  	// Precache the player sounds.
  	PrecacheScriptSound( "Player.Spawn" );
  	PrecacheScriptSound( "TFPlayer.Pain" );
-@@ -3944,6 +4057,10 @@ void CTFPlayer::Spawn()
+@@ -3944,6 +4059,10 @@ void CTFPlayer::Spawn()
  	}
  
  	SetContextThink( &CTFPlayer::PostSpawnThink, gpGlobals->curtime + 0.1f, "PostSpawnThink" );
@@ -2275,7 +2330,7 @@ index c030951..684e74e 100644
  }
  
  //-----------------------------------------------------------------------------
-@@ -6976,6 +7093,18 @@ void CTFPlayer::HandleCommand_JoinClass( const char *pClassName, bool bAllowSpaw
+@@ -6976,6 +7095,18 @@ void CTFPlayer::HandleCommand_JoinClass( const char *pClassName, bool bAllowSpaw
  		return;
  	}
  
@@ -2294,7 +2349,7 @@ index c030951..684e74e 100644
  	// We can respawn instantly if:
  	//	- We're dead, and we're past the required post-death time
  	//	- We're inside a respawn room of our own team
-@@ -7518,6 +7647,27 @@ bool CTFPlayer::ClientCommand( const CCommand &args )
+@@ -7518,6 +7649,27 @@ bool CTFPlayer::ClientCommand( const CCommand &args )
  		}
  		return true;
  	}
@@ -2322,7 +2377,7 @@ index c030951..684e74e 100644
  	else if ( FStrEq( pcmd, "stop_taunt" ) )
  	{
  		if( m_Shared.GetTauntIndex() == TAUNT_LONG && !m_Shared.InCond( TF_COND_HALLOWEEN_KART ) )
-@@ -8662,7 +8812,7 @@ CTFPlayer *CTFPlayer::TeamFortress_GetDisguiseTarget( int nTeam, int nClass )
+@@ -8662,7 +8814,7 @@ CTFPlayer *CTFPlayer::TeamFortress_GetDisguiseTarget( int nTeam, int nClass )
  //-----------------------------------------------------------------------------
  float DamageForce( const Vector &size, float damage, float scale )
  { 
@@ -2331,7 +2386,7 @@ index c030951..684e74e 100644
  	
  	if ( force > 1000.0 )
  	{
-@@ -8813,7 +8963,18 @@ int CTFPlayer::OnTakeDamage( const CTakeDamageInfo &inputInfo )
+@@ -8813,7 +8965,18 @@ int CTFPlayer::OnTakeDamage( const CTakeDamageInfo &inputInfo )
  	CTFWeaponBase *pWeapon = dynamic_cast< CTFWeaponBase * >( inputInfo.GetWeapon() );
  
  	if ( GetFlags() & FL_GODMODE )
@@ -2350,7 +2405,7 @@ index c030951..684e74e 100644
  
  	if ( IsInCommentaryMode() )
  		return 0;
-@@ -8980,6 +9141,24 @@ int CTFPlayer::OnTakeDamage( const CTakeDamageInfo &inputInfo )
+@@ -8980,6 +9143,24 @@ int CTFPlayer::OnTakeDamage( const CTakeDamageInfo &inputInfo )
  				bHitEnemy = true;
  			}
  		}
@@ -2375,7 +2430,7 @@ index c030951..684e74e 100644
  
  /*
  		// no fall damage in space
-@@ -21998,17 +22177,20 @@ CON_COMMAND_F( currency_give, "Have some in-game money.", FCVAR_CHEAT )
+@@ -21998,17 +22179,20 @@ CON_COMMAND_F( currency_give, "Have some in-game money.", FCVAR_CHEAT )
  //-----------------------------------------------------------------------------
  void CTFPlayer::AddCurrency( int nAmount )
  {
@@ -2400,7 +2455,7 @@ index c030951..684e74e 100644
  	}	
  }
  
-@@ -22347,7 +22529,8 @@ void CTFPlayer::BeginPurchasableUpgrades( void )
+@@ -22347,7 +22531,8 @@ void CTFPlayer::BeginPurchasableUpgrades( void )
  {
  	m_nCanPurchaseUpgradesCount++;
  
@@ -2410,7 +2465,7 @@ index c030951..684e74e 100644
  	{
  		m_RefundableUpgrades.RemoveAll();
  	}
-@@ -22364,7 +22547,7 @@ void CTFPlayer::EndPurchasableUpgrades( void )
+@@ -22364,7 +22549,7 @@ void CTFPlayer::EndPurchasableUpgrades( void )
  
  	m_nCanPurchaseUpgradesCount--;
  
@@ -2726,7 +2781,7 @@ index 4b79f72..eb610d3 100644
  
  #if !defined( CLIENT_DLL )
 diff --git a/src/game/shared/tf/tf_flame.cpp b/src/game/shared/tf/tf_flame.cpp
-index 7e9ceed..cf5c53e 100644
+index 7e9ceed..b18e09d 100644
 --- a/src/game/shared/tf/tf_flame.cpp
 +++ b/src/game/shared/tf/tf_flame.cpp
 @@ -15,6 +15,7 @@
@@ -2737,7 +2792,48 @@ index 7e9ceed..cf5c53e 100644
  #endif // GAME_DLL
  
  #ifdef CLIENT_DLL
-@@ -1073,6 +1074,11 @@ bool CTFFlameManager::OnPointHitWall( tf_point_t *pPoint, Vector &vecNewPos, Vec
+@@ -1061,6 +1062,40 @@ void CTFFlameManager::Update()
+ #endif // CLIENT_DLL
+ }
+ 
++#ifdef GAME_DLL
++// FortCraft: flames that pass through a Minecraft mob burn it for the flame's damage, as OnCollide
++// does a TF2 player. Only TF2's old flame entity reported damage to mobs; TF2 now uses these flame
++// points, whose traces don't see Minecraft's mobs, so the flamethrower did no damage at all (Alex,
++// 2026-10-20, twice). Each flame point's move is checked against the mob boxes; a point hurts once,
++// and at most one hit goes out per 0.075 s, near TF2's own rate on one target.
++bool CTFFlameManager::UpdatePoint( tf_point_t *pPoint, int nIndex, float flDT, Vector *pVecNewPos, Vector *pVecMins, Vector *pVecMaxs )
++{
++	const Vector vecFrom = pPoint->m_vecPosition;
++	const bool bKeep = BaseClass::UpdatePoint( pPoint, nIndex, flDT, pVecNewPos, pVecMins, pVecMaxs );
++	flame_point_t *pFlame = static_cast< flame_point_t * >( pPoint );
++	if ( FortCraft_Active() && !pFlame->m_bFortCraftHitMob )
++	{
++		const Vector vecTo = pPoint->m_vecPosition;
++		Vector vecDir = vecTo - vecFrom;
++		const float flLen = VectorNormalize( vecDir );
++		static float s_flNextMobBurn = 0.0f;
++		const float r = MAX( GetRadius( pPoint ), 4.0f );
++		if ( flLen > 0.1f && gpGlobals->curtime >= s_flNextMobBurn
++			&& FortCraft_MobBeforeBlocks( vecFrom, vecTo + vecDir * r, Vector( -r, -r, -r ), Vector( r, r, r ) ) )
++		{
++			pFlame->m_bFortCraftHitMob = true;
++			s_flNextMobBurn = gpGlobals->curtime + 0.075f;
++			const float flDamage = MAX( GetFlameDamageScale( pFlame, NULL ) * m_flDamage, 1.0f );
++			FortCraft_ReportShot( vecFrom, vecDir, flLen + r + 64.0f, flDamage, ( m_iDmgType & DMG_CRITICAL ) ? FC_CRIT : 0 );
++			static int s_nLogged = 0;
++			if ( s_nLogged++ < 20 )
++				Msg( "FortCraft flame hit a mob: %.1f damage\n", flDamage );
++		}
++	}
++	return bKeep;
++}
++#endif
++
+ bool CTFFlameManager::OnPointHitWall( tf_point_t *pPoint, Vector &vecNewPos, Vector &vecNewVelocity, const trace_t& tr, float flDT )
+ {
+ 	tmZone( TELEMETRY_LEVEL0, TMZF_NONE, "%s", __FUNCTION__ );
+@@ -1073,6 +1108,11 @@ bool CTFFlameManager::OnPointHitWall( tf_point_t *pPoint, Vector &vecNewPos, Vec
  
  	flame_point_t *pFlame = static_cast< flame_point_t* >( pPoint );
  
@@ -2749,6 +2845,27 @@ index 7e9ceed..cf5c53e 100644
  	pFlame->m_flLifeTime += ReflectionAdditionalLifeTime();
  
  	Vector vecNewDirVelocity = vecNewVelocity - DotProduct( tr.plane.normal, vecNewVelocity ) * tr.plane.normal;
+diff --git a/src/game/shared/tf/tf_flame.h b/src/game/shared/tf/tf_flame.h
+index 22c4e2c..c7a18e0 100644
+--- a/src/game/shared/tf/tf_flame.h
++++ b/src/game/shared/tf/tf_flame.h
+@@ -20,6 +20,7 @@ struct flame_point_t : tf_point_t
+ {
+ 	Vector m_vecAttackerVelocity = vec3_origin;
+ 	Vector m_vecInitialPos = vec3_origin;
++	bool m_bFortCraftHitMob = false;  // FortCraft: this flame already hurt a Minecraft mob
+ };
+ 
+ #define WATERFALL_FLAMETHROWER_STREAMS 5
+@@ -91,6 +92,8 @@ protected:
+ #ifdef GAME_DLL
+ 	virtual bool ShouldCollide( CBaseEntity *pEnt ) const OVERRIDE;
+ 	virtual void OnCollide( CBaseEntity *pEnt, int iPointIndex ) OVERRIDE;
++	// FortCraft: flames passing through Minecraft mobs hurt them (see tf_flame.cpp).
++	virtual bool UpdatePoint( tf_point_t *pPoint, int nIndex, float flDT, Vector *pVecNewPos = NULL, Vector *pVecMins = NULL, Vector *pVecMaxs = NULL ) OVERRIDE;
+ #endif // GAME_DLL
+ 
+ 	virtual tf_point_t *AllocatePoint() OVERRIDE { return new flame_point_t; }
 diff --git a/src/game/shared/tf/tf_gamemovement.cpp b/src/game/shared/tf/tf_gamemovement.cpp
 index 4766016..176cdae 100644
 --- a/src/game/shared/tf/tf_gamemovement.cpp
@@ -3298,7 +3415,7 @@ index 3b2c6a1..6b26772 100644
  	virtual int		OnTakeDamage( const CTakeDamageInfo &info ) OVERRIDE;
  	virtual void	IncrementDeflected( void );
 diff --git a/src/game/shared/tf/tf_weapon_jar.cpp b/src/game/shared/tf/tf_weapon_jar.cpp
-index ba54bf9..05d3872 100644
+index ba54bf9..12a2e87 100644
 --- a/src/game/shared/tf/tf_weapon_jar.cpp
 +++ b/src/game/shared/tf/tf_weapon_jar.cpp
 @@ -26,6 +26,7 @@
@@ -3331,6 +3448,49 @@ index ba54bf9..05d3872 100644
  	// Splash!
  	CPVSFilter particleFilter( vContactPoint );
  	TE_TFParticleEffect( particleFilter, 0.0, pszImpactEffect, vContactPoint, vec3_angle );
+@@ -614,6 +630,29 @@ void CTFProjectile_Jar::VPhysicsCollision( int index, gamevcollisionevent_t *pEv
+ 	}
+ }
+ 
++//-----------------------------------------------------------------------------
++// FortCraft: Minecraft's blocks and mobs aren't vphysics objects, so VPhysicsCollision never saw
++// them and the jar bounced (Gas Passer, Jarate, Mad Milk: "doesn't splash when thrown on or on the
++// ground", Alex, 2026-10-20). Burst next frame, the way a hit on TF2's world does.
++void CTFProjectile_Jar::FortCraft_OnMinecraftBlockHit( IPhysicsObject *pPhysics, const Vector &normal, bool bMob )
++{
++	if ( !ExplodesOnHit() )
++	{
++		BaseClass::FortCraft_OnMinecraftBlockHit( pPhysics, normal, bMob );
++		return;
++	}
++	if ( m_bTouched )
++		return;  // already bursting: once is enough (it rests on the block until it's removed)
++	m_bTouched = true;
++	Vector velocity;
++	AngularImpulse angularVelocity;
++	pPhysics->GetVelocity( &velocity, &angularVelocity );
++	m_vCollisionVelocity = velocity.IsZero() ? -normal : velocity;
++	OnHitWorld();
++	pPhysics->EnableMotion( false );
++	SetContextThink( &CTFProjectile_Jar::VPhysicsCollisionThink, gpGlobals->curtime, "JarCollisionThink" );
++}
++
+ //-----------------------------------------------------------------------------
+ // Purpose: Handles exploding after a vphysics collision has happened.
+ // This prevents changing collision properties during the vphysics callback itself.
+diff --git a/src/game/shared/tf/tf_weapon_jar.h b/src/game/shared/tf/tf_weapon_jar.h
+index 594abce..4c15949 100644
+--- a/src/game/shared/tf/tf_weapon_jar.h
++++ b/src/game/shared/tf/tf_weapon_jar.h
+@@ -173,6 +173,8 @@ public:
+ 	virtual void		PipebombTouch( CBaseEntity *pOther ) OVERRIDE;
+ 	virtual void		VPhysicsCollision( int index, gamevcollisionevent_t *pEvent ) OVERRIDE;
+ 	void				VPhysicsCollisionThink( void );
++	// FortCraft: burst on a Minecraft block or mob, as on TF2's world, instead of bouncing like a pipe.
++	virtual void		FortCraft_OnMinecraftBlockHit( IPhysicsObject *pPhysics, const Vector &normal, bool bMob ) OVERRIDE;
+ 
+ 	void OnBreadMonsterHit( CBaseEntity *pOther, trace_t *pTrace );
+ 
 diff --git a/src/game/shared/tf/tf_weapon_knife.cpp b/src/game/shared/tf/tf_weapon_knife.cpp
 index 2eb6777..fc5a9ad 100644
 --- a/src/game/shared/tf/tf_weapon_knife.cpp

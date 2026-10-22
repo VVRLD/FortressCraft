@@ -215,6 +215,14 @@ public final class Puppet {
 			return;
 		}
 		java.util.UUID id = minecraft.player.getUUID();
+		if (minecraft.level.dimension() == dev.fortcraft.mvm.GhostTown.LEVEL) {
+			// Dying in the Ghost Town (MvM waves): back to RED's spawn there. TF2 follows the move.
+			server.execute(() -> {
+				var sp = server.getPlayerList().getPlayer(id);
+				if (sp != null) dev.fortcraft.mvm.GhostTown.respawnInTown(sp);
+			});
+			return;
+		}
 		server.execute(() -> {
 			var sp = server.getPlayerList().getPlayer(id);
 			if (sp != null) {

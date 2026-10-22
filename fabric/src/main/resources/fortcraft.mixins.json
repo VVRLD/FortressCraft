@@ -7,6 +7,7 @@
     "BuiltInPackSourceMixin",
     "CameraMixin",
     "ContainerScreenMixin",
+    "CreativeModeTabMixin",
     "EnchantingTableMixin",
     "EntityRenderDispatcherMixin",
     "ExperienceOrbMixin",
@@ -24,11 +25,19 @@
     "MouseHandlerMixin",
     "OptionsMixin",
     "PlayerMixin",
+    "ProtectedExplosionMixin",
+    "ProtectedFireMixin",
+    "ProtectedGameModeMixin",
+    "ProtectedLevelMixin",
+    "ProtectedServerLevelMixin",
     "ServerPlayerMixin",
     "SnowballMixin",
     "SoundManagerMixin",
     "WitchMixin",
-    "ServerMoveMixin"
+    "ServerMoveMixin",
+    "MinecraftServerMixin"
   ],
-  "injectors": { "defaultRequire": 1 }
+  "injectors": {
+    "defaultRequire": 1
+  }
 }

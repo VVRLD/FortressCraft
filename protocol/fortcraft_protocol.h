@@ -946,8 +946,11 @@ namespace fortcraft { namespace proto
 	// v67: RaidRobot.extra.
 	// kRobotExBoss on a rocket or pipe: a crit shot. v69: burning, Jarate, Mad Milk; kind 16: the Tank.
 	static constexpr std::uint8_t kRobotExUber = 1, kRobotExCloaked = 2, kRobotExBoss = 4, kRobotExHealing = 8,
-		kRobotExBurning = 16, kRobotExJarated = 32, kRobotExMilked = 64;
+		kRobotExBurning = 16, kRobotExJarated = 32, kRobotExMilked = 64,
+		kRobotExDeploying = 128;  // 2026-10-20: the Ghost Town bomb carrier is deploying the bomb at the hatch
 	static constexpr std::uint8_t kRobotKindTank = 16;
+	// 17: the MvM bomb in the Ghost Town (on a carrier's back, or dropped on the ground).
+	static constexpr std::uint8_t kRobotKindBomb = 17;
 	struct RaidRobot
 	{
 		std::int32_t  id;     // Minecraft entity id
@@ -1034,6 +1037,10 @@ namespace fortcraft { namespace proto
 	// v54: one raindrop bag (the ender dragon's money, scheduled by Minecraft): x, z and y = the
 	// ground there. TF2 drops it from 8 blocks up and leaves it on that ground.
 	static constexpr std::uint32_t kMobHitMoneyLand = 1u << 8;
+	// 2026-10-20: with kMobHitMoneyOnly, a kill's money whose y is the floor under the mob (found
+	// by Minecraft): TF2 drops the bags straight down onto it instead of tossing them with TF2's
+	// physics, which flew them into Minecraft's walls (Alex: "money glitching in blocks").
+	static constexpr std::uint32_t kMobHitMoneyGround = 1u << 15;
 	// v57: the kill also drops a TF2 small ammo pack (skeletons, wither skeletons, End endermen,
 	// by chance; Minecraft rolls it).
 	static constexpr std::uint32_t kMobHitDropAmmo = 1u << 9;

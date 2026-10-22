@@ -14,5 +14,7 @@ fc /b "%~dp0..\prebuilt\fortcraft_flat.bsp" "%MAP%" >nul 2>nul || if exist "%~dp
   copy /y "%~dp0..\prebuilt\fortcraft_flat.bsp" "%MAP%" >nul
 )
 if not exist "%MAP%" call "%~dp0build_map.bat" >nul || (echo Building TF2's map failed: run tools\build_map.bat to see why. & pause & exit /b 1)
-start "Minecraft (FortCraft)" /MIN /D "%~dp0..\fabric" cmd /c .\gradlew.bat runClient
+rem This window only starts Minecraft. Players watched its "88%% EXECUTING" line for an hour
+rem (GitHub issues 27, 32): it stays at 88%% for as long as Minecraft is open, so it says so.
+start "Minecraft (FortCraft) - leave this open" /MIN /D "%~dp0..\fabric" cmd /c "echo This window starts Minecraft. It shows 88%% EXECUTING for as long as Minecraft is open: that is normal. Play in the Minecraft window - check the taskbar. & .\gradlew.bat runClient"
 call "%~dp0run_tf2.bat" %*

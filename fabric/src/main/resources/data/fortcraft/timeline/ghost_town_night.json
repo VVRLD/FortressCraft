@@ -1,0 +1,32 @@
+{
+  "clock": "minecraft:overworld",
+  "tracks": {
+    "minecraft:visual/sky_color": {
+      "keyframes": [
+        {
+          "ticks": 0,
+          "value": "#141a26"
+        }
+      ],
+      "modifier": "multiply"
+    },
+    "minecraft:visual/fog_color": {
+      "keyframes": [
+        {
+          "ticks": 0,
+          "value": "#1c1f2a"
+        }
+      ],
+      "modifier": "multiply"
+    },
+    "minecraft:visual/cloud_color": {
+      "keyframes": [
+        {
+          "ticks": 0,
+          "value": "#ff191926"
+        }
+      ],
+      "modifier": "multiply"
+    }
+  }
+}

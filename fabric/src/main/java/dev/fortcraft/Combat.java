@@ -1036,6 +1036,11 @@ public final class Combat {
 		BlockPos pos = minecraft.player.blockPosition();
 		server.execute(() -> {
 			ServerLevel level = server.getLevel(dimension);
+			if (level != null && dimension == dev.fortcraft.mvm.GhostTown.LEVEL) {
+				// MvM waves in the Ghost Town use TF2's wave panel, music and announcer too.
+				dev.fortcraft.mvm.GhostTownWaves.writePanel(level);
+				return;
+			}
 			var raid = level == null ? null : level.getRaids().getNearbyRaid(pos, 96 * 96);
 			int state = raid == null ? 0 : raid.isVictory() ? 2 : raid.isLoss() ? 3 : raid.isStarted() && !raid.isStopped() ? 1 : 0;
 			int wave = raid == null ? 0 : raid.getGroupsSpawned();
@@ -1277,6 +1282,19 @@ public final class Combat {
 		return Math.min(0xFFFF, money);
 	}
 
+	/** The top of the first solid block at or below the middle of this entity's feet (16 blocks at most). */
+	static double floorUnder(ServerLevel level, Entity e) {
+		BlockPos.MutableBlockPos p = BlockPos.containing(e.getX(), e.getY() + 0.25, e.getZ()).mutable();
+		for (int i = 0; i < 16; i++, p.move(0, -1, 0)) {
+			var shape = level.getBlockState(p).getCollisionShape(level, p);
+			if (!shape.isEmpty()) {
+				double top = p.getY() + shape.max(net.minecraft.core.Direction.Axis.Y);
+				if (top <= e.getY() + 0.5) return top;
+			}
+		}
+		return e.getY();
+	}
+
 	/** Also used by Bleed for its damage ticks. effects: SENTRY and bleed seconds from the shot. */
 	static void hurt(Minecraft minecraft, Entity clientTarget, float tf2Damage, float scale, boolean backstab, int effects) {
 		IntegratedServer server = minecraft.getSingleplayerServer();
@@ -1351,7 +1369,13 @@ public final class Combat {
 					| ((effects & CombatRules.GAS_EXPLOSION) != 0 ? 1 << 13 : 0)  // kMobHitGasExplosion
 					| (backstab ? 1 << 14 : 0);  // kMobHitBackstab
 				FortLink.writeMobHit(box.getCenter().x, box.maxY, box.getCenter().z, applied * scale, killed,
-					(effects & (CombatRules.SENTRY | CombatRules.CRIT | CombatRules.MINI)) | ammo | health | milk | special | (money << 16));
+					(effects & (CombatRules.SENTRY | CombatRules.CRIT | CombatRules.MINI)) | ammo | health | milk | special);
+				if (money > 0) {
+					// The money on its own, onto the floor under the mob (Alex, 2026-10-20: tossed by
+					// TF2's physics it landed inside Minecraft's walls). kMobHitMoneyOnly | MoneyGround.
+					FortLink.writeMobHit(box.getCenter().x, floorUnder(level, hit), box.getCenter().z, 0, true,
+						(1 << 7) | (1 << 15) | (money << 16));
+				}
 				if (killed && !(target instanceof EndCrystal)) {
 					// TF2's kill feed: you - weapon icon - the mob (Alex, 2026-10-12).
 					String robot = Robots.killFeedName(target);
