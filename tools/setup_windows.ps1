@@ -313,6 +313,56 @@ Push-Location (Join-Path $project 'fabric')
 try { Run { & '.\gradlew.bat' build } 'Building the Minecraft side failed (see the error above).' }
 finally { Pop-Location }
 
+# The Ghost Town's waves run on the Coal Town map (CoalTownMap.java), someone else's map that
+# FortCraft can't ship. Its page blocks automatic downloads, so the player downloads it in their
+# browser and setup picks the zip up from Downloads (Alex, 2026-10-22: "include it in setup").
+Step 'The Ghost Town map (for Mann vs. Machine waves)'
+$coalTown = Join-Path $project 'maps\mvm_coaltown.zip'
+$coalTownPage = 'https://minecraft-inside.ru/maps/162670-mvm_coaltown-tf2-rp-map.html'
+function IsCoalTownZip([string] $zip) {
+    try {
+        Add-Type -AssemblyName System.IO.Compression.FileSystem
+        $z = [System.IO.Compression.ZipFile]::OpenRead($zip)
+        try { return [bool] ($z.Entries | Where-Object { $_.FullName -match '(^|/)region/r\.-?\d+\.-?\d+\.mca$' } | Select-Object -First 1) }
+        finally { $z.Dispose() }
+    } catch { return $false }
+}
+function FindCoalTownDownload {
+    $downloads = @((Join-Path $env:USERPROFILE 'Downloads'))
+    try { $downloads = @((New-Object -ComObject Shell.Application).NameSpace('shell:Downloads').Self.Path) + $downloads } catch {}
+    foreach ($d in ($downloads | Select-Object -Unique)) {
+        if (-not (Test-Path -LiteralPath $d)) { continue }
+        $found = Get-ChildItem -LiteralPath $d -Filter '*coaltown*.zip' -File -ErrorAction SilentlyContinue |
+            Sort-Object LastWriteTime -Descending | Where-Object { IsCoalTownZip $_.FullName } | Select-Object -First 1
+        if ($found) { return $found.FullName }
+    }
+    return $null
+}
+if (Test-Path -LiteralPath $coalTown) {
+    Write-Host 'Already installed.'
+} else {
+    $download = FindCoalTownDownload
+    if (-not $download -and (Ask 'The Ghost Town''s waves need the free mvm_coaltown map. Open its page to download it?')) {
+        Start-Process $coalTownPage
+        Write-Host "Your browser opened $coalTownPage"
+        Write-Host 'Click its download button and save the zip in your Downloads folder.'
+        while (-not $download) {
+            $answer = Read-Host 'Press Enter when the download has finished (or type S to skip)'
+            if ($answer.Trim().ToLower().StartsWith('s')) { break }
+            $download = FindCoalTownDownload
+            if (-not $download) { Write-Host 'No mvm_coaltown zip with a Minecraft world in it is in Downloads yet.' }
+        }
+    }
+    if ($download) {
+        New-Item -ItemType Directory -Force -Path (Split-Path -Parent $coalTown) | Out-Null
+        Copy-Item -LiteralPath $download -Destination $coalTown -Force -ErrorAction Stop
+        Write-Host "Installed $download"
+    } else {
+        Write-Host 'Skipped. The Ghost Town will be built from TF2''s own map, without waves. To add it later, save'
+        Write-Host "the zip as $coalTown"
+    }
+}
+
 Write-Host ''
 Write-Host 'Setup finished. Start FortCraft with PLAY-FORTCRAFT.cmd (or tools\play_normal.bat).' -ForegroundColor Green
 Write-Host 'Keys and crafting: CONTROLS.md. Back up your Minecraft worlds before playing.'

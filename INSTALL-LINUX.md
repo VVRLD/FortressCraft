@@ -7,7 +7,8 @@ file from `tools/collect_logs.sh` (see the end of this page).
 
 - A 64-bit Linux desktop (X11 or Wayland).
 - **Steam**, signed in and running, with **Team Fortress 2** and **Source SDK Base 2013
-  Multiplayer** installed (the SDK Base is free: Steam > Library > Tools). On a Steam Deck or
+  Multiplayer** installed (the SDK Base is free: Steam > Library > Tools), on no beta branch
+  (Properties > Betas: None; old branches like previous2021 lack its 64-bit files, #10). On a Steam Deck or
   any system where TF2's engine won't load on its own, also **Steam Linux Runtime 3.0 (sniper)**
   (Library > Tools).
 - **git** and **podman**:
@@ -32,6 +33,11 @@ Setup downloads Valve's Source SDK 2013 next to the FortCraft folder, applies Fo
 changes, then builds the TF2 side inside Valve's own build container (Steam Runtime "sniper",
 run with podman). The first run downloads that container (1-2 GB) and compiles for 10-40
 minutes. Running `bash setup.sh` again later skips what's already done.
+
+At the end, setup offers to open the page of **mvm_coaltown**, a free Minecraft map that the
+Ghost Town's Mann vs. Machine waves are played on. FortCraft can't include it because it's someone
+else's map. Download it in your browser, then press Enter in setup and it installs the zip
+from your Downloads folder. You can skip this; the Ghost Town then has no waves.
 
 After updating FortCraft, rebuild the TF2 side with `tools/build_tf2.sh`.
 

@@ -3,7 +3,8 @@
 ## 1. Get these first
 
 - **Steam**, signed in, with **Team Fortress 2** and **Source SDK Base 2013 Multiplayer**
-  installed (the SDK Base is free: Steam > Library > Tools).
+  installed (the SDK Base is free: Steam > Library > Tools). Leave the SDK Base on no beta
+  branch (Properties > Betas: None); old branches like previous2021 lack its 64-bit files (#10).
 - **Minecraft: Java Edition.**
 - **Java 25** and **Git**: setup offers to install them for you (with winget) if they're missing.
 - About 3 GB of free disk space and an internet connection.
